@@ -43,19 +43,19 @@ Detailed installation info is in the [installation doc.](docs/install.md)
 
 ### Docker
 
-30 second quickstart if you already have Docker installed:
+Build this fork's image if you already have Docker installed:
 
 ```
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
+docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
 ### Build from source
 
-Install Git and Go 1.18 or later, then clone and build this fork:
+Install Git and Go 1.27.1 or later, then clone and build this fork:
 
 ```shell
 git clone --branch main https://github.com/kynraze/tenderduty.git
@@ -89,6 +89,8 @@ sudo systemctl status tenderduty --no-pager
 One service monitors all configured chains. It runs as the `tenderduty` user, stores state in `/var/lib/tenderduty`, and starts automatically at boot. Follow logs with `sudo journalctl -u tenderduty -f` and restart after configuration changes with `sudo systemctl restart tenderduty`.
 
 See the [systemd guide](docs/install.md#run-as-a-systemd-service-on-ubuntu) for separate chain files and dashboard access through an SSH tunnel.
+
+Dependency upgrade details and remaining migration work are listed in the [dependency notes](docs/dependency-upgrades.md).
 
 ## Split Configuration
 
