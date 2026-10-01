@@ -9,11 +9,13 @@ Contributions and corrections are welcomed here. Would be nice to add a section 
 
 ## Docker Container
 
+The examples bind the dashboard and metrics ports to localhost. For access from another machine, use an SSH tunnel or an authenticated reverse proxy. The dashboard itself does not provide a login.
+
 ```shell
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
+docker run -d --name tenderduty -p "127.0.0.1:8888:8888" -p "127.0.0.1:28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
@@ -31,8 +33,8 @@ services:
     image: ghcr.io/blockpane/tenderduty:latest
     command: ""
     ports:
-      - "8888:8888" # Dashboard
-      - "28686:28686" # Prometheus exporter
+      - "127.0.0.1:8888:8888" # Dashboard
+      - "127.0.0.1:28686:28686" # Prometheus exporter
     volumes:
       - home:/var/lib/tenderduty
       - ./config.yml:/var/lib/tenderduty/config.yml
@@ -77,86 +79,106 @@ brew install go
 
 ### Building
 
-Because of design choices made by golang devs, it's not possible to use 'go install' remotely because tendermint uses replace directives in the go.mod file. It's necessary to clone the repo and build manually.
+Clone the repository before building because its dependencies use replace directives in `go.mod`.
 
 ```
-git clone https://github.com/blockpane/tenderduty
+git clone --branch master https://github.com/kynraze/tenderduty.git
 cd tenderduty
 cp example-config.yml config.yml
 # edit config.yml with your favorite editor
-go get ./...
-go build -ldflags '-s -w' -trimpath -o ~/go/bin/tenderduty main.go
+go mod download
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
 ## Run as a systemd service on Ubuntu
 
-First, create a new user
+This runs one Tenderduty process for all configured chains. Go and Git are needed to build the binary; Go is not needed by the installed service. Install Go using the instructions above, then build this fork:
 
 ```shell
-sudo addgroup --system tenderduty 
-sudo adduser --ingroup tenderduty --system --home /var/lib/tenderduty tenderduty
-```
-
-Install Go: see [the instructions above](#installing-go).
-
-Install the binaries
-
-```shell
-sudo -su tenderduty
-cd ~
-echo 'export PATH=$PATH:~/go/bin' >> .bashrc
-. .bashrc
-git clone https://github.com/blockpane/tenderduty
+git clone --branch master https://github.com/kynraze/tenderduty.git
 cd tenderduty
-go install
-cp example-config.yml ../config.yml
-cd ..
-# Edit the config.yml with your editor of choice
-exit
+go mod download
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
-Now create and enable the service
+Create the service user and install the binary and configuration directories. If the `tenderduty` user already exists, skip the `useradd` command.
 
 ```shell
-# Create the service file
-sudo tee /etc/systemd/system/tenderduty.service << EOF
-[Unit]
-Description=Tenderduty
-After=network.target
-ConditionPathExists=/var/lib/tenderduty/go/bin/tenderduty
-
-[Service]
-Type=simple
-Restart=always
-RestartSec=5
-TimeoutSec=180
-
-User=tenderduty
-WorkingDirectory=/var/lib/tenderduty
-ExecStart=/var/lib/tenderduty/go/bin/tenderduty
-
-# there may be a large number of network connections if a lot of chains
-LimitNOFILE=infinity
-
-# extra process isolation
-NoNewPrivileges=true
-ProtectSystem=strict
-RestrictSUIDSGID=true
-LockPersonality=true
-PrivateUsers=true
-PrivateDevices=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start the service
-sudo systemctl daemon-reload
-sudo systemctl enable tenderduty
-sudo systemctl start tenderduty
-
-# and to watch the logs, press CTRL-C to stop watching
-sudo journalctl -fu tenderduty
-
+sudo useradd --system --user-group --home-dir /var/lib/tenderduty --shell /usr/sbin/nologin tenderduty
+sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
+sudo install -d -m 0750 -o root -g tenderduty /etc/tenderduty /etc/tenderduty/chains.d
+sudo install -m 0640 -o root -g tenderduty example-config.yml /etc/tenderduty/config.yml
 ```
+
+Edit `/etc/tenderduty/config.yml` with the shared settings. When using separate chain files, remove the example `chains:` section from this file. For example:
+
+```yaml
+enable_dashboard: yes
+listen_port: 8888
+hide_logs: yes
+node_down_alert_minutes: 3
+
+telegram:
+  enabled: yes
+  api_key: "YOUR_BOT_TOKEN"
+  channel: "YOUR_CHAT_ID"
+
+alert_defaults:
+  consecutive_enabled: yes
+  consecutive_missed: 5
+  alert_if_inactive: yes
+  alert_if_no_servers: yes
+  stalled_enabled: yes
+  stalled_minutes: 10
+  telegram:
+    enabled: yes
+```
+
+Create one file per chain, such as `/etc/tenderduty/chains.d/Osmosis.yml`. Replace the validator address and RPC URL with your own values:
+
+```yaml
+chain_id: osmosis-1
+valoper_address: "YOUR_OSMOSIS_VALIDATOR_ADDRESS"
+nodes:
+  - url: "https://YOUR_OSMOSIS_RPC"
+```
+
+Chain files start directly with `chain_id`; they do not need a `chains:` wrapper. Each file inherits `alert_defaults` and can override selected fields under `alerts`. See the [configuration guide](config.md#shared-configuration).
+
+After creating the chain files, set their ownership and permissions, install the supplied service unit, and start it:
+
+```shell
+sudo chown root:tenderduty /etc/tenderduty/chains.d/*.yml
+sudo chmod 0640 /etc/tenderduty/chains.d/*.yml
+sudo install -m 0644 contrib/tenderduty.service /etc/systemd/system/tenderduty.service
+sudo systemd-analyze verify /etc/systemd/system/tenderduty.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now tenderduty
+sudo systemctl status tenderduty --no-pager
+```
+
+The supplied unit uses these locations:
+
+```text
+/usr/local/bin/tenderduty
+/etc/tenderduty/config.yml
+/etc/tenderduty/chains.d/*.yml
+/var/lib/tenderduty/.tenderduty-state.json
+```
+
+`StateDirectory=tenderduty` creates the writable state directory for the service user, while `ProtectSystem=strict` keeps the rest of the filesystem read-only. The process runs without root privileges and systemd restarts it if it exits. No service needs to be installed on the remote validator servers.
+
+Use the journal to follow logs, and restart the service after changing configuration:
+
+```shell
+sudo journalctl -u tenderduty -f
+sudo systemctl restart tenderduty
+```
+
+The dashboard listens on port 8888 when enabled and does not provide a login. Use a firewall, SSH tunnel, or authenticated reverse proxy to control access. To view it through an SSH tunnel from your computer:
+
+```shell
+ssh -L 8888:127.0.0.1:8888 YOUR_USER@YOUR_MONITOR_SERVER
+```
+
+Then open `http://127.0.0.1:8888` locally.

@@ -33,13 +33,23 @@ Sends an alert to any of three destinations: Pagerduty, Discord, or Telegram.
 A dashboard for displaying status.
 
 - The missed block grid was heavily influenced by the uptime display on [ping.pub](https://ping.pub). *Many thanks for the inspiration!*
-- The last 512 blocks are displayed on the status grid.
+- The overview shows the last 48 observations beside each validator. Open a chain to see its full 512-observation history.
 - Displays a table showing validator and node status.
+- Filters make it possible to focus on chains that need attention or have no data.
+- Shows the last observed block time and browser connection state separately.
 - Designed intentionally for maximum density for validators on a lot of chains.
 - Dark/light display modes.
+- Appearance presets include Graphite, Midnight, Paper, and Warm Stone. Customize allows background, panel, and accent colors with live preview, Apply, Cancel, and Reset.
+- Appearance preferences are stored in each browser. Invalid or unreadable color combinations cannot be applied; unavailable browser storage falls back to session-only preferences.
 - Optionally shows a real-time stream of log messages with details about ongoing health checks.
 
+The missed count is labeled as a signing-window value. It is not a daily uptime percentage. State is saved every minute and on shutdown using a temporary file before replacing the previous snapshot.
+
+Failed notification deliveries are retried with a delay. Delivery state is recorded only after the destination accepts the message. Pending recovery notifications are saved and resumed after a restart.
+
 ![dashboard screenshot](dash.png)
+
+The screenshot uses example data.
 
 ## System Requirements:
 

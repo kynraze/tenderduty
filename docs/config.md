@@ -45,6 +45,57 @@ chains:
       - url: tcp://localhost:26657
 ```
 
+## Shared configuration
+
+### Shared alert settings
+
+Set `alert_defaults` once to apply alert thresholds and notification destinations to every chain. A chain can include only the values that differ under its own `alerts` section. An explicit `enabled: no` overrides an inherited `enabled: yes`. Existing configurations without `alert_defaults` keep their current behavior.
+
+Unknown YAML settings are rejected instead of being silently ignored. Duplicate names between `config.yml` and `chains.d` are also rejected. Enabled alert thresholds must be positive, and enabled notification destinations must have their required credentials.
+
+```yaml
+telegram:
+  enabled: yes
+  api_key: "your-bot-token"
+  channel: "your-chat-id"
+
+alert_defaults:
+  consecutive_enabled: yes
+  consecutive_missed: 5
+  telegram:
+    enabled: yes
+
+chains:
+  Osmosis:
+    chain_id: osmosis-1
+    valoper_address: osmovaloper1...
+    nodes:
+      - url: http://localhost:26657
+    alerts:
+      consecutive_missed: 3
+```
+
+Both the global notification destination and its effective chain setting must be enabled. Use a chain override to turn a destination off for one chain.
+
+### Several validators on one chain
+
+Use `validators` instead of `valoper_address` when the same chain and RPC settings apply to several validators. Give each validator a stable name so its dashboard and saved-state entry remain recognizable.
+
+```yaml
+chains:
+  Osmosis:
+    chain_id: osmosis-1
+    nodes:
+      - url: http://localhost:26657
+    validators:
+      - name: Primary
+        valoper_address: osmovaloper1primary...
+      - name: Backup
+        valoper_address: osmovaloper1backup...
+```
+
+Each validator is monitored independently after configuration is loaded. RPC subscriptions are not shared yet.
+
 ## General Settings
 
 | Config Setting               | Description                                                                                                                                                                                                       |

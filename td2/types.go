@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,6 @@ type Config struct {
 	statsChan  chan *promUpdate
 	ctx        context.Context
 	cancel     context.CancelFunc
-	alarms     *alarmCache
 
 	// EnableDash enables the web dashboard
 	EnableDash bool `yaml:"enable_dashboard"`
@@ -66,6 +66,8 @@ type Config struct {
 	Slack SlackConfig `yaml:"slack"`
 	// Healthcheck information
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
+	// AlertDefaults supplies shared settings before chain overrides are applied.
+	AlertDefaults AlertConfig `yaml:"alert_defaults"`
 
 	chainsMux sync.RWMutex // prevents concurrent map access for Chains
 	// Chains has settings for each validator to monitor. The map's name does not need to match the chain-id.
@@ -75,14 +77,18 @@ type Config struct {
 // savedState is dumped to a JSON file at exit time, and is loaded at start. If successful it will prevent
 // duplicate alerts, and will show old blocks in the dashboard.
 type savedState struct {
-	Alarms    *alarmCache                     `json:"alarms"`
-	Blocks    map[string][]int                `json:"blocks"`
-	NodesDown map[string]map[string]time.Time `json:"nodes_down"`
+	Alarms     *alarmCache                     `json:"alarms"`
+	Blocks     map[string][]int                `json:"blocks"`
+	LastBlocks map[string]time.Time            `json:"last_blocks"`
+	NodesDown  map[string]map[string]time.Time `json:"nodes_down"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
 // validators can be monitored on a single chain.
 type ChainConfig struct {
+	stateMux       sync.RWMutex
+	validatorMux   sync.RWMutex
+	refreshMux     sync.Mutex
 	name           string
 	wsclient       *TmConn       // custom websocket client to work around wss:// bugs in tendermint
 	client         *rpchttp.HTTP // legit tendermint client
@@ -94,7 +100,7 @@ type ChainConfig struct {
 	lastBlockTime  time.Time
 	lastBlockAlarm bool
 	lastBlockNum   int64
-	activeAlerts   int
+	observedBlock  bool
 
 	statTotalSigns      float64
 	statTotalProps      float64
@@ -109,6 +115,8 @@ type ChainConfig struct {
 	// ValAddress is the validator operator address to be monitored. Tenderduty v1 required the consensus address,
 	// this is no longer needed. The operator address is much easier to find in explorers etc.
 	ValAddress string `yaml:"valoper_address"`
+	// Validators allows several validators to use the same chain and RPC settings.
+	Validators []ValidatorConfig `yaml:"validators"`
 	// ValconsOverride allows skipping the lookup of the consensus public key and setting it directly.
 	ValconsOverride string `yaml:"valcons_override"`
 	// ExtraInfo will be appended to the alert data. This is useful for pagerduty because multiple tenderduty instances
@@ -124,14 +132,21 @@ type ChainConfig struct {
 	Nodes []*NodeConfig `yaml:"nodes"`
 }
 
+type ValidatorConfig struct {
+	Name            string `yaml:"name"`
+	ValAddress      string `yaml:"valoper_address"`
+	ValconsOverride string `yaml:"valcons_override"`
+}
+
 // mkUpdate returns the info needed by prometheus for a gauge.
 func (cc *ChainConfig) mkUpdate(t metricType, v float64, node string) *promUpdate {
+	info, _ := cc.validatorState()
 	return &promUpdate{
 		metric:   t,
 		counter:  v,
 		name:     cc.name,
 		chainId:  cc.ChainId,
-		moniker:  cc.valInfo.Moniker,
+		moniker:  info.Moniker,
 		endpoint: node,
 	}
 }
@@ -185,6 +200,7 @@ type AlertConfig struct {
 
 // NodeConfig holds the basic information for a node to connect to.
 type NodeConfig struct {
+	stateMux    sync.RWMutex
 	Url         string `yaml:"url"`
 	AlertIfDown bool   `yaml:"alert_if_down"`
 
@@ -234,14 +250,21 @@ type HealthcheckConfig struct {
 // validateConfig is a non-exhaustive check for common problems with the configuration. Needs love.
 func validateConfig(c *Config) (fatal bool, problems []string) {
 	problems = make([]string, 0)
-	var err error
 
 	if c.EnableDash {
-		_, err = url.Parse(c.Listen)
-		if err != nil {
+		port, parseErr := strconv.Atoi(c.Listen)
+		if parseErr != nil || port < 1 || port > 65535 {
 			fatal = true
-			problems = append(problems, fmt.Sprintf("error: The listen URL %s does not appear to be valid", c.Listen))
+			problems = append(problems, fmt.Sprintf("error: The dashboard port %s is invalid", c.Listen))
 		}
+	}
+	if c.Prom && (c.PrometheusListenPort < 1 || c.PrometheusListenPort > 65535) {
+		fatal = true
+		problems = append(problems, "error: The prometheus listen port is invalid")
+	}
+	if c.Healthcheck.Enabled && (c.Healthcheck.PingRate < 1 || c.Healthcheck.PingURL == "") {
+		fatal = true
+		problems = append(problems, "error: Healthcheck requires a ping URL and a positive rate")
 	}
 
 	if c.Pagerduty.Enabled {
@@ -252,17 +275,62 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		}
 	}
 
-	if c.NodeDownMin < 3 {
+	if c.NodeDownMin < 1 {
+		fatal = true
+		problems = append(problems, "error: node_down_alert_minutes must be positive")
+	} else if c.NodeDownMin < 3 {
 		problems = append(problems, "warning: setting 'node_down_alert_minutes' to less than three minutes might result in false alarms")
+	}
+	if c.NodeDownSeverity == "" {
+		c.NodeDownSeverity = "critical"
 	}
 
 	var wantsPublic bool
 	for k, v := range c.Chains {
-		if v.blocksResults == nil {
-			v.blocksResults = make([]int, showBLocks)
-			for i := range v.blocksResults {
-				v.blocksResults[i] = -1
+		if v == nil {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s has no chain configuration", k))
+			continue
+		}
+		if v.ChainId == "" || v.ValAddress == "" {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s requires chain_id and valoper_address", k))
+		}
+		if len(v.Nodes) == 0 && !v.PublicFallback {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s requires an RPC node or public_fallback", k))
+		}
+		for _, node := range v.Nodes {
+			if node == nil {
+				fatal = true
+				problems = append(problems, fmt.Sprintf("error: %s has an empty RPC node", k))
+				continue
 			}
+			parsed, parseErr := url.Parse(node.Url)
+			if parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "tcp") {
+				fatal = true
+				problems = append(problems, fmt.Sprintf("error: %s has an invalid RPC URL: %s", k, node.Url))
+			}
+		}
+		if v.Alerts.StalledAlerts && v.Alerts.Stalled < 1 {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s requires a positive stalled_minutes", k))
+		}
+		if v.Alerts.ConsecutiveAlerts && v.Alerts.ConsecutiveMissed < 1 {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s requires a positive consecutive_missed", k))
+		}
+		if v.Alerts.PercentageAlerts && (v.Alerts.Window < 1 || v.Alerts.Window > 100) {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s requires percentage_missed between 1 and 100", k))
+		}
+		if len(v.blocksResults) != showBLocks {
+			blocks := make([]int, showBLocks)
+			for i := range blocks {
+				blocks[i] = -1
+			}
+			copy(blocks, v.blocksResults)
+			v.blocksResults = blocks
 		}
 		if v.name == "" {
 			v.name = k
@@ -305,27 +373,49 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Pagerduty.ApiKey = c.Pagerduty.ApiKey
 			v.Alerts.Pagerduty.DefaultSeverity = c.Pagerduty.DefaultSeverity
 		}
+		if c.Telegram.Enabled && v.Alerts.Telegram.Enabled && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s telegram alerts require an API key and channel", k))
+		}
+		if c.Discord.Enabled && v.Alerts.Discord.Enabled && !validHTTPURL(v.Alerts.Discord.Webhook) {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s discord alerts require a valid webhook URL", k))
+		}
+		if c.Slack.Enabled && v.Alerts.Slack.Enabled && !validHTTPURL(v.Alerts.Slack.Webhook) {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s slack alerts require a valid webhook URL", k))
+		}
+		if c.Pagerduty.Enabled && v.Alerts.Pagerduty.Enabled && v.Alerts.Pagerduty.ApiKey == "" {
+			fatal = true
+			problems = append(problems, fmt.Sprintf("error: %s pagerduty alerts require an API key", k))
+		}
+		if v.Alerts.ConsecutivePriority == "" {
+			v.Alerts.ConsecutivePriority = "critical"
+		}
+		if v.Alerts.PercentagePriority == "" {
+			v.Alerts.PercentagePriority = "warning"
+		}
 
-		switch {
-		case v.Alerts.Slack.Enabled && !c.Slack.Enabled:
+		if v.Alerts.Slack.Enabled && !c.Slack.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for slack alerts, but it is not enabled", k))
-			fallthrough
-		case v.Alerts.Discord.Enabled && !c.Discord.Enabled:
+		}
+		if v.Alerts.Discord.Enabled && !c.Discord.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for discord alerts, but it is not enabled", k))
-			fallthrough
-		case v.Alerts.Pagerduty.Enabled && !c.Pagerduty.Enabled:
+		}
+		if v.Alerts.Pagerduty.Enabled && !c.Pagerduty.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for pagerduty alerts, but it is not enabled", k))
-			fallthrough
-		case v.Alerts.Telegram.Enabled && !c.Telegram.Enabled:
+		}
+		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
-		case !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers:
+		}
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
-			fallthrough
-		case !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled:
+		}
+		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no notifications configured", k))
 		}
-		if td.EnableDash {
-			td.updateChan <- &dash.ChainStatus{
+		if c.EnableDash {
+			c.updateChan <- &dash.ChainStatus{
 				MsgType:      "status",
 				Name:         v.name,
 				ChainId:      v.ChainId,
@@ -365,23 +455,12 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 
 func loadChainConfig(yamlFile string) (*ChainConfig, error) {
 	//#nosec -- variable specified on command line
-	f, e := os.OpenFile(yamlFile, os.O_RDONLY, 0600)
-	if e != nil {
-		return nil, e
-	}
-	i, e := f.Stat()
-	if e != nil {
-		_ = f.Close()
-		return nil, e
-	}
-	b := make([]byte, int(i.Size()))
-	_, e = f.Read(b)
-	_ = f.Close()
+	b, e := os.ReadFile(yamlFile)
 	if e != nil {
 		return nil, e
 	}
 	c := &ChainConfig{}
-	e = yaml.Unmarshal(b, c)
+	e = yaml.UnmarshalStrict(b, c)
 	if e != nil {
 		return nil, e
 	}
@@ -392,20 +471,25 @@ func loadChainConfig(yamlFile string) (*ChainConfig, error) {
 func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *string) (*Config, error) {
 
 	c := &Config{}
+	var configData []byte
 	if strings.HasPrefix(yamlFile, "http://") || strings.HasPrefix(yamlFile, "https://") {
 		if *password == "" {
 			return nil, errors.New("a password is required if loading a remote configuration")
 		}
 		//#nosec -- url is specified on command line
-		resp, err := http.Get(yamlFile)
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Get(yamlFile)
 		if err != nil {
 			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("could not load remote configuration: status %d", resp.StatusCode)
 		}
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, err
 		}
-		_ = resp.Body.Close()
 		log.Printf("downloaded %d bytes from %s", len(b), yamlFile)
 		decrypted, err := decrypt(b, *password)
 		if err != nil {
@@ -414,34 +498,26 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		empty := ""
 		password = &empty             // let gc get password out of memory, it's still referenced in main()
 		_ = os.Setenv("PASSWORD", "") // also clear the ENV var
-		err = yaml.Unmarshal(decrypted, c)
+		err = yaml.UnmarshalStrict(decrypted, c)
 		if err != nil {
 			return nil, err
 		}
+		configData = decrypted
 	} else {
 		//#nosec -- variable specified on command line
-		f, e := os.OpenFile(yamlFile, os.O_RDONLY, 0600)
+		b, e := os.ReadFile(yamlFile)
 		if e != nil {
 			return nil, e
 		}
-		i, e := f.Stat()
-		if e != nil {
-			_ = f.Close()
-			return nil, e
-		}
-		b := make([]byte, int(i.Size()))
-		_, e = f.Read(b)
-		_ = f.Close()
+		e = yaml.UnmarshalStrict(b, c)
 		if e != nil {
 			return nil, e
 		}
-		e = yaml.Unmarshal(b, c)
-		if e != nil {
-			return nil, e
-		}
+		configData = b
 	}
 
 	// Load additional chain configuration files
+	chainFiles := make(map[string][]byte)
 	chainConfigFiles, e := os.ReadDir(chainConfigDirectory)
 	if e != nil {
 		l("Failed to scan chainConfigDirectory", e)
@@ -463,7 +539,14 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 			return nil, e
 		}
 
-		chainName := strings.Split(chainConfigFile.Name(), ".")[0]
+		chainName := strings.TrimSuffix(chainConfigFile.Name(), ".yml")
+		if c.Chains[chainName] != nil {
+			return nil, fmt.Errorf("duplicate chain name %s", chainName)
+		}
+		chainFiles[chainName], e = os.ReadFile(path.Join(chainConfigDirectory, chainConfigFile.Name()))
+		if e != nil {
+			return nil, e
+		}
 
 		// Create map if it didnt exist in config.yml
 		if c.Chains == nil {
@@ -476,6 +559,12 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	if len(c.Chains) == 0 {
 		return nil, errors.New("no chains configured")
 	}
+	if err := applyAlertDefaults(c, configData, chainFiles); err != nil {
+		return nil, err
+	}
+	if err := expandValidators(c); err != nil {
+		return nil, err
+	}
 
 	c.alertChan = make(chan *alertMsg)
 	c.logChan = make(chan dash.LogMessage)
@@ -484,39 +573,39 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	c.statsChan = make(chan *promUpdate, len(c.Chains)*2)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
-	// handle cached data. FIXME: incomplete.
-	c.alarms = &alarmCache{
-		SentPdAlarms:  make(map[string]time.Time),
-		SentTgAlarms:  make(map[string]time.Time),
-		SentDiAlarms:  make(map[string]time.Time),
-		SentSlkAlarms: make(map[string]time.Time),
-		AllAlarms:     make(map[string]map[string]time.Time),
-		notifyMux:     sync.RWMutex{},
-	}
-
-	//#nosec -- variable specified on command line
-	sf, e := os.OpenFile(stateFile, os.O_RDONLY, 0600)
-	if e != nil {
-		l("could not load saved state", e.Error())
-	}
-	b, e := io.ReadAll(sf)
-	_ = sf.Close()
-	if e != nil {
-		l("could not read saved state", e.Error())
-	}
 	saved := &savedState{}
-	e = json.Unmarshal(b, saved)
-	if e != nil {
-		l("could not unmarshal saved state", e.Error())
+	//#nosec -- variable specified on command line
+	b, e := os.ReadFile(stateFile)
+	if e == nil {
+		if e = json.Unmarshal(b, saved); e != nil {
+			l("could not unmarshal saved state", e.Error())
+		}
+	} else if !os.IsNotExist(e) {
+		l("could not load saved state", e.Error())
 	}
 	for k, v := range saved.Blocks {
 		if c.Chains[k] != nil {
 			c.Chains[k].blocksResults = v
+			c.Chains[k].observedBlock = len(v) > 0 && v[0] >= 0
+			for _, status := range v {
+				if status < 0 || status >= 3 {
+					break
+				}
+				c.Chains[k].statConsecutiveMiss++
+			}
+		}
+	}
+	for k, observed := range saved.LastBlocks {
+		if c.Chains[k] != nil {
+			c.Chains[k].lastBlockTime = observed
 		}
 	}
 
 	// restore alarm state to prevent duplicate alerts
 	if saved.Alarms != nil {
+		if saved.Alarms.PendingRecoveries != nil {
+			alarms.PendingRecoveries = saved.Alarms.PendingRecoveries
+		}
 		if saved.Alarms.SentTgAlarms != nil {
 			alarms.SentTgAlarms = saved.Alarms.SentTgAlarms
 			clearStale(alarms.SentTgAlarms, "telegram", c.Pagerduty.Enabled, staleHours)
@@ -577,6 +666,9 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 
 func clearStale(alarms map[string]time.Time, what string, hasPagerduty bool, hours float64) {
 	for k := range alarms {
+		if hasPendingRecovery(k) {
+			continue
+		}
 		if time.Since(alarms[k]).Hours() >= hours {
 			l(fmt.Sprintf("🗑 not restoring old alarm (%v >%.2f hours) from cache - %s", alarms[k], hours, k))
 			if hasPagerduty && what == "pagerduty" {

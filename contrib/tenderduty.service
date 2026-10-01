@@ -1,0 +1,27 @@
+[Unit]
+Description=Tenderduty validator monitoring
+After=network.target
+ConditionPathExists=/etc/tenderduty/config.yml
+
+[Service]
+Type=simple
+User=tenderduty
+Group=tenderduty
+WorkingDirectory=/var/lib/tenderduty
+StateDirectory=tenderduty
+StateDirectoryMode=0750
+ExecStart=/usr/local/bin/tenderduty -f /etc/tenderduty/config.yml -cc /etc/tenderduty/chains.d -state /var/lib/tenderduty/.tenderduty-state.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+# extra process isolation
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

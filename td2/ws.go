@@ -70,13 +70,17 @@ func (wsr WsReply) Value() []byte {
 // WsRun is our main entrypoint for the websocket listener. In the Run loop it will block, and if it exits force a
 // renegotiation for a new client.
 func (cc *ChainConfig) WsRun() {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(td.ctx)
 	defer cancel()
 	var err error
+	client := cc.clientSnapshot()
+	valInfo, _ := cc.validatorState()
 	started := time.Now()
 	for {
+		client = cc.clientSnapshot()
+		valInfo, _ = cc.validatorState()
 		// wait until our RPC client is connected and running. We will use the same URL for the websocket
-		if cc.client == nil || cc.valInfo == nil || cc.valInfo.Conspub == nil {
+		if client == nil || valInfo == nil || valInfo.Conspub == nil {
 			if started.Before(time.Now().Add(-2 * time.Minute)) {
 				l(cc.name, "websocket client timed out waiting for a working rpc endpoint, restarting")
 				return
@@ -88,7 +92,7 @@ func (cc *ChainConfig) WsRun() {
 		break
 	}
 
-	cc.wsclient, err = NewClient(cc.client.Remote(), true)
+	cc.wsclient, err = NewClient(client.Remote(), true)
 	if err != nil {
 		l(err)
 		cancel()
@@ -108,27 +112,33 @@ func (cc *ChainConfig) WsRun() {
 		for {
 			select {
 			case update := <-resultChan:
+				valInfo, _ := cc.validatorState()
 				if update.Final && update.Height%20 == 0 {
 					l(fmt.Sprintf("🧊 %-12s block %d", cc.ChainId, update.Height))
 				}
-				if update.Status > signState && cc.valInfo.Bonded {
+				if update.Status > signState && valInfo.Bonded {
 					signState = update.Status
 				}
 				if update.Final {
+					previousBlock, _, _ := cc.blockState()
+					observedAt := time.Now()
+					cc.stateMux.Lock()
+					cc.observedBlock = true
 					cc.lastBlockNum = update.Height
-					if td.Prom {
-						td.statsChan <- cc.mkUpdate(metricLastBlockSeconds, time.Since(cc.lastBlockTime).Seconds(), "")
-					}
-					cc.lastBlockTime = time.Now()
-					cc.lastBlockAlarm = false
-					info := getAlarms(cc.name)
+					cc.lastBlockTime = observedAt
 					cc.blocksResults = append([]int{int(signState)}, cc.blocksResults[:len(cc.blocksResults)-1]...)
-					if signState < 3 && cc.valInfo.Bonded {
-						warn := fmt.Sprintf("❌ warning      %s missed block %d on %s", cc.valInfo.Moniker, update.Height, cc.ChainId)
+					cc.stateMux.Unlock()
+					if td.Prom && !previousBlock.IsZero() {
+						td.statsChan <- cc.mkUpdate(metricLastBlockSeconds, time.Since(previousBlock).Seconds(), "")
+					}
+					info := getAlarms(cc.name)
+					if signState < 3 && valInfo.Bonded {
+						warn := fmt.Sprintf("❌ warning      %s missed block %d on %s", valInfo.Moniker, update.Height, cc.ChainId)
 						info += warn + "\n"
 						cc.lastError = time.Now().UTC().String() + " " + info
 						l(warn)
 					}
+					cc.stateMux.Lock()
 					switch signState {
 					case Statusmissed:
 						cc.statTotalMiss += 1
@@ -149,39 +159,42 @@ func (cc *ChainConfig) WsRun() {
 						cc.statTotalSigns += 1
 						cc.statConsecutiveMiss = 0
 					}
+					consecutiveMiss := cc.statConsecutiveMiss
+					cc.stateMux.Unlock()
 					signState = -1
 					healthyNodes := 0
 					for i := range cc.Nodes {
-						if !cc.Nodes[i].down {
+						status := cc.Nodes[i].snapshot()
+						if !status.down {
 							healthyNodes += 1
 						} else if !td.HideLogs { // only show this info if sending logs, the point is not to leak host info
-							info += "\n - " + cc.Nodes[i].lastMsg
+							info += "\n - " + status.lastMsg
 						}
 					}
 					switch {
-					case cc.valInfo.Tombstoned:
+					case valInfo.Tombstoned:
 						info += "- validator is tombstoned\n"
-					case cc.valInfo.Jailed:
+					case valInfo.Jailed:
 						info += "- validator is jailed\n"
 					}
-					cc.activeAlerts = alarms.getCount(cc.name)
 					if td.EnableDash {
 						td.updateChan <- &dash.ChainStatus{
 							MsgType:      "status",
 							Name:         cc.name,
 							ChainId:      cc.ChainId,
-							Moniker:      cc.valInfo.Moniker,
-							Bonded:       cc.valInfo.Bonded,
-							Jailed:       cc.valInfo.Jailed,
-							Tombstoned:   cc.valInfo.Tombstoned,
-							Missed:       cc.valInfo.Missed,
-							Window:       cc.valInfo.Window,
+							Moniker:      valInfo.Moniker,
+							Bonded:       valInfo.Bonded,
+							Jailed:       valInfo.Jailed,
+							Tombstoned:   valInfo.Tombstoned,
+							Missed:       valInfo.Missed,
+							Window:       valInfo.Window,
 							Nodes:        len(cc.Nodes),
 							HealthyNodes: healthyNodes,
-							ActiveAlerts: cc.activeAlerts,
+							ActiveAlerts: alarms.getCount(cc.name),
 							Height:       update.Height,
+							LastBlockAt:  observedAt.Unix(),
 							LastError:    info,
-							Blocks:       cc.blocksResults,
+							Blocks:       cc.blocksSnapshot(),
 						}
 					}
 
@@ -191,7 +204,7 @@ func (cc *ChainConfig) WsRun() {
 						td.statsChan <- cc.mkUpdate(metricMissed, cc.statTotalMiss, "")
 						td.statsChan <- cc.mkUpdate(metricPrevote, cc.statPrevoteMiss, "")
 						td.statsChan <- cc.mkUpdate(metricPrecommit, cc.statPrecommitMiss, "")
-						td.statsChan <- cc.mkUpdate(metricConsecutive, cc.statConsecutiveMiss, "")
+						td.statsChan <- cc.mkUpdate(metricConsecutive, consecutiveMiss, "")
 						td.statsChan <- cc.mkUpdate(metricUnealthyNodes, float64(len(cc.Nodes)-healthyNodes), "")
 					}
 				}
@@ -202,11 +215,11 @@ func (cc *ChainConfig) WsRun() {
 	}()
 
 	voteChan := make(chan *WsReply)
-	go handleVotes(ctx, voteChan, resultChan, strings.ToUpper(hex.EncodeToString(cc.valInfo.Conspub)))
+	go handleVotes(ctx, voteChan, resultChan, strings.ToUpper(hex.EncodeToString(valInfo.Conspub)))
 
 	blockChan := make(chan *WsReply)
 	go func() {
-		e := handleBlocks(ctx, blockChan, resultChan, strings.ToUpper(hex.EncodeToString(cc.valInfo.Conspub)))
+		e := handleBlocks(ctx, blockChan, resultChan, strings.ToUpper(hex.EncodeToString(valInfo.Conspub)))
 		if e != nil {
 			l("🛑", cc.ChainId, e)
 			cancel()
@@ -249,10 +262,10 @@ func (cc *ChainConfig) WsRun() {
 			break
 		}
 	}
-	l(fmt.Sprintf("⚙️ %-12s watching for NewBlock and Vote events via %s", cc.ChainId, cc.client.Remote()))
+	l(fmt.Sprintf("⚙️ %-12s watching for NewBlock and Vote events via %s", cc.ChainId, client.Remote()))
 	for {
 		select {
-		case <-cc.client.Quit():
+		case <-client.Quit():
 			cancel()
 		case <-ctx.Done():
 			return

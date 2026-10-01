@@ -30,32 +30,44 @@ type ValInfo struct {
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
 func (cc *ChainConfig) GetValInfo(first bool) (err error) {
-	if cc.client == nil {
+	cc.refreshMux.Lock()
+	defer cc.refreshMux.Unlock()
+	client := cc.clientSnapshot()
+	info := &ValInfo{}
+	defer func() {
+		// Some consumer chains cannot answer slashing queries, but blocks can still be monitored.
+		if err != nil && info.Valcons != "" && len(info.Conspub) >= 20 {
+			cc.validatorMux.Lock()
+			cc.lastValInfo = cc.valInfo
+			cc.valInfo = info
+			cc.validatorMux.Unlock()
+		}
+	}()
+	if client == nil {
 		return errors.New("nil rpc client")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if cc.valInfo == nil {
-		cc.valInfo = &ValInfo{}
-	}
-
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
 	// it's easier to ask people to provide valoper since it's readily available on
 	// explorers, so make it easy and lookup the consensus key for them.
-	cc.valInfo.Conspub, cc.valInfo.Moniker, cc.valInfo.Jailed, cc.valInfo.Bonded, err = getVal(ctx, cc.client, cc.ValAddress)
+	info.Conspub, info.Moniker, info.Jailed, info.Bonded, err = getVal(ctx, client, cc.ValAddress)
 	if err != nil {
 		return
 	}
-	if first && cc.valInfo.Bonded {
-		l(fmt.Sprintf("⚙️ found %s (%s) in validator set", cc.ValAddress, cc.valInfo.Moniker))
-	} else if first && !cc.valInfo.Bonded {
-		l(fmt.Sprintf("❌ %s (%s) is INACTIVE", cc.ValAddress, cc.valInfo.Moniker))
+	if len(info.Conspub) < 20 {
+		return errors.New("invalid validator consensus key")
+	}
+	if first && info.Bonded {
+		l(fmt.Sprintf("⚙️ found %s (%s) in validator set", cc.ValAddress, info.Moniker))
+	} else if first && !info.Bonded {
+		l(fmt.Sprintf("❌ %s (%s) is INACTIVE", cc.ValAddress, info.Moniker))
 	}
 
 	if strings.Contains(cc.ValAddress, "valcons") {
 		// no need to change prefix for signing info query
-		cc.valInfo.Valcons = cc.ValAddress
+		info.Valcons = cc.ValAddress
 	} else {
 		// need to know the prefix for when we serialize the slashing info query, this is too fragile.
 		// for now, we perform specific chain overrides based on known values because the valoper is used
@@ -64,7 +76,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		split := strings.Split(cc.ValAddress, "valoper")
 		if len(split) != 2 {
 			if pre, ok := altValopers.getAltPrefix(cc.ValAddress); ok {
-				cc.valInfo.Valcons, err = bech32.ConvertAndEncode(pre, cc.valInfo.Conspub[:20])
+				info.Valcons, err = bech32.ConvertAndEncode(pre, info.Conspub[:20])
 				if err != nil {
 					return
 				}
@@ -74,25 +86,28 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 			}
 		} else {
 			prefix = split[0] + "valcons"
-			cc.valInfo.Valcons, err = bech32.ConvertAndEncode(prefix, cc.valInfo.Conspub[:20])
+			info.Valcons, err = bech32.ConvertAndEncode(prefix, info.Conspub[:20])
 			if err != nil {
 				return
 			}
 		}
 		if first {
-			l("⚙️", cc.ValAddress[:20], "... is using consensus key:", cc.valInfo.Valcons)
+			l("⚙️", cc.ValAddress, "is using consensus key:", info.Valcons)
 		}
 
 	}
 
 	// get current signing information (tombstoned, missed block count)
-	qSigning := slashing.QuerySigningInfoRequest{ConsAddress: cc.valInfo.Valcons}
+	qSigning := slashing.QuerySigningInfoRequest{ConsAddress: info.Valcons}
 	b, err := qSigning.Marshal()
 	if err != nil {
 		return
 	}
-	resp, err := cc.client.ABCIQuery(ctx, "/cosmos.slashing.v1beta1.Query/SigningInfo", b)
-	if resp == nil || resp.Response.Value == nil {
+	resp, err := client.ABCIQuery(ctx, "/cosmos.slashing.v1beta1.Query/SigningInfo", b)
+	if err != nil {
+		return
+	}
+	if resp == nil || resp.Response.Code != 0 || len(resp.Response.Value) == 0 {
 		err = errors.New("could not query validator slashing status, got empty response")
 		return
 	}
@@ -101,27 +116,24 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if err != nil {
 		return
 	}
-	cc.valInfo.Tombstoned = slash.ValSigningInfo.Tombstoned
-	if cc.valInfo.Tombstoned {
-		l(fmt.Sprintf("❗️☠️ %s (%s) is tombstoned 🪦❗️", cc.ValAddress, cc.valInfo.Moniker))
+	info.Tombstoned = slash.ValSigningInfo.Tombstoned
+	if info.Tombstoned {
+		l(fmt.Sprintf("❗️☠️ %s (%s) is tombstoned 🪦❗️", cc.ValAddress, info.Moniker))
 	}
-	cc.valInfo.Missed = slash.ValSigningInfo.MissedBlocksCounter
-	if td.Prom {
-		td.statsChan <- cc.mkUpdate(metricWindowMissed, float64(cc.valInfo.Missed), "")
-	}
+	info.Missed = slash.ValSigningInfo.MissedBlocksCounter
 
 	// finally get the signed blocks window
-	if cc.valInfo.Window == 0 {
+	if info.Window == 0 {
 		qParams := &slashing.QueryParamsRequest{}
 		b, err = qParams.Marshal()
 		if err != nil {
 			return
 		}
-		resp, err = cc.client.ABCIQuery(ctx, "/cosmos.slashing.v1beta1.Query/Params", b)
+		resp, err = client.ABCIQuery(ctx, "/cosmos.slashing.v1beta1.Query/Params", b)
 		if err != nil {
 			return
 		}
-		if resp.Response.Value == nil {
+		if resp == nil || resp.Response.Code != 0 || len(resp.Response.Value) == 0 {
 			err = errors.New("🛑 could not query slashing params, got empty response")
 			return
 		}
@@ -130,11 +142,21 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		if err != nil {
 			return
 		}
-		if first && td.Prom {
-			td.statsChan <- cc.mkUpdate(metricWindowSize, float64(params.Params.SignedBlocksWindow), "")
+		info.Window = params.Params.SignedBlocksWindow
+	}
+	if info.Window <= 0 {
+		return errors.New("invalid signed blocks window")
+	}
+	cc.validatorMux.Lock()
+	cc.lastValInfo = cc.valInfo
+	cc.valInfo = info
+	cc.validatorMux.Unlock()
+	if td.Prom {
+		td.statsChan <- cc.mkUpdate(metricWindowMissed, float64(info.Missed), "")
+		td.statsChan <- cc.mkUpdate(metricWindowSize, float64(info.Window), "")
+		if first {
 			td.statsChan <- cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), "")
 		}
-		cc.valInfo.Window = params.Params.SignedBlocksWindow
 	}
 	return
 }

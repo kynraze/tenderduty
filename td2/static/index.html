@@ -1,62 +1,123 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <style>
-      /*canvas {
-          image-rendering: -moz-crisp-edges;
-          image-rendering: -webkit-crisp-edges;
-          image-rendering: crisp-edges;
-      }*/
-  </style>
-  <meta charset="utf-8"/>
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="css/uikit.min.css" />
-  <title>Tenderduty Dashboard</title>
-  <script src="js/uikit.min.js"></script>
-  <script src="./js/uikit-icons.min.js"></script>
-  <script src="./js/lodash.min.js"></script>
-  <script type="application/javascript" src="grid.js"></script>
-  <script type="application/javascript" src="status.js"></script>
+  <meta name="theme-color" content="#0D151B">
+  <title>Tenderduty · Validator overview</title>
   <link rel="icon" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="appearance.js" defer></script>
+  <script src="status.js" defer></script>
 </head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="brand"><span class="brand-mark">td</span> Tenderduty</div>
+      <nav class="nav" aria-label="Main navigation">
+        <a class="active" href="#overview" aria-current="page">Overview</a>
+        <a href="#activity" id="activity-nav">Activity</a>
+      </nav>
+      <div class="side-bottom">
+        <strong id="monitor-state">Connecting to monitor</strong>
+        <span id="monitor-detail">Waiting for the first update</span>
+      </div>
+    </aside>
+    <main id="overview">
+      <header class="top">
+        <div>
+          <div class="eyebrow">Network operations</div>
+          <h1>Validator overview</h1>
+          <p>Find what needs attention, then inspect block and RPC evidence.</p>
+        </div>
+        <div class="header-actions"><div class="live" id="connection-state" aria-label="Monitor connection">Connecting</div><button type="button" id="customize-appearance">Customize</button></div>
+      </header>
 
-<body class="uk-background-secondary uk-light" onload="loadState(); legend()">
-<div class="uk-container uk-width-expand uk-height-viewport">
-  <div class="uk-width-expand uk-overflow-auto uk-background-secondary" id="canvasDiv">
-    <div style="width: 4835px;" class="uk-padding-remove-horizontal">
-      <canvas id="canvas" height="20" width="4735"></canvas>
+      <section class="strip" aria-label="Fleet summary">
+        <div class="metric"><div class="label">Monitored</div><div class="value"><span id="chain-count">—</span><small id="chain-count-label">validators</small></div></div>
+        <div class="metric urgent"><div class="label">Needs attention</div><div class="value"><span id="attention-count">—</span><small id="attention-count-label">validators</small></div></div>
+        <div class="metric warn"><div class="label">RPC degraded</div><div class="value"><span id="rpc-count">—</span><small id="rpc-count-label">validators</small></div></div>
+        <div class="metric"><div class="label">Data coverage</div><div class="value"><span id="coverage-count">—</span><small>validators reporting</small></div></div>
+      </section>
+
+      <section class="attention" id="attention-section" aria-label="Current priority" hidden>
+        <div class="alert danger">
+          <div class="sectioncap"><b>Current priority</b><span id="priority-count"></span></div>
+          <div class="alert-main"><strong id="priority-chain"></strong><span class="tag" id="priority-status"></span></div>
+          <p id="priority-detail"></p>
+        </div>
+        <div class="alert upgrade">
+          <div class="sectioncap"><b>Monitoring context</b></div>
+          <div class="alert-main"><strong id="priority-context"></strong></div>
+          <p id="priority-context-detail"></p>
+        </div>
+      </section>
+
+      <section aria-labelledby="chains-heading">
+        <div class="list-head">
+          <div><h2 id="chains-heading">All validators</h2><p>Latest 48 observed blocks · sort stays fixed while you inspect</p></div>
+          <div class="tools" role="group" aria-label="Filter validators">
+            <button type="button" class="tool current" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" class="tool" data-filter="attention" aria-pressed="false">Needs attention</button>
+            <button type="button" class="tool" data-filter="unavailable" aria-pressed="false">No data</button>
+            <button type="button" class="tool" id="sort-urgency">Sort by urgency</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table aria-label="Validator status by chain">
+            <colgroup><col style="width:19%"><col style="width:16%"><col style="width:14%"><col style="width:28%"><col style="width:15%"><col style="width:8%"></colgroup>
+            <thead><tr><th scope="col">Chain / validator</th><th scope="col">Status</th><th scope="col">Height</th><th scope="col">Block trace</th><th scope="col">Missed / window</th><th scope="col">RPC</th></tr></thead>
+            <tbody id="status-table"><tr><td colspan="6" class="empty">Waiting for chain data…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="below" id="activity" aria-labelledby="activity-heading">
+        <div id="log-section">
+          <h3 id="activity-heading">Monitor activity</h3>
+          <ol id="activity-list" class="activity-list"><li class="empty">Waiting for activity…</li></ol>
+        </div>
+        <div>
+          <h3>Block trace key</h3>
+          <div class="trace-key" aria-label="Block trace status key">
+            <span><i class="trace-mark signed"></i> Signed</span>
+            <span><i class="trace-mark proposed"></i> Proposed</span>
+            <span><i class="trace-mark precommit"></i> Precommit seen</span>
+            <span><i class="trace-mark prevote"></i> Prevote seen</span>
+            <span><i class="trace-mark missed"></i> Missed</span>
+            <span><i class="trace-mark unobserved"></i> No data</span>
+          </div>
+          <p class="footnote">A missing observation is not a signed block. The signing window count is chain state, not a 24-hour uptime rate.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="chain-dialog" aria-labelledby="detail-heading">
+    <div class="dialog-head">
+      <div><div class="eyebrow">Chain detail</div><h2 id="detail-heading"></h2><p id="detail-subtitle"></p></div>
+      <button type="button" id="detail-close" aria-label="Close chain detail">Close</button>
     </div>
-    <div id="legendContainer" class="uk-nav-center uk-background-secondary uk-padding-remove">
-      <canvas id="legend" height="32" width="700"></canvas>
-    </div>
-  </div>
-
-  <div class="uk-padding-small uk-text-small uk-background-secondary uk-overflow-auto" id="tableDiv">
-    <table class="uk-table uk-table-small uk-table-justify uk-padding-remove">
-      <thead>
-      <tr>
-        <th></th>
-        <th>Chain</th>
-        <th>Height</th>
-        <th>Moniker</th>
-        <th style="text-align: center">Bonded</th>
-        <th class="uk-text-center">Uptime</th>
-        <th class="uk-text-center">RPC Nodes</th>
-      </tr>
-      </thead>
-      <tbody id="statusTable"></tbody>
-    </table>
-  </div>
-
-  <div class="uk-padding-large uk-padding-remove-top" id="logContainer">
-    <pre id="logs" class="uk-panel-scrollable uk-resize-vertical" style="background: #080808; height: 300px;"></pre>
-  </div>
-
-  <div class="uk-text-small uk-text-center">
-    <a class="uk-link-muted" onclick="lightMode()"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-brightness-high" viewBox="0 0 16 16"><path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0zm0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13zm8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5zM3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8zm10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0zm-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0zm9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707zM4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708z"/></svg></a>
-    <a class="uk-link-muted" href="https://blockpane.com"><img src="bp-logo-text.svg" alt="[ block pane ]" style="height: 24px;"></a>
-    <a href="https://github.com/blockpane/tenderduty"><span uk-icon="github" style="color: grey"></span></a>
-  </div>
-</div>
+    <div id="detail-facts" class="detail-facts"></div>
+    <h3>Recent block history</h3>
+    <p class="footnote">Newest blocks appear first. Exact block heights are unavailable for restored history.</p>
+    <div id="detail-blocks" class="detail-blocks"></div>
+    <p id="detail-error" class="detail-error"></p>
+  </dialog>
+  <dialog id="appearance-dialog" aria-labelledby="appearance-heading">
+    <div class="dialog-head"><div><div class="eyebrow">Appearance</div><h2 id="appearance-heading">Customize appearance</h2><p>Preview changes live. Apply saves them in this browser.</p></div></div>
+    <label class="appearance-label" for="appearance-theme">Theme</label>
+    <select id="appearance-theme"><option value="graphite">Graphite</option><option value="midnight">Midnight</option><option value="paper">Paper</option><option value="warm-stone">Warm Stone</option><option value="custom">Custom</option></select>
+    <fieldset id="custom-colors" hidden>
+      <legend>Custom colors</legend>
+      <div class="color-field"><label for="appearance-background">Background</label><input type="color" id="appearance-background" aria-label="Background color picker"><input type="text" id="appearance-background-hex" aria-label="Background HEX color" maxlength="7" spellcheck="false"></div>
+      <div class="color-field"><label for="appearance-panel">Panel</label><input type="color" id="appearance-panel" aria-label="Panel color picker"><input type="text" id="appearance-panel-hex" aria-label="Panel HEX color" maxlength="7" spellcheck="false"></div>
+      <div class="color-field"><label for="appearance-accent">Accent</label><input type="color" id="appearance-accent" aria-label="Accent color picker"><input type="text" id="appearance-accent-hex" aria-label="Accent HEX color" maxlength="7" spellcheck="false"></div>
+    </fieldset>
+    <p class="footnote">Text and status colors adapt to keep labels readable. Reset previews the default Graphite theme.</p>
+    <p id="appearance-error" class="appearance-error" role="alert" hidden></p>
+    <div class="appearance-actions"><button type="button" id="appearance-reset">Reset</button><div><button type="button" id="appearance-cancel">Cancel</button><button type="button" id="appearance-apply">Apply</button></div></div>
+  </dialog>
+  <p id="appearance-feedback" class="sr-only" role="status"></p>
 </body>
 </html>

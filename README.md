@@ -39,12 +39,14 @@ Detailed installation info is in the [installation doc.](docs/install.md)
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
+docker run -d --name tenderduty -p "127.0.0.1:8888:8888" -p "127.0.0.1:28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
 
 ## Split Configuration
+
+Shared alert settings can be placed in `alert_defaults`, with only chain-specific overrides in each chain's `alerts` section. See the [configuration guide](docs/config.md) for examples, including several validators on one chain.
 
 For validators with many chains, chain specific configuration may be split into additional files and placed into the directory "chains.d".
 

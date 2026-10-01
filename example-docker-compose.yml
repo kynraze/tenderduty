@@ -32,11 +32,7 @@ services:
   caddy:
     image: caddy:2.3.0
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-      - "8888:8888"
-      - "28686:28686"
+      - "127.0.0.1:8888:8888"
     volumes:
       - ./caddy:/etc/caddy
       - caddy_data:/data

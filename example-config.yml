@@ -58,6 +58,27 @@ healthcheck:
   # Rate in which pings are sent in seconds.
   ping_rate: 60
 
+# These settings apply to every chain unless a chain overrides them.
+alert_defaults:
+  stalled_enabled: yes
+  stalled_minutes: 10
+  consecutive_enabled: yes
+  consecutive_missed: 5
+  consecutive_priority: critical
+  percentage_enabled: no
+  percentage_missed: 10
+  percentage_priority: warning
+  alert_if_inactive: yes
+  alert_if_no_servers: yes
+  pagerduty:
+    enabled: yes
+  discord:
+    enabled: yes
+  telegram:
+    enabled: yes
+  slack:
+    enabled: yes
+
 # The various chains to be monitored. Create a new entry for each chain. The name itself can be arbitrary, but a
 # user-friendly name is recommended.
 chains:
@@ -69,61 +90,21 @@ chains:
     # to convert ed25519 keys to the appropriate bech32 address.
     # Use valcons address if using ICS
     valoper_address: osmovaloper1xxxxxxx...
+    # To monitor several validators on this chain, replace valoper_address with:
+    # validators:
+    #   - name: Primary
+    #     valoper_address: osmovaloper1primary...
+    #   - name: Backup
+    #     valoper_address: osmovaloper1backup...
     # Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
     # This isn't always reliable, not all public nodes have websocket proxying setup correctly.
     public_fallback: no
 
-    # Controls various alert settings for each chain.
+    # Only settings that differ from alert_defaults need to be set here.
     alerts:
-      # If the chain stops seeing new blocks, should an alert be sent?
-      stalled_enabled: yes
-      # How long a halted chain takes in minutes to generate an alarm
-      stalled_minutes: 10
-
-      # Most basic alarm, you just missed x blocks ... would you like to know?
-      consecutive_enabled: yes
-      # How many missed blocks should trigger a notification?
-      consecutive_missed: 5
-      # Consecutive Missed alert Pagerduty Severity
-      consecutive_priority: critical
-
-      # For each chain there is a specific window of blocks and a percentage of missed blocks that will result in
-      # a downtime jail infraction. Should an alert be sent if a certain percentage of this window is exceeded?
-      percentage_enabled: no
-      # What percentage should trigger the alert
-      percentage_missed: 10
-      # Percentage Missed alert Pagerduty Severity
-      percentage_priority: warning
-
-      # Should an alert be sent if the validator is not in the active set ie, jailed,
-      # tombstoned, unbonding?
-      alert_if_inactive: yes
-      # Should an alert be sent if no RPC servers are responding? (Note this alarm is instantaneous with no delay)
-      alert_if_no_servers: yes
-
-      # for this *specific* chain it's possible to override alert settings. If the api_key or webhook addresses are empty,
-      # the global settings will be used. Note, enabled must be set both globally and for each chain.
-
-      # Chain specific setting for pagerduty
-      pagerduty:
-        enabled: yes
-        api_key: "" # uses default if blank
-
-      # Discord settings
-      discord:
-        enabled: yes
-        webhook: "" # uses default if blank
-
-      # Telegram settings
-      telegram:
-        enabled: yes
-        api_key: "" # uses default if blank
-        channel: "" # uses default if blank
-
-      # Slack settings
-      slack:
-        enabled: yes
-        webhook: "" # uses default if blank
+      consecutive_missed: 3
+      # telegram:
+      #   enabled: no
 
     # This section covers our RPC providers. No LCD (aka REST) endpoints are used, only TM's RPC endpoints
     # Multiple hosts are encouraged, and will be tried sequentially until a working endpoint is discovered.

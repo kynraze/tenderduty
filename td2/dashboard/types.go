@@ -12,8 +12,10 @@ type ChainStatus struct {
 	Window       int64  `json:"window"`
 	Nodes        int    `json:"nodes"`
 	HealthyNodes int    `json:"healthy_nodes"`
+	NoNodes      bool   `json:"no_nodes"`
 	ActiveAlerts int    `json:"active_alerts"`
 	Height       int64  `json:"height"`
+	LastBlockAt  int64  `json:"last_block_at"`
 	LastError    string `json:"last_error"`
 
 	Blocks []int `json:"blocks"`
