@@ -18,200 +18,166 @@ import (
 var td = &Config{}
 
 func Run(configFile, stateFile, chainConfigDirectory string, password *string) error {
+	return runContext(context.Background(), configFile, stateFile, chainConfigDirectory, password)
+}
+
+func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory string, password *string) error {
 	var err error
 	td, err = loadConfig(configFile, stateFile, chainConfigDirectory, password)
 	if err != nil {
 		return err
 	}
+	defer td.cancel()
+	defer td.deliveryCancel()
 	fatal, problems := validateConfig(td)
-	for _, p := range problems {
-		fmt.Println(p)
+	for _, problem := range problems {
+		fmt.Println(problem)
 	}
 	if fatal {
-		log.Fatal("tenderduty the configuration is invalid, refusing to start")
+		return errors.New("tenderduty configuration is invalid")
 	}
-	log.Println("tenderduty config is valid, starting tenderduty with", len(td.Chains), "chains")
-
-	defer td.cancel()
-
-	go func() {
+	log.Println("tenderduty config is valid, starting with", len(td.Chains), "chains")
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	failures := make(chan error, 2)
+	td.startWorker(func() {
+		select {
+		case <-ctx.Done():
+			td.cancel()
+		case <-td.ctx.Done():
+		}
+	})
+	td.restoreRecoveries()
+	td.startWorker(td.runNotifications)
+	if td.EnableDash {
+		td.startWorker(func() {
+			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus); err != nil {
+				failures <- err
+			}
+		})
+	} else {
+		td.startWorker(func() {
+			for {
+				select {
+				case <-td.updateChan:
+				case <-td.ctx.Done():
+					return
+				}
+			}
+		})
+	}
+	if td.Prom {
+		td.startWorker(func() {
+			if err := prometheusExporter(td.ctx, td.statsChan); err != nil {
+				failures <- err
+			}
+		})
+	} else {
+		td.startWorker(func() {
+			for {
+				select {
+				case <-td.statsChan:
+				case <-td.ctx.Done():
+					return
+				}
+			}
+		})
+	}
+	td.pingHealthcheck()
+	for _, chain := range td.Chains {
+		if chain.PublicFallback {
+			td.startWorker(func() {
+				for {
+					if err := refreshRegistry(td.ctx); err != nil {
+						l("could not refresh registry paths:", err)
+					}
+					if !waitContext(td.ctx, 12*time.Hour) {
+						return
+					}
+				}
+			})
+			break
+		}
+	}
+	for name, chain := range td.Chains {
+		name, chain := name, chain
+		td.startWorker(chain.watch)
+		td.startWorker(func() { chain.monitorHealth(td.ctx, name) })
+		td.startWorker(func() {
+			for td.ctx.Err() == nil {
+				if err := chain.newRpc(); err != nil {
+					l(chain.ChainId, err)
+					if !waitContext(td.ctx, 5*time.Second) {
+						return
+					}
+					continue
+				}
+				if err := chain.GetValInfo(true); err != nil {
+					l(chain.ChainId, err)
+					info, _ := chain.validatorState()
+					if len(info.Conspub) != 20 || info.Valcons == "" {
+						if !waitContext(td.ctx, 5*time.Second) {
+							return
+						}
+						continue
+					}
+				}
+				chain.WsRun()
+				if !waitContext(td.ctx, 5*time.Second) {
+					return
+				}
+			}
+		})
+	}
+	td.startWorker(func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
 		for {
 			select {
-			case alert := <-td.alertChan:
-				if alert.pd {
-					go deliverWithRetry(td.ctx, alert, pd, "pagerduty", notifyPagerduty)
-				}
-				if alert.disc {
-					go deliverWithRetry(td.ctx, alert, di, "discord", notifyDiscord)
-				}
-				if alert.tg {
-					go deliverWithRetry(td.ctx, alert, tg, "telegram", notifyTg)
-				}
-				if alert.slk {
-					go deliverWithRetry(td.ctx, alert, slk, "slack", notifySlack)
+			case <-ticker.C:
+				if err := td.persistState(); err != nil {
+					log.Println("could not save state:", err)
 				}
 			case <-td.ctx.Done():
 				return
 			}
 		}
-	}()
-	alarms.notifyMux.RLock()
-	recoveries := make([]pendingRecovery, 0, len(alarms.PendingRecoveries))
-	for _, recovery := range alarms.PendingRecoveries {
-		if recovery != nil {
-			recoveries = append(recoveries, *recovery)
-		}
+	})
+	select {
+	case <-signals:
+	case err = <-failures:
+	case <-td.ctx.Done():
 	}
-	alarms.notifyMux.RUnlock()
-	for _, recovery := range recoveries {
-		if td.Chains[recovery.Chain] != nil {
-			td.alert(recovery.Chain, recovery.Message, recovery.Severity, true, &recovery.ID)
-		}
+	td.cancel()
+	stopped := make(chan struct{})
+	go func() { td.workers.Wait(); close(stopped) }()
+	// Allow accepted notification requests to finish before saving final delivery state.
+	select {
+	case <-stopped:
+	case <-time.After(20 * time.Second):
+		td.deliveryCancel()
+		<-stopped
 	}
-
-	if td.EnableDash {
-		go dash.Serve(td.Listen, td.updateChan, td.logChan, td.HideLogs)
-		l("starting dashboard on", td.Listen)
-	} else {
-		go func() {
-			for {
-				<-td.updateChan
-			}
-		}()
+	if saveErr := td.persistState(); saveErr != nil {
+		return fmt.Errorf("could not save final state: %w", saveErr)
 	}
-	if td.Prom {
-		go prometheusExporter(td.ctx, td.statsChan)
-	} else {
-		go func() {
-			for {
-				<-td.statsChan
-			}
-		}()
-	}
-
-	// tenderduty health checks:
-	if td.Healthcheck.Enabled {
-		td.pingHealthcheck()
-	}
-
-	for k := range td.Chains {
-		cc := td.Chains[k]
-
-		go func(cc *ChainConfig, name string) {
-			// alert worker
-			go cc.watch()
-
-			// node health checks:
-			go cc.monitorHealth(td.ctx, name)
-
-			// websocket subscription and occasional validator info refreshes
-			for {
-				select {
-				case <-td.ctx.Done():
-					return
-				default:
-				}
-				e := cc.newRpc()
-				if e != nil {
-					l(cc.ChainId, e)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				e = cc.GetValInfo(true)
-				if e != nil {
-					l("🛑", cc.ChainId, e)
-					info, _ := cc.validatorState()
-					if len(info.Conspub) == 0 || info.Valcons == "" {
-						time.Sleep(5 * time.Second)
-						continue
-					}
-				}
-				cc.WsRun()
-				l(cc.ChainId, "🌀 websocket exited! Restarting monitoring")
-				time.Sleep(5 * time.Second)
-			}
-		}(cc, k)
-	}
-
-	// save state periodically and on exit
-	saved := make(chan interface{})
-	go saveOnExit(stateFile, saved)
-
-	<-td.ctx.Done()
-	<-saved
-
 	return err
 }
 
-func deliverWithRetry(ctx context.Context, msg *alertMsg, dest notifyDest, service string, send func(*alertMsg) error) {
-	delay := 5 * time.Second
-	for attempt := 0; ; attempt++ {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if attempt > 0 && !msg.resolved && !alarmActive(msg) {
-			return
-		}
-		err := send(msg)
-		if err == nil {
-			return
-		}
-		if !errors.Is(err, errNotificationBusy) {
-			l(msg.chain, "error sending alert to", service, err.Error())
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
-		}
-		if delay < 5*time.Minute {
-			delay *= 2
-			if delay > 5*time.Minute {
-				delay = 5 * time.Minute
-			}
-		}
-	}
-}
-
-func saveOnExit(stateFile string, saved chan interface{}) {
-	quitting := make(chan os.Signal, 1)
-	signal.Notify(quitting, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(quitting)
-	defer close(saved)
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := saveState(stateFile); err != nil {
-				log.Println("could not save state:", err)
-			}
-		case <-td.ctx.Done():
-			if err := saveState(stateFile); err != nil {
-				log.Println("could not save state:", err)
-			}
-			return
-		case <-quitting:
-			td.cancel()
-			if err := saveState(stateFile); err != nil {
-				log.Println("could not save state:", err)
-			}
-			return
-		}
-	}
-}
-
 func saveState(stateFile string) error {
+	td.saveMux.Lock()
+	defer td.saveMux.Unlock()
 	td.chainsMux.RLock()
 	blocks := make(map[string][]int)
 	lastBlocks := make(map[string]time.Time)
+	heights := make(map[string]int64)
 	nodesDown := make(map[string]map[string]time.Time)
 	for name, chain := range td.Chains {
 		chain.stateMux.RLock()
 		blocks[name] = append([]int(nil), chain.blocksResults...)
 		lastBlocks[name] = chain.lastBlockTime
+		heights[name] = chain.lastBlockNum
 		chain.stateMux.RUnlock()
 		for _, node := range chain.Nodes {
 			status := node.snapshot()
@@ -226,7 +192,7 @@ func saveState(stateFile string) error {
 	td.chainsMux.RUnlock()
 
 	alarms.notifyMux.RLock()
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

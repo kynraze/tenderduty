@@ -3,12 +3,12 @@ name: Gosec
 on:
   push:
     branches:
-      - master
+      - main
       - release/*
       - develop
   pull_request:
     branches:
-      - master
+      - main
       - release/v2
       - develop
 jobs:

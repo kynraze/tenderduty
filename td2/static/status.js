@@ -48,6 +48,9 @@ function stateFor(chain) {
         return { label: 'No data', tone: 'unknown', rank: 1 }
     }
     if (chain.active_alerts > 0) return { label: 'Needs attention', tone: 'red', rank: 2 }
+    if (chain.monitoring === false) return { label: 'Monitoring interrupted', tone: 'amber', rank: 3 }
+    if (chain.validator_stale) return { label: 'Validator info stale', tone: 'unknown', rank: 3 }
+    if (chain.signing_stale) return { label: 'Signing info stale', tone: 'unknown', rank: 3 }
     if (chain.last_block_at && Date.now() / 1000 - chain.last_block_at > 600) {
         return { label: 'No recent blocks', tone: 'amber', rank: 3 }
     }
@@ -152,7 +155,7 @@ function renderRow(chain) {
 
     const missed = element('td')
     missed.appendChild(element('span', 'mono', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : '—'))
-    missed.appendChild(element('small', 'cell-detail', 'current signing window'))
+    missed.appendChild(element('small', 'cell-detail', chain.signing_stale ? 'last known signing window' : 'current signing window'))
     row.appendChild(missed)
 
     const rpc = element('td')
@@ -197,7 +200,7 @@ function showDetail(name) {
         ['Status', stateFor(chain).label],
         ['Height', chain.height > 0 ? number(chain.height) : 'Unavailable'],
         ['Last observed block', age(chain.last_block_at)],
-        ['Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : 'Unavailable'],
+        [chain.signing_stale ? 'Missed / signing window (last known)' : 'Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : 'Unavailable'],
         ['Healthy RPC endpoints', `${chain.healthy_nodes} / ${chain.nodes}`],
         ['Active alerts', String(chain.active_alerts || 0)]
     ]

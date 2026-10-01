@@ -82,7 +82,7 @@ brew install go
 Clone the repository before building because its dependencies use replace directives in `go.mod`.
 
 ```
-git clone --branch master https://github.com/kynraze/tenderduty.git
+git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
 cp example-config.yml config.yml
 # edit config.yml with your favorite editor
@@ -95,7 +95,7 @@ go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 This runs one Tenderduty process for all configured chains. Go and Git are needed to build the binary; Go is not needed by the installed service. Install Go using the instructions above, then build this fork:
 
 ```shell
-git clone --branch master https://github.com/kynraze/tenderduty.git
+git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
 go mod download
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .

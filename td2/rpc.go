@@ -8,23 +8,19 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync"
 	"time"
 
-	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
 // newRpc sets up the rpc client used for monitoring. It will try nodes in order until a working node is found.
 // it will also get some initial info on the validator's status.
 func (cc *ChainConfig) newRpc() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var anyWorking bool // if healthchecks are running, we will skip to the first known good node.
-	for _, endpoint := range cc.Nodes {
-		anyWorking = anyWorking || !endpoint.snapshot().down
-	}
 	// grab the first working endpoint
 	tryUrl := func(u string) (msg string, down, syncing bool) {
+		ctx, cancel := context.WithTimeout(td.context(), 10*time.Second)
+		defer cancel()
 		_, err := url.Parse(u)
 		if err != nil {
 			msg = fmt.Sprintf("❌ could not parse url %s: (%s) %s", cc.name, u, err)
@@ -63,19 +59,28 @@ func (cc *ChainConfig) newRpc() error {
 		cc.setClient(client)
 		return
 	}
-	for _, endpoint := range cc.Nodes {
-		if anyWorking && endpoint.snapshot().down {
-			continue
+	cc.stateMux.RLock()
+	next := cc.rpcNext
+	cc.stateMux.RUnlock()
+	for i := range cc.Nodes {
+		if td.context().Err() != nil {
+			return td.context().Err()
 		}
+		index := (next + i) % len(cc.Nodes)
+		endpoint := cc.Nodes[index]
 		if msg, failed, syncing := tryUrl(endpoint.Url); failed {
 			endpoint.markDown(msg, syncing)
 			continue
 		}
+		endpoint.markHealthy()
+		cc.stateMux.Lock()
+		cc.rpcNext = (index + 1) % len(cc.Nodes)
+		cc.stateMux.Unlock()
 		return nil
 	}
 	if cc.PublicFallback {
 		if u, ok := getRegistryUrl(cc.ChainId); ok {
-			node := guessPublicEndpoint(u)
+			node := guessPublicEndpoint(td.context(), u)
 			l(cc.ChainId, "⛑ attemtping to use public fallback node", node)
 			if _, kk, _ := tryUrl(node); !kk {
 				l(cc.ChainId, "⛑ connected to public endpoint", node)
@@ -86,26 +91,8 @@ func (cc *ChainConfig) newRpc() error {
 		}
 	}
 	cc.setNoNodes(true)
-	cc.lastError = "no usable RPC endpoints available for " + cc.ChainId
 	if td.EnableDash {
-		info, _ := cc.validatorState()
-		td.updateChan <- &dash.ChainStatus{
-			MsgType:      "status",
-			Name:         cc.name,
-			ChainId:      cc.ChainId,
-			Moniker:      info.Moniker,
-			Bonded:       info.Bonded,
-			Jailed:       info.Jailed,
-			Tombstoned:   info.Tombstoned,
-			Missed:       info.Missed,
-			Window:       info.Window,
-			Nodes:        len(cc.Nodes),
-			HealthyNodes: 0,
-			ActiveAlerts: 1,
-			Height:       0,
-			LastError:    cc.lastError,
-			Blocks:       cc.blocksSnapshot(),
-		}
+		td.sendUpdate(cc.dashboardStatus())
 	}
 	return errors.New("no usable endpoints available for " + cc.ChainId)
 }
@@ -113,6 +100,8 @@ func (cc *ChainConfig) newRpc() error {
 func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
+	var checks sync.WaitGroup
+	defer checks.Wait()
 
 	for {
 		select {
@@ -122,7 +111,9 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 		case <-tick.C:
 			var err error
 			for _, node := range cc.Nodes {
+				checks.Add(1)
 				go func(node *NodeConfig) {
+					defer checks.Done()
 					alert := func(msg string) {
 						status := node.markDown(fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
 						if !node.AlertIfDown {
@@ -130,7 +121,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 							return
 						}
 						if td.Prom {
-							td.statsChan <- cc.mkUpdate(metricNodeDownSeconds, time.Since(status.downSince).Seconds(), node.Url)
+							td.sendStat(cc.mkUpdate(metricNodeDownSeconds, time.Since(status.downSince).Seconds(), node.Url))
 						}
 						l("⚠️ " + status.lastMsg)
 					}
@@ -139,7 +130,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 						alert(e.Error())
 						return
 					}
-					cwt, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					cwt, cancel := context.WithTimeout(ctx, 10*time.Second)
 					status, e := c.Status(cwt)
 					cancel()
 					if e != nil {
@@ -156,7 +147,9 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 					}
 
 					// node's OK, clear the note
-					td.statsChan <- cc.mkUpdate(metricNodeDownSeconds, 0, node.Url)
+					if td.Prom {
+						td.sendStat(cc.mkUpdate(metricNodeDownSeconds, 0, node.Url))
+					}
 					node.markHealthy()
 					cc.setNoNodes(false)
 					l(fmt.Sprintf("🟢 %-12s node %s is healthy", chainName, node.Url))
@@ -178,24 +171,40 @@ func (c *Config) pingHealthcheck() {
 
 	ticker := time.NewTicker(c.Healthcheck.PingRate * time.Second)
 
-	go func() {
+	c.startWorker(func() {
 		defer ticker.Stop()
 		client := &http.Client{Timeout: 10 * time.Second}
 		for {
 			select {
 			case <-ticker.C:
-				response, err := client.Get(c.Healthcheck.PingURL)
+				err := pingURL(c.ctx, client, c.Healthcheck.PingURL)
 				if err != nil {
 					l(fmt.Sprintf("❌ Failed to ping healthcheck URL: %s", err.Error()))
 				} else {
-					_ = response.Body.Close()
-					l(fmt.Sprintf("🏓 Successfully pinged healthcheck URL: %s", c.Healthcheck.PingURL))
+					status := c.healthStatus()
+					l(fmt.Sprintf("🏓 Process heartbeat accepted; monitoring %d/%d validators", status.Monitoring, status.Validators))
 				}
 			case <-c.ctx.Done():
 				return
 			}
 		}
-	}()
+	})
+}
+
+func pingURL(ctx context.Context, client *http.Client, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("healthcheck returned status %d", response.StatusCode)
+	}
+	return nil
 }
 
 // endpointRex matches the first a tag's hostname and port if present.
@@ -204,14 +213,18 @@ var endpointRex = regexp.MustCompile(`//([^/:]+)(:\d+)?`)
 // guessPublicEndpoint attempts to deal with a shortcoming in the tendermint RPC client that doesn't allow path prefixes.
 // The cosmos.directory requires them. This is a workaround to get the actual URL for the server behind their proxy.
 // The RPC base URL will return links endpoints, and we can parse this to guess the original URL.
-func guessPublicEndpoint(u string) string {
+func guessPublicEndpoint(ctx context.Context, u string) string {
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(u + "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"/", nil)
+	if err != nil {
+		return u
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return u
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return u
 	}

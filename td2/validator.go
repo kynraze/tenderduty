@@ -18,14 +18,17 @@ import (
 
 // ValInfo holds most of the stats/info used for secondary alarms. It is refreshed roughly every minute.
 type ValInfo struct {
-	Moniker    string `json:"moniker"`
-	Bonded     bool   `json:"bonded"`
-	Jailed     bool   `json:"jailed"`
-	Tombstoned bool   `json:"tombstoned"`
-	Missed     int64  `json:"missed"`
-	Window     int64  `json:"window"`
-	Conspub    []byte `json:"conspub"`
-	Valcons    string `json:"valcons"`
+	Moniker          string    `json:"moniker"`
+	Bonded           bool      `json:"bonded"`
+	Jailed           bool      `json:"jailed"`
+	Tombstoned       bool      `json:"tombstoned"`
+	Missed           int64     `json:"missed"`
+	Window           int64     `json:"window"`
+	Conspub          []byte    `json:"conspub"`
+	Valcons          string    `json:"valcons"`
+	SigningUpdatedAt time.Time `json:"signing_updated_at"`
+	SigningStale     bool      `json:"signing_stale"`
+	ValidatorStale   bool      `json:"validator_stale"`
 }
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
@@ -34,9 +37,22 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	defer cc.refreshMux.Unlock()
 	client := cc.clientSnapshot()
 	info := &ValInfo{}
+	signingRead := false
+	previous, _ := cc.validatorState()
 	defer func() {
 		// Some consumer chains cannot answer slashing queries, but blocks can still be monitored.
-		if err != nil && info.Valcons != "" && len(info.Conspub) >= 20 {
+		if err != nil {
+			if info.Valcons == "" || len(info.Conspub) < 20 {
+				info = previous
+				info.ValidatorStale = true
+			} else if info.Valcons == previous.Valcons {
+				if !signingRead {
+					info.Tombstoned, info.Missed = previous.Tombstoned, previous.Missed
+				}
+				info.Window = previous.Window
+				info.SigningUpdatedAt = previous.SigningUpdatedAt
+			}
+			info.SigningStale = true
 			cc.validatorMux.Lock()
 			cc.lastValInfo = cc.valInfo
 			cc.valInfo = info
@@ -46,7 +62,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if client == nil {
 		return errors.New("nil rpc client")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(td.context(), 10*time.Second)
 	defer cancel()
 
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
@@ -121,6 +137,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		l(fmt.Sprintf("❗️☠️ %s (%s) is tombstoned 🪦❗️", cc.ValAddress, info.Moniker))
 	}
 	info.Missed = slash.ValSigningInfo.MissedBlocksCounter
+	signingRead = true
 
 	// finally get the signed blocks window
 	if info.Window == 0 {
@@ -147,15 +164,16 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if info.Window <= 0 {
 		return errors.New("invalid signed blocks window")
 	}
+	info.SigningUpdatedAt = time.Now()
 	cc.validatorMux.Lock()
 	cc.lastValInfo = cc.valInfo
 	cc.valInfo = info
 	cc.validatorMux.Unlock()
 	if td.Prom {
-		td.statsChan <- cc.mkUpdate(metricWindowMissed, float64(info.Missed), "")
-		td.statsChan <- cc.mkUpdate(metricWindowSize, float64(info.Window), "")
+		td.sendStat(cc.mkUpdate(metricWindowMissed, float64(info.Missed), ""))
+		td.sendStat(cc.mkUpdate(metricWindowSize, float64(info.Window), ""))
 		if first {
-			td.statsChan <- cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), "")
+			td.sendStat(cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), ""))
 		}
 	}
 	return
@@ -184,7 +202,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 	if err != nil {
 		return
 	}
-	if resp.Response.Value == nil {
+	if resp == nil || resp.Response.Code != 0 || len(resp.Response.Value) == 0 {
 		return nil, "", false, false, errors.New("could not find validator " + valoper)
 	}
 	val := &staking.QueryValidatorResponse{}

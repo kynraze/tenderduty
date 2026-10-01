@@ -38,18 +38,43 @@ A dashboard for displaying status.
 - Filters make it possible to focus on chains that need attention or have no data.
 - Shows the last observed block time and browser connection state separately.
 - Designed intentionally for maximum density for validators on a lot of chains.
-- Dark/light display modes.
-- Appearance presets include Graphite, Midnight, Paper, and Warm Stone. Customize allows background, panel, and accent colors with live preview, Apply, Cancel, and Reset.
-- Appearance preferences are stored in each browser. Invalid or unreadable color combinations cannot be applied; unavailable browser storage falls back to session-only preferences.
+- Four appearance presets and custom colors. See [Dashboard Appearance](#dashboard-appearance) below.
 - Optionally shows a real-time stream of log messages with details about ongoing health checks.
 
 The missed count is labeled as a signing-window value. It is not a daily uptime percentage. State is saved every minute and on shutdown using a temporary file before replacing the previous snapshot.
 
-Failed notification deliveries are retried with a delay. Delivery state is recorded only after the destination accepts the message. Pending recovery notifications are saved and resumed after a restart.
+Failed notification deliveries are retried with a delay. Alerts and recoveries are queued in order for each incident and destination, and saved before delivery. An incident that recovers before its first delivery is skipped. Pending notifications resume after a restart using the current notification settings. Delivery state is recorded only after the destination accepts the message.
+
+Signing-query failures retain the last known values and mark them as stale. Stale signing data cannot clear percentage or tombstone alerts; failed validator-status queries cannot clear inactive alerts. RPC endpoints have independent connection timeouts, and reconnects rotate through the configured endpoints. Block signatures are checked against their commit height; missing observations across reconnects are shown as unknown.
+
+During shutdown, monitoring workers stop and active notification requests have up to 20 seconds to finish before cancellation. The final state is saved after workers exit. If a destination accepts a message just before a crash prevents its acknowledgement from being saved, the message may be delivered again after restart.
+
+When the dashboard is enabled, `/health` reports process liveness and `/ready` reports monitoring readiness. `/ready` returns HTTP 503 when any configured validator has no active stream of recent block observations. Both responses include counts for monitored validators, unavailable RPC connections, and stale validator information. The outbound healthcheck remains a process heartbeat; only HTTP 2xx responses count as successful pings.
 
 ![dashboard screenshot](dash.png)
 
 The screenshot uses example data.
+
+## Dashboard Appearance
+
+Click **Customize** in the dashboard to select a theme:
+
+| Theme | Appearance |
+| --- | --- |
+| Graphite | Dark charcoal with a teal accent; the default theme. |
+| Midnight | Dark navy with a blue accent. |
+| Paper | Light surfaces with a teal accent. |
+| Warm Stone | Warm light surfaces with a brown accent. |
+| Custom | Your own background, panel, and accent colors. |
+
+For **Custom**, use the color pickers or enter six-digit HEX colors, such as `#17212B`. Text and status colors adapt automatically. Invalid colors and combinations with insufficient text or accent contrast show an error and disable **Apply**.
+
+- Changes preview live while the dialog is open.
+- **Apply** saves the selected appearance in this browser.
+- **Cancel**, or pressing Escape, restores the previously applied appearance.
+- **Reset** previews Graphite. Click **Apply** to save the reset.
+
+Appearance settings are independent of `config.yml`, alert settings, and other visitors' preferences. They persist across reloads in the same browser. If browser storage is unavailable, changes apply for the current session only. Existing light-mode preferences migrate to Paper.
 
 ## System Requirements:
 

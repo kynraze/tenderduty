@@ -30,12 +30,17 @@ const (
 
 // Config holds both the settings for tenderduty to monitor and state information while running.
 type Config struct {
-	alertChan  chan *alertMsg // channel used for outgoing notifications
-	updateChan chan *dash.ChainStatus
-	logChan    chan dash.LogMessage
-	statsChan  chan *promUpdate
-	ctx        context.Context
-	cancel     context.CancelFunc
+	alertChan      chan *alertMsg // channel used for outgoing notifications
+	updateChan     chan *dash.ChainStatus
+	logChan        chan dash.LogMessage
+	statsChan      chan *promUpdate
+	ctx            context.Context
+	cancel         context.CancelFunc
+	workers        sync.WaitGroup
+	stateFile      string
+	saveMux        sync.Mutex
+	deliveryCtx    context.Context
+	deliveryCancel context.CancelFunc
 
 	// EnableDash enables the web dashboard
 	EnableDash bool `yaml:"enable_dashboard"`
@@ -77,6 +82,7 @@ type Config struct {
 // savedState is dumped to a JSON file at exit time, and is loaded at start. If successful it will prevent
 // duplicate alerts, and will show old blocks in the dashboard.
 type savedState struct {
+	Heights    map[string]int64                `json:"heights,omitempty"`
 	Alarms     *alarmCache                     `json:"alarms"`
 	Blocks     map[string][]int                `json:"blocks"`
 	LastBlocks map[string]time.Time            `json:"last_blocks"`
@@ -86,21 +92,22 @@ type savedState struct {
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
 // validators can be monitored on a single chain.
 type ChainConfig struct {
-	stateMux       sync.RWMutex
-	validatorMux   sync.RWMutex
-	refreshMux     sync.Mutex
-	name           string
-	wsclient       *TmConn       // custom websocket client to work around wss:// bugs in tendermint
-	client         *rpchttp.HTTP // legit tendermint client
-	noNodes        bool          // tracks if all nodes are down
-	valInfo        *ValInfo      // recent validator state, only refreshed every few minutes
-	lastValInfo    *ValInfo      // use for detecting newly-jailed/tombstone
-	blocksResults  []int
-	lastError      string
-	lastBlockTime  time.Time
-	lastBlockAlarm bool
-	lastBlockNum   int64
-	observedBlock  bool
+	stateMux        sync.RWMutex
+	validatorMux    sync.RWMutex
+	refreshMux      sync.Mutex
+	name            string
+	client          *rpchttp.HTTP // legit tendermint client
+	noNodes         bool          // tracks if all nodes are down
+	rpcNext         int
+	monitoring      bool
+	monitoringSince time.Time
+	valInfo         *ValInfo // recent validator state, only refreshed every few minutes
+	lastValInfo     *ValInfo // use for detecting newly-jailed/tombstone
+	blocksResults   []int
+	lastBlockTime   time.Time
+	lastBlockAlarm  bool
+	lastBlockNum    int64
+	observedBlock   bool
 
 	statTotalSigns      float64
 	statTotalProps      float64
@@ -285,7 +292,6 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		c.NodeDownSeverity = "critical"
 	}
 
-	var wantsPublic bool
 	for k, v := range c.Chains {
 		if v == nil {
 			fatal = true
@@ -334,9 +340,6 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		}
 		if v.name == "" {
 			v.name = k
-		}
-		if v.PublicFallback {
-			wantsPublic = true
 		}
 
 		v.valInfo = &ValInfo{Moniker: "not connected"}
@@ -433,23 +436,6 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		}
 	}
 
-	// if public endpoints are enabled we do our best to keep the list refreshed. Immediate, then every 12 hours.
-	if wantsPublic {
-		go func() {
-			e := refreshRegistry()
-			if e != nil {
-				l("could not fetch chain registry paths, using defaults")
-			}
-			for {
-				time.Sleep(12 * time.Hour)
-				l("refreshing cosmos.registry paths")
-				e = refreshRegistry()
-				if e != nil {
-					l("could not refresh registry paths -", e)
-				}
-			}
-		}()
-	}
 	return
 }
 
@@ -566,22 +552,25 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		return nil, err
 	}
 
-	c.alertChan = make(chan *alertMsg)
-	c.logChan = make(chan dash.LogMessage)
+	c.alertChan = make(chan *alertMsg, len(c.Chains)*4)
+	c.logChan = make(chan dash.LogMessage, 128)
 	// buffer enough to get through validateConfig()
 	c.updateChan = make(chan *dash.ChainStatus, len(c.Chains)*2)
 	c.statsChan = make(chan *promUpdate, len(c.Chains)*2)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.deliveryCtx, c.deliveryCancel = context.WithCancel(context.Background())
+	c.stateFile = stateFile
 
+	alarms = newAlarmCache()
 	saved := &savedState{}
 	//#nosec -- variable specified on command line
 	b, e := os.ReadFile(stateFile)
 	if e == nil {
 		if e = json.Unmarshal(b, saved); e != nil {
-			l("could not unmarshal saved state", e.Error())
+			return nil, fmt.Errorf("could not decode saved state: %w", e)
 		}
 	} else if !os.IsNotExist(e) {
-		l("could not load saved state", e.Error())
+		return nil, fmt.Errorf("could not load saved state: %w", e)
 	}
 	for k, v := range saved.Blocks {
 		if c.Chains[k] != nil {
@@ -601,8 +590,15 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		}
 	}
 
+	for name, height := range saved.Heights {
+		if c.Chains[name] != nil {
+			c.Chains[name].lastBlockNum = height
+		}
+	}
 	// restore alarm state to prevent duplicate alerts
 	if saved.Alarms != nil {
+		alarms.Outbox = saved.Alarms.Outbox
+		alarms.NextNotification = saved.Alarms.NextNotification
 		if saved.Alarms.PendingRecoveries != nil {
 			alarms.PendingRecoveries = saved.Alarms.PendingRecoveries
 		}
@@ -677,6 +673,6 @@ func clearStale(alarms map[string]time.Time, what string, hasPagerduty bool, hou
 			delete(alarms, k)
 			continue
 		}
-		l("📂 restored %s alarm state -", what, k)
+		l("📂 restored", what, "alarm state -", k)
 	}
 }

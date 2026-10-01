@@ -16,10 +16,12 @@ import (
 )
 
 type alertMsg struct {
-	pd   bool
-	disc bool
-	tg   bool
-	slk  bool
+	ctx     context.Context
+	ordered bool
+	pd      bool
+	disc    bool
+	tg      bool
+	slk     bool
 
 	severity string
 	resolved bool
@@ -55,6 +57,8 @@ type alarmCache struct {
 	SentSlkAlarms     map[string]time.Time            `json:"sent_slk_alarms"`
 	AllAlarms         map[string]map[string]time.Time `json:"sent_all_alarms"`
 	PendingRecoveries map[string]*pendingRecovery     `json:"pending_recoveries,omitempty"`
+	Outbox            []queuedNotification            `json:"outbox,omitempty"`
+	NextNotification  uint64                          `json:"next_notification,omitempty"`
 	flappingAlarms    map[string]map[string]time.Time
 	inFlight          map[notifyDest]map[string]bool
 	notifyMux         sync.RWMutex
@@ -120,7 +124,7 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 	}
 	// Old state files used the message alone as the key.
 	sent := !whichMap[key].IsZero() || !whichMap[msg.message].IsZero()
-	if !msg.resolved && sent && alarms.PendingRecoveries[key] != nil {
+	if !msg.ordered && !msg.resolved && sent && alarms.PendingRecoveries[key] != nil {
 		return false, errNotificationBusy
 	}
 	if sent != msg.resolved {
@@ -252,7 +256,7 @@ func notifySlack(msg *alertMsg) (err error) {
 		return
 	}
 
-	req, err := http.NewRequest("POST", msg.slkHook, bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.slkHook, bytes.NewBuffer(data))
 	if err != nil {
 		return
 	}
@@ -320,7 +324,7 @@ func notifyDiscord(msg *alertMsg) (err error) {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", msg.discHook, bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.discHook, bytes.NewBuffer(data))
 	if err != nil {
 		l("⚠️ Could not notify discord!", err)
 		return err
@@ -377,7 +381,7 @@ func notifyTg(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, tg, err) }()
-	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, &http.Client{Timeout: 10 * time.Second})
+	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, notificationClient{ctx: msg.context(), client: &http.Client{Timeout: 10 * time.Second}})
 	if err != nil {
 		l("notify telegram:", err)
 		return
@@ -413,7 +417,7 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 	if msg.resolved {
 		action = "resolve"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(msg.context(), 10*time.Second)
 	defer cancel()
 	_, err = pagerduty.ManageEventWithContext(ctx, pagerduty.V2Event{
 		RoutingKey: msg.key,
@@ -442,13 +446,17 @@ func getAlarms(chain string) string {
 	return result
 }
 
-// alert creates a universal alert and pushes it to the alertChan to be delivered to appropriate services
-func (c *Config) alert(chainName, message, severity string, resolved bool, id *string) {
+// makeAlert resolves notification credentials from the current configuration.
+func (c *Config) makeAlert(chainName, message, severity string, resolved bool, id *string) *alertMsg {
+	c.chainsMux.RLock()
+	defer c.chainsMux.RUnlock()
+	if c.Chains[chainName] == nil {
+		return nil
+	}
 	uniq := c.Chains[chainName].ValAddress
 	if id != nil && *id != "" {
 		uniq = *id
 	}
-	c.chainsMux.RLock()
 	a := &alertMsg{
 		pd:           c.Pagerduty.Enabled && c.Chains[chainName].Alerts.Pagerduty.Enabled,
 		disc:         c.Discord.Enabled && c.Chains[chainName].Alerts.Discord.Enabled,
@@ -467,6 +475,16 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 		discMentions: strings.Join(c.Chains[chainName].Alerts.Discord.Mentions, " "),
 		slkHook:      c.Chains[chainName].Alerts.Slack.Webhook,
 	}
+	return a
+}
+
+// alert records the incident and its ordered notification queue before waking delivery workers.
+func (c *Config) alert(chainName, message, severity string, resolved bool, id *string) {
+	a := c.makeAlert(chainName, message, severity, resolved, id)
+	if a == nil {
+		return
+	}
+	uniq := a.uniqueId
 	alarms.notifyMux.Lock()
 	key := chainName + "\x00" + message
 	if alarms.AllAlarms[chainName] == nil {
@@ -480,9 +498,15 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
 		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq}
 	}
+	alarms.enqueue(a)
 	alarms.notifyMux.Unlock()
-	c.alertChan <- a
-	c.chainsMux.RUnlock()
+	if err := c.persistState(); err != nil {
+		l("could not persist alert:", err)
+	}
+	select {
+	case c.alertChan <- a:
+	default:
+	}
 }
 
 // watch handles monitoring for missed blocks, stalled chain, node downtime
@@ -503,7 +527,9 @@ func (cc *ChainConfig) watch() {
 		}
 		valInfo, _ = cc.validatorState()
 		if valInfo == nil || valInfo.Moniker == "not connected" {
-			time.Sleep(time.Second)
+			if !waitContext(td.context(), time.Second) {
+				return
+			}
 			if cc.Alerts.AlertIfNoServers && !noNodes && cc.hasNoNodes() && noNodesSec >= 60*td.NodeDownMin {
 				noNodes = true
 				td.alert(
@@ -533,12 +559,14 @@ func (cc *ChainConfig) watch() {
 	// initial stat creation for nodes, we only update again if the node is positive
 	if td.Prom {
 		for _, node := range cc.Nodes {
-			td.statsChan <- cc.mkUpdate(metricNodeDownSeconds, 0, node.Url)
+			td.sendStat(cc.mkUpdate(metricNodeDownSeconds, 0, node.Url))
 		}
 	}
 
 	for {
-		time.Sleep(2 * time.Second)
+		if !waitContext(td.context(), 2*time.Second) {
+			return
+		}
 		select {
 		case <-td.ctx.Done():
 			return
@@ -610,9 +638,9 @@ func (cc *ChainConfig) watch() {
 		}
 
 		// inactive status must also be reconciled after a restart.
-		if cc.Alerts.AlertIfInactive {
+		if cc.Alerts.AlertIfInactive && !valInfo.ValidatorStale {
 			id := valInfo.Valcons + "jailed"
-			if !valInfo.Bonded {
+			if !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned {
 				reason := "inactive"
 				if valInfo.Tombstoned {
 					reason = "☠️ tombstoned 🪦"
@@ -627,7 +655,7 @@ func (cc *ChainConfig) watch() {
 					td.alert(cc.name, message, "critical", false, &id)
 				}
 				inactiveMessage = message
-			} else if inactiveMessage != "" {
+			} else if inactiveMessage != "" && (!strings.Contains(inactiveMessage, "tombstoned") || !valInfo.SigningStale) {
 				td.alert(cc.name, inactiveMessage, "info", true, &id)
 				inactiveMessage = ""
 			}
@@ -659,7 +687,7 @@ func (cc *ChainConfig) watch() {
 		}
 
 		// window percentage missed block alarms
-		if cc.Alerts.PercentageAlerts && valInfo.Window > 0 && (!pctAlarm || reconcile) &&
+		if cc.Alerts.PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && (!pctAlarm || reconcile) &&
 			100*float64(valInfo.Missed)/float64(valInfo.Window) > float64(cc.Alerts.Window) {
 			// alert on missed block counter!
 			pctAlarm = true
@@ -671,7 +699,7 @@ func (cc *ChainConfig) watch() {
 				false,
 				&id,
 			)
-		} else if cc.Alerts.PercentageAlerts && valInfo.Window > 0 && pctAlarm &&
+		} else if cc.Alerts.PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && pctAlarm &&
 			100*float64(valInfo.Missed)/float64(valInfo.Window) <= float64(cc.Alerts.Window) {
 			// clear the alert
 			pctAlarm = false
@@ -718,15 +746,23 @@ func (cc *ChainConfig) watch() {
 		}
 
 		if td.Prom {
+			unhealthy := 0
+			for _, node := range cc.Nodes {
+				if node.snapshot().down {
+					unhealthy++
+				}
+			}
+			td.sendStat(cc.mkUpdate(metricUnealthyNodes, float64(unhealthy), ""))
+			td.sendStat(cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), ""))
 			// raw block timer, ignoring finalized state
 			if !lastBlockTime.IsZero() {
-				td.statsChan <- cc.mkUpdate(metricLastBlockSecondsNotFinal, time.Since(lastBlockTime).Seconds(), "")
+				td.sendStat(cc.mkUpdate(metricLastBlockSecondsNotFinal, time.Since(lastBlockTime).Seconds(), ""))
 			}
 			// update node-down times for prometheus
 			for _, node := range cc.Nodes {
 				status := node.snapshot()
 				if status.down && !status.downSince.IsZero() {
-					td.statsChan <- cc.mkUpdate(metricNodeDownSeconds, time.Since(status.downSince).Seconds(), node.Url)
+					td.sendStat(cc.mkUpdate(metricNodeDownSeconds, time.Since(status.downSince).Seconds(), node.Url))
 				}
 			}
 		}

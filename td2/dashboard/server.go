@@ -1,12 +1,13 @@
 package dash
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"github.com/gorilla/websocket"
 	"github.com/textileio/go-threads/broadcast"
 	"io/fs"
-	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -31,11 +32,13 @@ func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	return &copy
 }
 
-func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool) {
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var err error
 	rootDir, err = fs.Sub(Content, "static")
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	var cast broadcast.Broadcaster
 
@@ -52,12 +55,17 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 		Status      []*ChainStatus
 	}
 
+	finished := make(chan struct{})
+	defer func() { cancel(); cast.Discard(); <-finished }()
 	go func() {
+		defer close(finished)
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		update := false
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-tick.C:
 				if update {
 					cacheMux.RLock()
@@ -120,6 +128,9 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 	upgrader.EnableCompression = true
 
 	mux := http.NewServeMux()
+	for _, path := range []string{"/health", "/ready"} {
+		mux.HandleFunc(path, healthHandler(health, path == "/ready"))
+	}
 	mux.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
 		c, err := upgrader.Upgrade(writer, request, nil)
 		if err != nil {
@@ -166,9 +177,33 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 		Handler:           mux,
 		ReadHeaderTimeout: 3 * time.Second,
 	}
+	serverDone := make(chan struct{})
+	defer close(serverDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = server.Close()
+		case <-serverDone:
+		}
+	}()
 	err = server.ListenAndServe()
 	cast.Discard()
-	log.Fatal("tenderduty dashboard server failed", err)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		status := health()
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Cache-Control", "no-store")
+		if !status.Alive || (readiness && !status.Ready) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(writer).Encode(status)
+	}
 }
 
 // CacheHandler implements the Handler interface with a Cache-Control set on responses

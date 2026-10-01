@@ -1,8 +1,10 @@
 package tenderduty
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -121,16 +123,24 @@ type registryResults struct {
 }
 
 // refreshRegistry updates the path map for public RPC endpoints for @eco_stake's public RPC proxy
-func refreshRegistry() error {
-	res, err := http.Get(registryJson)
+func refreshRegistry(ctx context.Context) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryJson, nil)
 	if err != nil {
 		return err
 	}
-	body, err := io.ReadAll(res.Body)
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	_ = res.Body.Close()
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("registry returned status %d", res.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return err
+	}
 	chains := &registryResults{}
 	err = json.Unmarshal(body, chains)
 	if err != nil {

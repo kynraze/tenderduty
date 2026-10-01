@@ -36,6 +36,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		MsgType: "status", Name: cc.name, ChainId: cc.ChainId, Moniker: info.Moniker,
 		Bonded: info.Bonded, Jailed: info.Jailed, Tombstoned: info.Tombstoned,
 		Missed: info.Missed, Window: info.Window, Nodes: len(cc.Nodes), HealthyNodes: healthy,
+		SigningStale: info.SigningStale, ValidatorStale: info.ValidatorStale, Monitoring: cc.isMonitoring(),
 		NoNodes: unavailable, ActiveAlerts: alarms.getCount(cc.name), Height: height,
 		LastBlockAt: lastBlockAt, LastError: message, Blocks: blocks,
 	}

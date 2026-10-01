@@ -1,6 +1,8 @@
 package dash
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -17,5 +19,21 @@ func TestHiddenLogsRedactEndpointDetails(t *testing.T) {
 	snapshot.Blocks[0] = 0
 	if status.Blocks[0] != 3 {
 		t.Fatal("dashboard snapshot shares mutable block history")
+	}
+}
+
+func TestHealthSeparatesLivenessAndReadiness(t *testing.T) {
+	for _, state := range []HealthStatus{{Alive: true, Ready: false}, {Alive: true, Ready: true}, {Alive: false}} {
+		for _, ready := range []bool{false, true} {
+			response := httptest.NewRecorder()
+			healthHandler(func() HealthStatus { return state }, ready)(response, httptest.NewRequest(http.MethodGet, "/", nil))
+			expected := http.StatusOK
+			if !state.Alive || (ready && !state.Ready) {
+				expected = http.StatusServiceUnavailable
+			}
+			if response.Code != expected {
+				t.Fatalf("state %+v readiness %v: got %d", state, ready, response.Code)
+			}
+		}
 	}
 }

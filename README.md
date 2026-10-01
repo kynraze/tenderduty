@@ -1,8 +1,8 @@
 # TenderDuty v2
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/blockpane/tenderduty.svg)](https://pkg.go.dev/github.com/blockpane/tenderduty)
-[![Gosec](https://github.com/blockpane/tenderduty/workflows/Gosec/badge.svg)](https://github.com/blockpane/tenderduty/actions?query=workflow%3AGosec)
-[![CodeQL](https://github.com/blockpane/tenderduty/workflows/CodeQL/badge.svg)](https://github.com/blockpane/tenderduty/actions?query=workflow%3ACodeQL)
+[![Gosec](https://github.com/kynraze/tenderduty/workflows/Gosec/badge.svg)](https://github.com/kynraze/tenderduty/actions?query=workflow%3AGosec)
+[![CodeQL](https://github.com/kynraze/tenderduty/workflows/CodeQL/badge.svg)](https://github.com/kynraze/tenderduty/actions?query=workflow%3ACodeQL)
 
 Tenderduty is a comprehensive monitoring tool for Tendermint chains. Its primary function is to alert a validator if they are missing blocks, and has many other features.
 
@@ -13,6 +13,14 @@ v2 is complete rewrite of the original tenderduty graciously sponsored by the [O
 ## Documentation
 
 The [documentation](docs/README.md) is a work-in-progress.
+
+## Dashboard Appearance
+
+Open **Customize** in the web dashboard to choose Graphite, Midnight, Paper, or Warm Stone. Select **Custom** to set background, panel, and accent colors using color pickers or six-digit HEX values.
+
+Changes preview immediately. **Apply** saves your preferences in this browser, **Cancel** discards the preview, and **Reset** previews the default Graphite theme. Click **Apply** after resetting to save the default.
+
+Text and status colors adapt to the selected palette. Color combinations that make labels or controls difficult to read cannot be applied. Preferences are local to each browser and do not require changes to `config.yml`. If browser storage is unavailable, preferences last for the current session.
 
 ## Runtime options:
 
@@ -33,6 +41,8 @@ Usage of tenderduty:
 
 Detailed installation info is in the [installation doc.](docs/install.md)
 
+### Docker
+
 30 second quickstart if you already have Docker installed:
 
 ```
@@ -43,6 +53,42 @@ docker run -d --name tenderduty -p "127.0.0.1:8888:8888" -p "127.0.0.1:28686:286
 docker logs -f --tail 20 tenderduty
 ```
 
+### Build from source
+
+Install Git and Go 1.18 or later, then clone and build this fork:
+
+```shell
+git clone --branch main https://github.com/kynraze/tenderduty.git
+cd tenderduty
+go mod download
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
+cp example-config.yml config.yml
+# edit config.yml and add chains, notification methods etc.
+./tenderduty -f config.yml
+```
+
+See [building from source](docs/install.md#building-from-source) for Go installation instructions.
+
+### Run with systemd
+
+On Ubuntu, build the binary as shown above and stop the foreground process before installing the service. From the repository directory:
+
+```shell
+# skip useradd if the tenderduty user already exists
+sudo useradd --system --user-group --home-dir /var/lib/tenderduty --shell /usr/sbin/nologin tenderduty
+sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
+sudo install -d -m 0750 -o root -g tenderduty /etc/tenderduty /etc/tenderduty/chains.d
+sudo install -m 0640 -o root -g tenderduty config.yml /etc/tenderduty/config.yml
+sudo install -m 0644 contrib/tenderduty.service /etc/systemd/system/tenderduty.service
+sudo systemd-analyze verify /etc/systemd/system/tenderduty.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now tenderduty
+sudo systemctl status tenderduty --no-pager
+```
+
+One service monitors all configured chains. It runs as the `tenderduty` user, stores state in `/var/lib/tenderduty`, and starts automatically at boot. Follow logs with `sudo journalctl -u tenderduty -f` and restart after configuration changes with `sudo systemctl restart tenderduty`.
+
+See the [systemd guide](docs/install.md#run-as-a-systemd-service-on-ubuntu) for separate chain files and dashboard access through an SSH tunnel.
 
 ## Split Configuration
 
@@ -72,5 +118,5 @@ chain_id: demo-1
 
 ## Contributions
 
-Contributions are welcome, please open pull requests against the 'develop' branch, not main.
+Contributions are welcome, please open pull requests against the `main` branch of [kynraze/tenderduty](https://github.com/kynraze/tenderduty).
 
