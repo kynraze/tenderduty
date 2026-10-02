@@ -20,7 +20,6 @@ import (
 	"time"
 
 	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
-	"github.com/go-yaml/yaml"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
@@ -256,9 +255,9 @@ type SlackConfig struct {
 
 // HealthcheckConfig holds the information needed to send pings to a healthcheck endpoint
 type HealthcheckConfig struct {
-	Enabled  bool          `yaml:"enabled"`
-	PingURL  string        `yaml:"ping_url"`
-	PingRate time.Duration `yaml:"ping_rate"`
+	Enabled  bool   `yaml:"enabled"`
+	PingURL  string `yaml:"ping_url"`
+	PingRate int64  `yaml:"ping_rate"`
 }
 
 // validateConfig is a non-exhaustive check for common problems with the configuration. Needs love.
@@ -279,6 +278,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 	if c.Healthcheck.Enabled && (c.Healthcheck.PingRate < 1 || c.Healthcheck.PingURL == "") {
 		fatal = true
 		problems = append(problems, "error: Healthcheck requires a ping URL and a positive rate")
+	}
+	if c.Healthcheck.Enabled && c.Healthcheck.PingRate > int64((1<<63-1)/time.Second) {
+		fatal = true
+		problems = append(problems, "error: Healthcheck ping rate is too large")
 	}
 
 	if c.Pagerduty.Enabled {
@@ -460,10 +463,10 @@ func loadChainConfig(yamlFile string) (*ChainConfig, error) {
 
 // unmarshalConfig ignores unknown settings like older versions did, but warns about them so typos get noticed.
 func unmarshalConfig(name string, data []byte, out, check interface{}) error {
-	if err := yaml.Unmarshal(data, out); err != nil {
+	if err := unmarshalLenient(data, out); err != nil {
 		return err
 	}
-	if err := yaml.UnmarshalStrict(data, check); err != nil {
+	if err := decodeConfig(data, check); err != nil {
 		l("⚠️", name, "has settings that are not understood and will be ignored:", err)
 	}
 	return nil
@@ -546,6 +549,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		if c.Chains[chainName] != nil {
 			l("⚠️", chainConfigFile.Name(), "replaces the existing configuration for", chainName)
 		}
+		//#nosec -- variable specified on command line
 		chainFiles[chainName], e = os.ReadFile(path.Join(chainConfigDirectory, chainConfigFile.Name()))
 		if e != nil {
 			return nil, e

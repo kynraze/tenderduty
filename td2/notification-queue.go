@@ -254,5 +254,6 @@ type notificationClient struct {
 }
 
 func (client notificationClient) Do(request *http.Request) (*http.Response, error) {
+	//#nosec G704 -- webhook URLs come from the operator's config
 	return client.client.Do(request.WithContext(client.ctx))
 }

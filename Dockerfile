@@ -1,30 +1,22 @@
 # 1st stage, build app
-FROM golang:1.19 as builder
-RUN apt-get update && apt-get -y upgrade && apt-get install -y upx
+FROM golang:1.27.1-trixie AS builder
 WORKDIR /build/app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-RUN go build -mod=readonly -ldflags "-s -w" -trimpath -o tenderduty main.go
-RUN upx tenderduty && upx -t tenderduty
+RUN CGO_ENABLED=0 go build -mod=readonly -ldflags "-s -w" -trimpath -o tenderduty .
 
-# 2nd stage, create a user to copy, and install libraries needed if connecting to upstream TLS server
-# we don't want the /lib and /lib64 from the go container cause it has more than we need.
-FROM debian:11 AS ssl
-ENV DEBIAN_FRONTEND noninteractive
-RUN apt-get update && apt-get -y upgrade && apt-get install -y ca-certificates && \
-    addgroup --gid 26657 --system tenderduty && adduser -uid 26657 --ingroup tenderduty --system --home /var/lib/tenderduty tenderduty
+# 2nd stage, create a user and install certificates for upstream TLS servers.
+FROM debian:13-slim AS ssl
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates adduser && \
+    addgroup --gid 26657 --system tenderduty && adduser --uid 26657 --ingroup tenderduty --system --home /var/lib/tenderduty tenderduty && \
+    install -d -m 0750 -o tenderduty -g tenderduty /var/lib/tenderduty
 
-# 3rd and final stage, copy the minimum parts into a scratch container, is a smaller and more secure build. This pulls
-# in SSL libraries and CAs so Go can connect to TLS servers.
+# 3rd and final stage, copy the static binary, certificates, and service user.
 FROM scratch
-COPY --from=ssl /etc/ca-certificates /etc/ca-certificates
-COPY --from=ssl /etc/ssl /etc/ssl
-COPY --from=ssl /usr/share/ca-certificates /usr/share/ca-certificates
-COPY --from=ssl /usr/lib /usr/lib
-COPY --from=ssl /lib /lib
-COPY --from=ssl /lib64 /lib64
+COPY --from=ssl /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=ssl /etc/passwd /etc/passwd
 COPY --from=ssl /etc/group /etc/group

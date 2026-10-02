@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/go-yaml/yaml"
+	"go.yaml.in/yaml/v3"
 )
 
 type yamlMap map[interface{}]interface{}
@@ -20,6 +20,12 @@ func asYAMLMap(value interface{}) (yamlMap, bool) {
 		return typed, true
 	case map[interface{}]interface{}:
 		return typed, true
+	case map[string]interface{}:
+		result := make(yamlMap, len(typed))
+		for key, value := range typed {
+			result[key] = value
+		}
+		return result, true
 	default:
 		return nil, false
 	}
@@ -63,7 +69,7 @@ func mergeMaps(base, overrides yamlMap) yamlMap {
 // applyAlertDefaults allows each chain to override only the settings that differ.
 func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]byte) error {
 	var raw yamlMap
-	if err := yaml.Unmarshal(configData, &raw); err != nil {
+	if err := unmarshalLenient(configData, &raw); err != nil {
 		return err
 	}
 	defaults, err := optionalMap(raw, "alert_defaults")
@@ -80,7 +86,7 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 		}
 		var rawChain yamlMap
 		if data, ok := chainFiles[name]; ok {
-			if err := yaml.Unmarshal(data, &rawChain); err != nil {
+			if err := unmarshalLenient(data, &rawChain); err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
 		} else if value, ok := chains[name]; ok {

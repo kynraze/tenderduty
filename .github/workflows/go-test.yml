@@ -8,8 +8,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -17,3 +17,7 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: node --test tests/appearance.test.js
+      - name: Build Docker image
+        run: docker build -t tenderduty:ci .
+      - name: Check Docker entrypoint
+        run: docker run --rm tenderduty:ci -example-config > /dev/null

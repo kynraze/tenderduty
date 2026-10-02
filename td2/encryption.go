@@ -91,6 +91,7 @@ func encrypt(plainText []byte, password string) (encryptedConfig []byte, err err
 	// pad the plaintext
 	padLen := cbc.BlockSize() - (len(plainText) % cbc.BlockSize())
 	if padLen > 0 {
+		//#nosec G115 -- padLen is at most the block size
 		plainText = append(plainText, bytes.Repeat([]byte{uint8(padLen)}, padLen)...)
 	}
 

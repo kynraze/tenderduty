@@ -67,6 +67,7 @@ func main() {
 
 	err := td2.Run(configFile, stateFile, chainConfigDirectory, &password)
 	if err != nil {
+		//#nosec G706 -- local startup error
 		log.Println(err.Error(), "... exiting.")
 		os.Exit(1)
 	}

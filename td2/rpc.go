@@ -190,7 +190,7 @@ func (c *Config) pingHealthcheck() {
 		return
 	}
 
-	ticker := time.NewTicker(c.Healthcheck.PingRate * time.Second)
+	ticker := time.NewTicker(time.Duration(c.Healthcheck.PingRate) * time.Second)
 
 	c.startWorker(func() {
 		defer ticker.Stop()

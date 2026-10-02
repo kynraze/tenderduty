@@ -16,7 +16,7 @@ Opens the dashboard (8888) and metrics (28686) ports, see [dashboard and metrics
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
+docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
@@ -51,18 +51,18 @@ volumes:
   home:
 EOF
 
-docker-compose pull
+docker compose pull
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 mkdir -p chains.d
 
 # Edit the config.yml file, and then start the container
-docker-compose up -d
-docker-compose logs -f --tail 20
+docker compose up -d
+docker compose logs -f --tail 20
 ```
 
 ## Building from source
 
-*Note: building tenderduty requires go v1.18 or later*
+*Note: building tenderduty requires go v1.27.1 or later*
 
 ### Installing Go
 
