@@ -23,6 +23,7 @@ Monitors a validator's performance across multiple chains
 - Alerting if jailed, tombstoned, or inactive.
 - Optional alerting on missed proposals: blocks the validator was due to propose but another validator did.
 - Optional governance messages: a proposal opened for voting, and a reminder before voting ends without a vote.
+- Optional upgrade messages: an upgrade scheduled in x/upgrade with its estimated time, and a reminder before it.
 - Optional jail risk alerts, from the chain's own slashing params.
 - Alert destinations can be customized for each chain.
 - Monitors node health:

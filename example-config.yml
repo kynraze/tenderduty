@@ -88,6 +88,10 @@ alert_defaults:
   gov_enabled: no
   gov_remind_minutes: 60
   gov_priority: info
+  # Upgrades scheduled in x/upgrade: a message with the height and estimated time, a reminder when it is close.
+  upgrade_enabled: no
+  upgrade_remind_minutes: 60
+  upgrade_priority: warning
   alert_if_inactive: yes
   alert_if_no_servers: yes
   pagerduty:

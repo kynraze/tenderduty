@@ -9,6 +9,7 @@ import (
 	"html"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,11 @@ func (msg *alertMsg) summary() string {
 	if strings.HasPrefix(msg.message, "Proposal #") && !msg.resolved {
 		return govTimeLeft(msg.message)
 	}
+	if strings.HasPrefix(msg.message, "Upgrade ") && !msg.resolved {
+		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
 	return msg.message
 }
 
@@ -77,6 +83,15 @@ func (msg *alertMsg) header() (icon, state string) {
 			return "⏰", "Vote reminder"
 		}
 		return "🗳", "New proposal"
+	}
+	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
+		if msg.resolved {
+			return upgradeResolvedLabel(msg.chain, msg.message)
+		}
+		if strings.HasSuffix(msg.message, " is close") {
+			return "⏰", "Upgrade soon"
+		}
+		return "⬆️", "Upgrade scheduled"
 	}
 	if msg.resolved {
 		return "✅", "Resolved"
@@ -429,7 +444,7 @@ func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 		Username: "Tenderduty",
 		Content:  strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions)),
 		Embeds: []DiscordEmbed{{
-			Description: msg.text(),
+			Description: timeLeft.ReplaceAllString(msg.text(), "· **$1**"),
 			Color:       color,
 		}},
 	}
@@ -459,16 +474,26 @@ func notifyTg(msg *alertMsg) (err error) {
 	return err
 }
 
+// timeLeft finds the time left that governance and upgrade messages show, to make it stand out.
+var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhm] left)`)
+
 // buildTelegramMessage formats an alert as telegram HTML: a bold header, the message, then extra_info in italics.
 func buildTelegramMessage(msg *alertMsg) string {
 	icon, state := msg.header()
 	body := html.EscapeString(msg.summary())
-	if strings.HasPrefix(msg.message, "Proposal #") {
+	first, rest, _ := strings.Cut(body, "\n")
+	switch {
+	case strings.HasPrefix(msg.message, "Proposal #"):
 		// the proposal's number and title read as its heading
-		if first, rest, ok := strings.Cut(body, "\n"); ok {
-			body = "<b>" + strings.TrimPrefix(first, "Proposal ") + "</b>\n" + rest
-		}
+		first = "<b>" + strings.TrimPrefix(first, "Proposal ") + "</b>"
+	case strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height "):
+		name, height, _ := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(first, "Upgrade "), " is close"), " at height ")
+		first = "<b>" + name + "</b> at height " + height
 	}
+	if body = first; rest != "" {
+		body += "\n" + rest
+	}
+	body = timeLeft.ReplaceAllString(body, "· <b>$1</b>")
 	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, body)
 	if msg.extra != "" {
 		text += "\n\n<i>" + html.EscapeString(msg.extra) + "</i>"
@@ -882,6 +907,9 @@ func (cc *ChainConfig) watch() {
 		if cc.Alerts.GovAlerts && valInfo.Valcons != "" {
 			cc.govAlarms(valInfo, reconcile)
 		}
+		if cc.Alerts.UpgradeAlerts && valInfo.Valcons != "" {
+			cc.upgradeAlarms(valInfo, reconcile)
+		}
 
 		// node down alarms
 		for _, node := range cc.Nodes {
@@ -1033,6 +1061,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 				continue // the governance check works these out itself
 			}
 			id = govAlarmId(valInfo, message)
+		case strings.HasPrefix(message, "Upgrade ") && strings.Contains(message, " at height "):
+			if cc.Alerts.UpgradeAlerts {
+				continue
+			}
+			id = upgradeAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " of the misses allowed before jailing on "):

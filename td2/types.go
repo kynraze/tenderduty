@@ -125,6 +125,8 @@ type ChainConfig struct {
 	blockTime           time.Duration // running average of the time between blocks
 	proposals           []govProposal // proposals in voting, from the last refresh
 	proposalsLoaded     bool
+	upgrade             *upgradePlan // the scheduled upgrade, nil when there is none
+	upgradeLoaded       bool
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -202,6 +204,13 @@ type AlertConfig struct {
 
 	// JailRiskPercent is how much of the misses allowed before jailing can be used before alerting
 	JailRiskPercent int `yaml:"jail_risk_percent"`
+	// UpgradeRemindMinutes is how long before an upgrade's estimated time to remind
+	UpgradeRemindMinutes int `yaml:"upgrade_remind_minutes"`
+	// UpgradePriority is a tag for pagerduty to route scheduled upgrades on priority, reminders are critical
+	UpgradePriority string `yaml:"upgrade_priority"`
+	// UpgradeAlerts is whether to alert on upgrades scheduled in x/upgrade
+	UpgradeAlerts bool `yaml:"upgrade_enabled"`
+
 	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
 	// GovPriority is a tag for pagerduty to route new proposals on priority, reminders are critical
@@ -394,6 +403,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.JailRiskPercent = 50
 			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 50", k))
 		}
+		if v.Alerts.UpgradeAlerts && v.Alerts.UpgradeRemindMinutes < 1 {
+			v.Alerts.UpgradeRemindMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive upgrade_remind_minutes, using 60", k))
+		}
 		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes < 1 {
 			v.Alerts.GovRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s has no positive gov_remind_minutes, using 60", k))
@@ -486,6 +499,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.ProposalPriority == "" {
 			v.Alerts.ProposalPriority = "warning"
 		}
+		if v.Alerts.UpgradePriority == "" {
+			v.Alerts.UpgradePriority = "warning"
+		}
 		if v.Alerts.GovPriority == "" {
 			v.Alerts.GovPriority = "info"
 		}
@@ -505,7 +521,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {

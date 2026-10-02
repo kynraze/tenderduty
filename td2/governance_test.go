@@ -54,7 +54,7 @@ func TestGovernanceMessages(t *testing.T) {
 	if icon, label := open.header(); icon != "🗳" || label != "New proposal" {
 		t.Fatalf("open header %s %s", icon, label)
 	}
-	if got := buildTelegramMessage(open); !strings.Contains(got, "<b>#39 Community Pool</b>\nEnds ") || !strings.Contains(got, " · 6d 23h left") {
+	if got := buildTelegramMessage(open); !strings.Contains(got, "<b>#39 Community Pool</b>\nEnds ") || !strings.Contains(got, " · <b>6d 23h left</b>") {
 		t.Fatalf("open message %q", got)
 	}
 	remind := &alertMsg{chain: "MANTRA", severity: "critical", message: cc.govRemindMessage(p, "Kynraze")}
