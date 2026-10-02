@@ -30,6 +30,8 @@ const (
 	metricLastBlockSeconds
 	metricLastBlockSecondsNotFinal
 	metricMissedProposals
+	metricVotingPower
+	metricVotingPowerRank
 
 	metricTotalNodes
 	metricUnealthyNodes
@@ -94,6 +96,14 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		Name: "tenderduty_missed_proposals",
 		Help: "count of blocks the validator was due to propose but another validator did, since tenderduty was started",
 	}, chainLabels)
+	votingPower := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_voting_power",
+		Help: "the validator's consensus voting power, 0 when not in the active set",
+	}, chainLabels)
+	votingPowerRank := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_voting_power_rank",
+		Help: "the validator's position in the active set by voting power, 0 when not in it",
+	}, chainLabels)
 	missedConsecutive := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_consecutive_missed_blocks",
 		Help: "the current count of consecutively missed blocks regardless of precommit or prevote status",
@@ -147,6 +157,8 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		metricLastBlockSeconds:         lastBlockSec,
 		metricLastBlockSecondsNotFinal: lastBlockSecUnfinalized,
 		metricMissedProposals:          missedProposals,
+		metricVotingPower:              votingPower,
+		metricVotingPowerRank:          votingPowerRank,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
 		metricNodeLagSeconds:           nodeLagSec,  // todo

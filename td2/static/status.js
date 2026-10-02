@@ -13,9 +13,18 @@ const statusNames = {
     '-1': 'unobserved'
 }
 let filter = 'all'
+// the height drawn for each chain and when it moved, the newest block animates for a moment after that. The table is
+// redrawn on every update, so a redraw continues the animation where it was instead of starting it over.
+const drawnHeights = new Map()
+const newBlockMs = 700
+
+function newBlockAge(name) {
+    const drawn = drawnHeights.get(name)
+    const elapsed = drawn && drawn.at ? Date.now() - drawn.at : Infinity
+    return elapsed < newBlockMs ? elapsed : null
+}
 let socket
 let reconnectDelay = 3000
-let lastSnapshot = 0
 let logsEnabled = false
 
 function element(tag, className, value) {
@@ -61,7 +70,16 @@ function stateFor(chain) {
     return { label: 'Healthy', tone: 'good', rank: 4 }
 }
 
-function blockTrace(values, limit, label) {
+function votingPower(chain) {
+    if (!chain.voting_power) {
+        return { value: '—', share: '—', rank: chain.active_set ? 'Not in active set' : 'Unavailable', detail: chain.active_set ? 'not in active set' : 'not available' }
+    }
+    const share = chain.total_power > 0 ? `${(100 * chain.voting_power / chain.total_power).toFixed(2)}%` : '—'
+    const rank = `${chain.rank} / ${chain.active_set}`
+    return { value: number(chain.voting_power), share, rank, detail: `${share} · rank ${rank}` }
+}
+
+function blockTrace(values, limit, label, newAge) {
     const trace = element('div', 'block-tape')
     const recent = (Array.isArray(values) ? values : []).slice(0, limit)
     const counts = { 'missed-proposal': 0, proposed: 0, signed: 0, precommit: 0, prevote: 0, missed: 0, unobserved: 0 }
@@ -70,18 +88,22 @@ function blockTrace(values, limit, label) {
         counts[name]++
         trace.appendChild(element('i', name))
     }
+    if (newAge !== null && newAge !== undefined && trace.firstChild) {
+        trace.firstChild.classList.add('new')
+        trace.firstChild.style.animationDelay = `-${newAge}ms`
+    }
     trace.setAttribute('role', 'img')
     trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts['missed-proposal']} missed proposals, ${counts.missed} missed, ${counts.precommit} precommit seen, ${counts.prevote} prevote seen, ${counts.unobserved} without data`)
     return trace
 }
 
 function setConnection(connected) {
-    const label = connected ? `Live · snapshot ${age(lastSnapshot)}` : `Disconnected · last snapshot ${age(lastSnapshot)}`
+    const label = connected ? 'Live' : 'Disconnected · data is stale'
     document.getElementById('connection-state').textContent = label
     document.getElementById('connection-state').classList.toggle('offline', !connected)
     document.getElementById('monitor-state').textContent = connected ? 'Monitor online' : 'Monitor disconnected'
     const networks = new Set([...chains.values()].map(chain => chain.chain_id)).size
-    document.getElementById('monitor-detail').textContent = `${chains.size} ${validatorLabel(chains.size)} · ${networks} ${networks === 1 ? 'chain' : 'chains'} · snapshot ${age(lastSnapshot)}`
+    document.getElementById('monitor-detail').textContent = `${chains.size} ${validatorLabel(chains.size)} · ${networks} ${networks === 1 ? 'chain' : 'chains'}`
 }
 
 function setStatus(update) {
@@ -98,7 +120,6 @@ function setStatus(update) {
     for (const name of chains.keys()) {
         if (!statusOrder.includes(name)) statusOrder.push(name)
     }
-    lastSnapshot = Date.now() / 1000
     setConnection(socket && socket.readyState === WebSocket.OPEN)
     render()
 }
@@ -145,13 +166,19 @@ function renderRow(chain) {
     status.appendChild(element('span', `status ${state.tone}`, state.label))
     row.appendChild(status)
 
+    const power = votingPower(chain)
+    const vp = element('td')
+    vp.appendChild(element('span', 'mono', power.value))
+    vp.appendChild(element('small', 'cell-detail', power.detail))
+    row.appendChild(vp)
+
     const height = element('td')
     height.appendChild(element('span', 'mono', chain.height > 0 ? number(chain.height) : '—'))
     height.appendChild(element('small', 'cell-detail', chain.last_block_at ? `block ${age(chain.last_block_at)}` : 'not yet observed'))
     row.appendChild(height)
 
     const trace = element('td')
-    const tape = blockTrace(chain.blocks, 160, `${chain.name} recent blocks`)
+    const tape = blockTrace(chain.blocks, 160, `${chain.name} recent blocks`, newBlockAge(chain.name))
     tape.classList.add('fill')
     trace.appendChild(tape)
     row.appendChild(trace)
@@ -159,6 +186,9 @@ function renderRow(chain) {
     const missed = element('td')
     missed.appendChild(element('span', 'mono', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : '—'))
     missed.appendChild(element('small', 'cell-detail', chain.signing_stale ? 'last known signing window' : 'current signing window'))
+    if (chain.missed_proposals > 0) {
+        missed.appendChild(element('small', 'cell-detail missed-proposals', `${number(chain.missed_proposals)} missed ${chain.missed_proposals === 1 ? 'proposal' : 'proposals'}`))
+    }
     row.appendChild(missed)
 
     const rpc = element('td')
@@ -170,6 +200,11 @@ function renderRow(chain) {
 function render() {
     const focusedChain = document.activeElement && document.activeElement.dataset.chain
     const ordered = statusOrder.map(name => chains.get(name)).filter(Boolean)
+    for (const chain of ordered) {
+        const drawn = drawnHeights.get(chain.name)
+        if (!drawn) drawnHeights.set(chain.name, { height: chain.height, at: 0 })
+        else if (chain.height > drawn.height) drawnHeights.set(chain.name, { height: chain.height, at: Date.now() })
+    }
     renderSummary()
     statusTable.replaceChildren()
     const visible = ordered.filter(chain => {
@@ -180,21 +215,23 @@ function render() {
     if (visible.length === 0) {
         const row = element('tr')
         const cell = element('td', 'empty', chains.size ? 'No validators match this view.' : 'Waiting for chain data…')
-        cell.colSpan = 6
+        cell.colSpan = 7
         row.appendChild(cell)
         statusTable.appendChild(row)
     } else {
         statusTable.append(...visible.map(renderRow))
     }
+    if (chainDialog.open && chainDialog.dataset.chain) fillDetail(chainDialog.dataset.chain)
     if (focusedChain) {
         const target = [...statusTable.querySelectorAll('[data-chain]')].find(node => node.dataset.chain === focusedChain)
         if (target) target.focus({ preventScroll: true })
     }
 }
 
-function showDetail(name) {
+// fillDetail draws the chain dialog, render() calls it again while the dialog is open so it stays live
+function fillDetail(name) {
     const chain = chains.get(name)
-    if (!chain) return
+    if (!chain) return false
     document.getElementById('detail-heading').textContent = name
     document.getElementById('detail-subtitle').textContent = `${chain.chain_id || 'Unknown chain'} · ${chain.moniker || 'Unknown validator'}`
     const facts = document.getElementById('detail-facts')
@@ -204,8 +241,14 @@ function showDetail(name) {
         ['Height', chain.height > 0 ? number(chain.height) : 'Unavailable'],
         ['Last observed block', age(chain.last_block_at)],
         [chain.signing_stale ? 'Missed / signing window (last known)' : 'Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : 'Unavailable'],
+        ['Voting power', votingPower(chain).value],
+        ['Share of voting power', votingPower(chain).share],
+        ['Rank in active set', votingPower(chain).rank],
         ['Healthy RPC endpoints', `${chain.healthy_nodes} / ${chain.nodes}`],
-        ['Active alerts', String(chain.active_alerts || 0)]
+        ['Active alerts', String(chain.active_alerts || 0)],
+        ['Signed since start', number(chain.signed || 0)],
+        ['Proposed since start', number(chain.proposed || 0)],
+        ['Missed proposals since start', number(chain.missed_proposals || 0)]
     ]
     for (const [label, value] of rows) {
         const item = element('div', 'detail-fact')
@@ -215,8 +258,14 @@ function showDetail(name) {
     }
     const history = document.getElementById('detail-blocks')
     history.replaceChildren()
-    history.appendChild(blockTrace(chain.blocks, 512, `${name} block history`))
+    history.appendChild(blockTrace(chain.blocks, 512, `${name} block history`, newBlockAge(name)))
     document.getElementById('detail-error').textContent = chain.last_error || ''
+    return true
+}
+
+function showDetail(name) {
+    if (!fillDetail(name)) return
+    chainDialog.dataset.chain = name
     chainDialog.showModal()
 }
 

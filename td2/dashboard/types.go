@@ -30,6 +30,13 @@ type ChainStatus struct {
 	Height         int64  `json:"height"`
 	LastBlockAt    int64  `json:"last_block_at"`
 	LastError      string `json:"last_error"`
+	Signed         int64  `json:"signed"`
+	Proposed       int64  `json:"proposed"`
+	MissedProps    int64  `json:"missed_proposals"`
+	VotingPower    int64  `json:"voting_power"`
+	TotalPower     int64  `json:"total_power"`
+	Rank           int    `json:"rank"`
+	ActiveSet      int    `json:"active_set"`
 
 	Blocks []int `json:"blocks"`
 }

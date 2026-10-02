@@ -8,6 +8,8 @@
   --muted: #a9b9bc;
   --subtle: #8fa6aa;
   --good: #63d6c4;
+  --proposed: #a9e06b;
+  --signed: #2d5a5a;
   --accent: #63d6c4;
   --warning: #f1b663;
   --critical: #f27c76;
@@ -93,13 +95,17 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .status.unknown { color: var(--muted); }
 .block-tape { display: flex; align-items: center; gap: 2px; width: 100%; height: 20px; }
 .block-tape i { display: block; flex: 1; min-width: 2px; max-width: 6px; height: 17px; border-radius: 1px; background: var(--line); }
-.block-tape i.signed { background: var(--good); opacity: .68; }
-.block-tape i.proposed { background: var(--good); height: 20px; }
+.block-tape i.signed { background: var(--signed); }
+.block-tape i.proposed { background: var(--proposed); height: 20px; }
 .block-tape i.precommit { background: var(--precommit); height: 19px; }
 .block-tape i.prevote { background: var(--prevote); height: 19px; }
 .block-tape i.missed { background: var(--critical); height: 20px; }
 .block-tape i.missed-proposal { background: var(--warning); height: 20px; }
-.block-tape i.unobserved { background: var(--line); }
+.block-tape i.unobserved { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+/* the newest block grows in with a short glow */
+.block-tape i.new { animation: block-in .7s ease-out; transform-origin: bottom; }
+@keyframes block-in { from { transform: scaleY(.2); filter: brightness(1.9); } 40% { filter: brightness(1.9); } to { transform: none; filter: none; } }
+@media (prefers-reduced-motion: reduce) { .block-tape i.new { animation: none; } }
 .block-tape.fill { overflow: hidden; gap: 1px; }
 .block-tape.fill i { flex: 0 0 3px; min-width: 3px; max-width: 3px; }
 .empty { padding: 28px 12px; color: var(--muted); text-align: center; }
@@ -112,11 +118,14 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .trace-key { display: flex; flex-wrap: wrap; gap: 10px 17px; color: var(--muted); font-size: 11px; }
 .trace-key span { display: inline-flex; align-items: center; gap: 6px; }
 .trace-mark { display: inline-block; width: 5px; height: 15px; border-radius: 1px; background: var(--line); }
-.trace-mark.signed, .trace-mark.proposed { background: var(--good); }
+.trace-mark.signed { background: var(--signed); }
+.trace-mark.unobserved { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.trace-mark.proposed { background: var(--proposed); }
 .trace-mark.precommit { background: var(--precommit); }
 .trace-mark.prevote { background: var(--prevote); }
 .trace-mark.missed { background: var(--critical); }
 .trace-mark.missed-proposal { background: var(--warning); }
+.cell-detail.missed-proposals { color: var(--warning); }
 .footnote { max-width: 55ch; color: var(--subtle); font-size: 11px; line-height: 1.5; }
 
 dialog { width: min(860px, calc(100% - 32px)); max-height: calc(100vh - 32px); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); overflow: auto; }
@@ -148,6 +157,9 @@ dialog::backdrop { background: #000a; }
 .detail-blocks { margin: 16px 0 22px; }
 .detail-blocks .block-tape { display: grid; grid-template-columns: repeat(64, minmax(0, 1fr)); gap: 3px; height: auto; }
 .detail-blocks .block-tape i { width: auto; max-width: none; height: 14px; }
+/* a stroke through missed blocks, so they don't rely on color alone */
+.detail-blocks .block-tape i.missed { position: relative; }
+.detail-blocks .block-tape i.missed::after { content: ""; position: absolute; left: 20%; right: 20%; top: 50%; border-top: 2px solid var(--base); }
 .detail-error { color: var(--critical); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 1050px) {
@@ -177,12 +189,13 @@ dialog::backdrop { background: #000a; }
   tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
   tbody tr:nth-child(even) td, tbody tr:hover td { background: transparent; }
   td { min-width: 0; padding: 4px; border: 0; background: transparent; }
-  td:first-child, td:nth-child(4), td.empty { grid-column: 1 / -1; }
-  td:nth-child(2)::before, td:nth-child(3)::before, td:nth-child(5)::before, td:nth-child(6)::before { display: block; margin-bottom: 3px; color: var(--subtle); font-size: 10px; text-transform: uppercase; }
+  td:first-child, td:nth-child(5), td.empty { grid-column: 1 / -1; }
+  td:nth-child(2)::before, td:nth-child(3)::before, td:nth-child(4)::before, td:nth-child(6)::before, td:nth-child(7)::before { display: block; margin-bottom: 3px; color: var(--subtle); font-size: 10px; text-transform: uppercase; }
   td:nth-child(2)::before { content: "Status"; }
-  td:nth-child(3)::before { content: "Height"; }
-  td:nth-child(5)::before { content: "Missed / window"; }
-  td:nth-child(6)::before { content: "RPC"; }
+  td:nth-child(3)::before { content: "Voting power"; }
+  td:nth-child(4)::before { content: "Height"; }
+  td:nth-child(6)::before { content: "Missed / window"; }
+  td:nth-child(7)::before { content: "RPC"; }
 }
 
 @media (max-width: 550px) {

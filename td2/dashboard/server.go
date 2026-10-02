@@ -209,7 +209,8 @@ func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc 
 type CacheHandler struct{}
 
 func (ch CacheHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "public, max-age=3600")
+	// the files are small, always revalidate so an upgrade never mixes old scripts with new markup
+	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Powered-By", "https://github.com/kynraze/tenderduty")
 	http.FileServer(http.FS(rootDir)).ServeHTTP(writer, request)
 }

@@ -89,3 +89,15 @@ The count of rpc endpoints being monitored for a chain
 The count of unhealthy rpc endpoints being monitored for a chain
 
 `tenderduty_total_unhealthy_endpoints{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
+
+### tenderduty_voting_power
+
+The validator's consensus voting power, 0 when not in the active set
+
+`tenderduty_voting_power{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 125000`
+
+### tenderduty_voting_power_rank
+
+The validator's position in the active set by voting power, 0 when not in it
+
+`tenderduty_voting_power_rank{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 42`

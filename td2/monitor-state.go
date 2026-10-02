@@ -18,6 +18,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 	cc.stateMux.RLock()
 	height, observed, unavailable := cc.lastBlockNum, cc.lastBlockTime, cc.noNodes
 	blocks := append([]int(nil), cc.blocksResults...)
+	signed, proposed, missedProps := int64(cc.statTotalSigns), int64(cc.statTotalProps), int64(cc.statProposalMiss)
 	cc.stateMux.RUnlock()
 	lastBlockAt := int64(0)
 	if !observed.IsZero() {
@@ -40,6 +41,8 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		SigningStale: info.SigningStale, ValidatorStale: info.ValidatorStale, Monitoring: cc.isMonitoring(),
 		NoNodes: unavailable, ActiveAlerts: alarms.getCount(cc.name), Height: height,
 		LastBlockAt: lastBlockAt, LastError: message, Blocks: blocks,
+		Signed: signed, Proposed: proposed, MissedProps: missedProps,
+		VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
 	}
 }
 

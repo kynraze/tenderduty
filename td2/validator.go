@@ -3,8 +3,12 @@ package tenderduty
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +33,10 @@ type ValInfo struct {
 	SigningUpdatedAt time.Time `json:"signing_updated_at"`
 	SigningStale     bool      `json:"signing_stale"`
 	ValidatorStale   bool      `json:"validator_stale"`
+	VotingPower      int64     `json:"voting_power"`
+	TotalPower       int64     `json:"total_power"`
+	Rank             int       `json:"rank"` // position in the active set, 0 when not in it
+	ActiveSet        int       `json:"active_set"`
 }
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
@@ -80,6 +88,13 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	} else if first && !info.Bonded {
 		l(fmt.Sprintf("❌ %s (%s) is INACTIVE", cc.ValAddress, info.Moniker))
 	}
+
+	// voting power is only shown, keep the last reading if the node can't list the validator set
+	power, powerErr := getVotingPower(ctx, client.Remote(), info.Conspub)
+	if powerErr != nil {
+		power = votingPower{power: previous.VotingPower, total: previous.TotalPower, rank: previous.Rank, size: previous.ActiveSet}
+	}
+	info.VotingPower, info.TotalPower, info.Rank, info.ActiveSet = power.power, power.total, power.rank, power.size
 
 	if strings.Contains(cc.ValAddress, "valcons") {
 		// no need to change prefix for signing info query
@@ -175,6 +190,8 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if td.Prom {
 		td.sendStat(cc.mkUpdate(metricWindowMissed, float64(info.Missed), ""))
 		td.sendStat(cc.mkUpdate(metricWindowSize, float64(info.Window), ""))
+		td.sendStat(cc.mkUpdate(metricVotingPower, float64(info.VotingPower), ""))
+		td.sendStat(cc.mkUpdate(metricVotingPowerRank, float64(info.Rank), ""))
 		if first {
 			td.sendStat(cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), ""))
 		}
@@ -239,6 +256,63 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 	}
 
 	return pubBytes, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
+}
+
+type votingPower struct {
+	power, total int64
+	rank, size   int
+}
+
+// jsonInt reads a number whether it is sent as a number or a string.
+type jsonInt int64
+
+func (i *jsonInt) UnmarshalJSON(b []byte) error {
+	v, err := strconv.ParseInt(strings.Trim(string(b), `"`), 10, 64)
+	*i = jsonInt(v)
+	return err
+}
+
+// getVotingPower reads the validator set from /validators. Only the address and power are decoded, so key types this
+// library doesn't know about don't matter. The set is sorted by power, which gives the rank.
+func getVotingPower(ctx context.Context, remote string, conspub []byte) (votingPower, error) {
+	result := votingPower{}
+	address := strings.ToUpper(hex.EncodeToString(conspub))
+	client := &http.Client{Timeout: 10 * time.Second}
+	for page := 1; page <= 20; page++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/validators?page=%d&per_page=100", strings.TrimRight(remote, "/"), page), nil)
+		if err != nil {
+			return result, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return result, err
+		}
+		set := struct {
+			Result struct {
+				Validators []struct {
+					Address     string  `json:"address"`
+					VotingPower jsonInt `json:"voting_power"`
+				} `json:"validators"`
+				Total jsonInt `json:"total"`
+			} `json:"result"`
+		}{}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&set)
+		_ = resp.Body.Close()
+		if err != nil {
+			return result, err
+		}
+		for _, v := range set.Result.Validators {
+			result.size++
+			result.total += int64(v.VotingPower)
+			if v.Address == address {
+				result.power, result.rank = int64(v.VotingPower), result.size
+			}
+		}
+		if len(set.Result.Validators) == 0 || result.size >= int(set.Result.Total) {
+			return result, nil
+		}
+	}
+	return result, nil
 }
 
 func ToBytes(address string) []byte {
