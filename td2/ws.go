@@ -250,6 +250,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 	cc.stateMux.RLock()
 	tracker := signingTracker{finalized: cc.lastBlockNum - 1}
 	cc.stateMux.RUnlock()
+	backfilled := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -312,6 +313,11 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			}
 			if missedProposal {
 				l(info.Moniker, "missed proposing block", update.Height, "on", cc.ChainId)
+			}
+			// on the first block of a connection, read every height in the history we have no data for from the node
+			if client := cc.clientSnapshot(); !backfilled && client != nil {
+				backfilled = true
+				go cc.backfill(ctx, client.Remote(), cc.emptyHeights())
 			}
 			if td.EnableDash {
 				td.sendUpdate(cc.dashboardStatus())

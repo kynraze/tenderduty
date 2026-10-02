@@ -104,10 +104,11 @@ Dashboard:
 
 * The dashboard provides a stream of missed block and validator status information over a websocket
 * Missed blocks are displayed on a grid. This grid uses different colors to represent the validator's consensus state
-  * Signed blocks aren't highlighted. This should be the nominal state.
-  * Missed blocks are bright orange.
+  * Signed blocks are muted. This should be the nominal state, so anything else stands out.
+  * Missed blocks are red, with a stroke through them in the chain's full history.
   * Not all missed blocks are the same. It is useful to know if a validator sent a pre-commit or even a pre-vote and was not included in the block. This might indicate peering issues, or even that another validator is having problems and missing pre-commits from others.
-  * Bright green/yellow is used to indicate a block the validator proposed.
+  * Bright green is used to indicate a block the validator proposed.
+  * Blocks with no data are hollow. On (re)connect, the empty places in the recent trace are filled in from the node's commits, which can tell signed, proposed and missed apart but not prevote/precommit seen or missed proposals.
   * Amber marks a missed proposal: the validator was the proposer for the block's first round, but another validator proposed it. There is no slashing for this, it is usually a slow node or network.
 
 Notifications:
