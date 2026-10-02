@@ -4,16 +4,19 @@
 * [Docker Compose](#docker-compose)
 * [Build From Source](#building-from-source)
 * [Systemd Service](#run-as-a-systemd-service-on-ubuntu)
+* [Dashboard and metrics access](#dashboard-and-metrics-access)
 
 Contributions and corrections are welcomed here. Would be nice to add a section on Akash deployments too.
 
 ## Docker Container
 
+Opens the dashboard (8888) and metrics (28686) ports, see [dashboard and metrics access](#dashboard-and-metrics-access).
+
 ```shell
 mkdir tenderduty && cd tenderduty
-docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
+docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
+docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
@@ -28,7 +31,7 @@ version: '3.2'
 services:
 
   v2:
-    image: ghcr.io/blockpane/tenderduty:latest
+    image: ghcr.io/kynraze/tenderduty:latest
     command: ""
     ports:
       - "8888:8888" # Dashboard
@@ -36,6 +39,7 @@ services:
     volumes:
       - home:/var/lib/tenderduty
       - ./config.yml:/var/lib/tenderduty/config.yml
+      - ./chains.d:/var/lib/tenderduty/chains.d/
     logging:
       driver: "json-file"
       options:
@@ -48,7 +52,8 @@ volumes:
 EOF
 
 docker-compose pull
-docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
+docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
+mkdir -p chains.d
 
 # Edit the config.yml file, and then start the container
 docker-compose up -d
@@ -77,86 +82,118 @@ brew install go
 
 ### Building
 
-Because of design choices made by golang devs, it's not possible to use 'go install' remotely because tendermint uses replace directives in the go.mod file. It's necessary to clone the repo and build manually.
+Clone the repository before building because its dependencies use replace directives in `go.mod`.
 
 ```
-git clone https://github.com/blockpane/tenderduty
+git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
 cp example-config.yml config.yml
 # edit config.yml with your favorite editor
-go get ./...
-go build -ldflags '-s -w' -trimpath -o ~/go/bin/tenderduty main.go
+go mod download
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
 ## Run as a systemd service on Ubuntu
 
-First, create a new user
+One tenderduty process for all chains, running as its own user.
+
+### 1. Build and install the binary
+
+Install Go using the [instructions above](#installing-go), then:
 
 ```shell
-sudo addgroup --system tenderduty 
-sudo adduser --ingroup tenderduty --system --home /var/lib/tenderduty tenderduty
-```
-
-Install Go: see [the instructions above](#installing-go).
-
-Install the binaries
-
-```shell
-sudo -su tenderduty
-cd ~
-echo 'export PATH=$PATH:~/go/bin' >> .bashrc
-. .bashrc
-git clone https://github.com/blockpane/tenderduty
+git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
-go install
-cp example-config.yml ../config.yml
-cd ..
-# Edit the config.yml with your editor of choice
-exit
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
+sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
 ```
 
-Now create and enable the service
+### 2. Create the user and config directories
 
 ```shell
-# Create the service file
-sudo tee /etc/systemd/system/tenderduty.service << EOF
-[Unit]
-Description=Tenderduty
-After=network.target
-ConditionPathExists=/var/lib/tenderduty/go/bin/tenderduty
+id tenderduty || sudo useradd --system --user-group --home-dir /var/lib/tenderduty --shell /usr/sbin/nologin tenderduty
+sudo install -d -m 0750 -o root -g tenderduty /etc/tenderduty /etc/tenderduty/chains.d
+```
 
-[Service]
-Type=simple
-Restart=always
-RestartSec=5
-TimeoutSec=180
+### 3. Write the configuration
 
-User=tenderduty
-WorkingDirectory=/var/lib/tenderduty
-ExecStart=/var/lib/tenderduty/go/bin/tenderduty
+Copy the examples, then edit them:
 
-# there may be a large number of network connections if a lot of chains
-LimitNOFILE=infinity
+```shell
+sudo cp examples/config.yml /etc/tenderduty/config.yml
+sudo cp examples/chains.d/Osmosis.yml /etc/tenderduty/chains.d/
+```
 
-# extra process isolation
-NoNewPrivileges=true
-ProtectSystem=strict
-RestrictSUIDSGID=true
-LockPersonality=true
-PrivateUsers=true
-PrivateDevices=true
-PrivateTmp=true
+- `config.yml`: notifications and `alert_defaults`.
+- `chains.d/`: one file per chain, use `Realio.yml` for several validators on one chain.
 
-[Install]
-WantedBy=multi-user.target
-EOF
+Then let the service user read them:
 
-# Enable and start the service
+```shell
+sudo chown -R root:tenderduty /etc/tenderduty
+sudo chmod -R u=rwX,g=rX,o= /etc/tenderduty
+```
+
+### 4. Start the service
+
+```shell
+sudo install -m 0644 contrib/tenderduty.service /etc/systemd/system/tenderduty.service
 sudo systemctl daemon-reload
-sudo systemctl enable tenderduty
-sudo systemctl start tenderduty
+sudo systemctl enable --now tenderduty
+sudo journalctl -u tenderduty -f
+```
 
-# and to watch the logs, press CTRL-C to stop watching
-sudo journalctl -fu tenderduty
+State is kept in `/var/lib/tenderduty`. Restart after changing the config: `sudo systemctl restart tenderduty`.
 
+### Updating
+
+
+```shell
+git pull
+go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
+sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
+sudo systemctl restart tenderduty
+```
+
+## Dashboard and metrics access
+
+- Run tenderduty on its own small server, not on a validator, so it keeps alerting when a validator goes down.
+- The dashboard has no login. It only shows on-chain info, so it's fine to share, just set `hide_logs: yes` so node addresses don't show up in the log feed.
+- The prometheus metrics (28686) include node addresses, only open that port to your prometheus server.
+- Using ufw? Allow SSH first. Docker skips ufw rules, so bind private ports like `"127.0.0.1:28686:28686"` instead.
+
+```shell
+sudo ufw allow OpenSSH
+sudo ufw allow 8888/tcp
+sudo ufw allow from YOUR_PROMETHEUS_IP to any port 28686 proto tcp
+sudo ufw enable
+```
+
+For a domain with HTTPS, put a reverse proxy on the host in front of `localhost:8888`. Caddy:
+
+```
+tenderduty.example.com {
+    reverse_proxy localhost:8888
+}
+```
+
+nginx (with certbot for the certificate), the dashboard uses a websocket so pass the upgrade headers:
+
+```
+server {
+    server_name tenderduty.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+Want it private? Add `basic_auth` (Caddy) or `auth_basic` (nginx), or use an SSH tunnel and open `http://127.0.0.1:8888`:
+
+```shell
+ssh -L 8888:127.0.0.1:8888 YOUR_USER@YOUR_MONITOR_SERVER
 ```

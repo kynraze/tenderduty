@@ -1,175 +1,308 @@
+const chains = new Map()
+const activity = []
+const statusOrder = []
+const statusTable = document.getElementById('status-table')
+const chainDialog = document.getElementById('chain-dialog')
+const statusNames = {
+    4: 'proposed',
+    3: 'signed',
+    2: 'precommit',
+    1: 'prevote',
+    0: 'missed',
+    '-1': 'unobserved'
+}
+let filter = 'all'
+let socket
+let reconnectDelay = 3000
+let lastSnapshot = 0
+let logsEnabled = false
 
-async function loadState() {
-   const enableLogs = await fetch("logsenabled", {
-   //const enableLogs = await fetch("http://127.0.0.1:8888/logsenabled", {
-        method: 'GET',
-        mode: 'cors',
-        cache: 'no-cache',
-        credentials: 'same-origin',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer'
-    });
-    let showLog
-    try {
-        showLog = await enableLogs.json()
-    } catch(e) {
-        console.log(e)
+function element(tag, className, value) {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (value !== undefined) node.textContent = value
+    return node
+}
+
+function number(value) {
+    return Number(value).toLocaleString('en-US')
+}
+
+function validatorLabel(count) {
+    return count === 1 ? 'validator' : 'validators'
+}
+
+function age(timestamp) {
+    if (!timestamp) return 'not yet observed'
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp))
+    if (seconds < 60) return `${seconds}s ago`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
+    return `${Math.floor(seconds / 86400)}d ago`
+}
+
+function stateFor(chain) {
+    if (chain.tombstoned) return { label: 'Tombstoned', tone: 'red', rank: 0 }
+    if (chain.jailed) return { label: 'Jailed', tone: 'red', rank: 0 }
+    if (chain.height <= 0 || chain.no_nodes === true) {
+        return { label: 'No data', tone: 'unknown', rank: 1 }
     }
-    if (showLog.enabled === false) {
-        document.getElementById("logContainer").hidden = true
+    if (chain.active_alerts > 0) return { label: 'Needs attention', tone: 'red', rank: 2 }
+    if (chain.monitoring === false) return { label: 'Monitoring interrupted', tone: 'amber', rank: 3 }
+    if (chain.validator_stale) return { label: 'Validator info stale', tone: 'unknown', rank: 3 }
+    if (chain.signing_stale) return { label: 'Signing info stale', tone: 'unknown', rank: 3 }
+    if (chain.last_block_at && Date.now() / 1000 - chain.last_block_at > 600) {
+        return { label: 'No recent blocks', tone: 'amber', rank: 3 }
     }
-    //const response = await fetch("http://127.0.0.1:8888/state", {
-    const response = await fetch("state", {
-        method: 'GET',
-        mode: 'cors',
-        cache: 'no-cache',
-        credentials: 'same-origin',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer'
-    });
-    let initialState
-    try {
-        initialState = await response.json()
-    } catch(e) {
-        console.log(e)
+    if (chain.healthy_nodes < chain.nodes) return { label: 'RPC degraded', tone: 'amber', rank: 3 }
+    if (chain.window <= 0) return { label: 'Signing info unavailable', tone: 'unknown', rank: 3 }
+    if (!chain.bonded) return { label: 'Inactive', tone: 'unknown', rank: 3 }
+    return { label: 'Healthy', tone: 'good', rank: 4 }
+}
+
+function blockTrace(values, limit, label) {
+    const trace = element('div', 'block-tape')
+    const recent = (Array.isArray(values) ? values : []).slice(0, limit)
+    const counts = { proposed: 0, signed: 0, precommit: 0, prevote: 0, missed: 0, unobserved: 0 }
+    for (const value of recent) {
+        const name = statusNames[value] || 'unobserved'
+        counts[name]++
+        trace.appendChild(element('i', name))
     }
-    updateTable(initialState)
-    drawSeries(initialState)
-    const logResponse = await fetch("logs", {
-    //const logResponse = await fetch("http://127.0.0.1:8888/logs", {
-        method: 'GET',
-        mode: 'cors',
-        cache: 'no-cache',
-        credentials: 'same-origin',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer'
-    });
-    try {
-        initialState = await logResponse.json()
-    } catch(e) {
-        console.log(e)
+    trace.setAttribute('role', 'img')
+    trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts.missed} missed, ${counts.precommit} precommit seen, ${counts.prevote} prevote seen, ${counts.unobserved} without data`)
+    return trace
+}
+
+function setConnection(connected) {
+    const label = connected ? `Live · snapshot ${age(lastSnapshot)}` : `Disconnected · last snapshot ${age(lastSnapshot)}`
+    document.getElementById('connection-state').textContent = label
+    document.getElementById('connection-state').classList.toggle('offline', !connected)
+    document.getElementById('monitor-state').textContent = connected ? 'Monitor online' : 'Monitor disconnected'
+    const networks = new Set([...chains.values()].map(chain => chain.chain_id)).size
+    document.getElementById('monitor-detail').textContent = `${chains.size} ${validatorLabel(chains.size)} · ${networks} ${networks === 1 ? 'chain' : 'chains'} · snapshot ${age(lastSnapshot)}`
+}
+
+function setStatus(update) {
+    if (!update || !Array.isArray(update.Status)) return
+    for (const chain of update.Status) {
+        if (!chain || !chain.name) continue
+        chains.set(chain.name, chain)
     }
-    for (let i = initialState.length-1; i >= 0; i--) {
-        if (initialState[i].ts === 0) {
-            addLogMsg("")
-            continue
-        }
-        addLogMsg(`${new Date(initialState[i].ts*1000).toLocaleTimeString()} - ${initialState[i].msg}`)
+    if (statusOrder.length === 0) {
+        statusOrder.push(...[...chains.values()]
+            .sort((left, right) => stateFor(left).rank - stateFor(right).rank || left.name.localeCompare(right.name))
+            .map(chain => chain.name))
+    }
+    for (const name of chains.keys()) {
+        if (!statusOrder.includes(name)) statusOrder.push(name)
+    }
+    lastSnapshot = Date.now() / 1000
+    setConnection(socket && socket.readyState === WebSocket.OPEN)
+    render()
+}
+
+function renderSummary() {
+    const values = [...chains.values()]
+    const attention = values.filter(chain => stateFor(chain).rank < 4)
+    const unavailable = values.filter(chain => stateFor(chain).label === 'No data')
+    const degraded = values.filter(chain => chain.nodes > 0 && chain.healthy_nodes < chain.nodes)
+    document.getElementById('chain-count').textContent = values.length
+    document.getElementById('attention-count').textContent = attention.length
+    document.getElementById('rpc-count').textContent = degraded.length
+    document.getElementById('chain-count-label').textContent = validatorLabel(values.length)
+    document.getElementById('attention-count-label').textContent = validatorLabel(attention.length)
+    document.getElementById('rpc-count-label').textContent = validatorLabel(degraded.length)
+    document.getElementById('coverage-count').textContent = `${values.length - unavailable.length}/${values.length}`
+    const priority = attention.sort((left, right) => stateFor(left).rank - stateFor(right).rank || left.name.localeCompare(right.name))[0]
+    const section = document.getElementById('attention-section')
+    section.hidden = !priority
+    if (!priority) return
+    document.getElementById('priority-count').textContent = `${attention.length} ${validatorLabel(attention.length)} ${attention.length === 1 ? 'needs' : 'need'} attention`
+    document.getElementById('priority-chain').textContent = priority.name
+    document.getElementById('priority-status').textContent = stateFor(priority).label
+    document.getElementById('priority-status').className = `status ${stateFor(priority).tone}`
+    document.getElementById('priority-detail').textContent = priority.last_error || `${priority.healthy_nodes} of ${priority.nodes} configured RPC endpoints responding`
+    document.getElementById('priority-context').textContent = `${priority.healthy_nodes}/${priority.nodes} RPC endpoints healthy`
+    document.getElementById('priority-context-detail').textContent = priority.last_block_at ? `Last block observed ${age(priority.last_block_at)}` : 'No block has been observed yet'
+}
+
+function renderRow(chain) {
+    const state = stateFor(chain)
+    const row = element('tr')
+
+    const identity = element('td')
+    const open = element('button', 'chain-button', chain.name)
+    open.type = 'button'
+    open.dataset.chain = chain.name
+    open.addEventListener('click', () => showDetail(chain.name))
+    identity.appendChild(open)
+    identity.appendChild(element('small', 'cell-detail', `${chain.chain_id || 'Unknown chain'} · ${chain.moniker || 'Unknown validator'}`))
+    row.appendChild(identity)
+
+    const status = element('td')
+    status.appendChild(element('span', `status ${state.tone}`, state.label))
+    row.appendChild(status)
+
+    const height = element('td')
+    height.appendChild(element('span', 'mono', chain.height > 0 ? number(chain.height) : '—'))
+    height.appendChild(element('small', 'cell-detail', chain.last_block_at ? `block ${age(chain.last_block_at)}` : 'not yet observed'))
+    row.appendChild(height)
+
+    const trace = element('td')
+    const tape = blockTrace(chain.blocks, 160, `${chain.name} recent blocks`)
+    tape.classList.add('fill')
+    trace.appendChild(tape)
+    row.appendChild(trace)
+
+    const missed = element('td')
+    missed.appendChild(element('span', 'mono', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : '—'))
+    missed.appendChild(element('small', 'cell-detail', chain.signing_stale ? 'last known signing window' : 'current signing window'))
+    row.appendChild(missed)
+
+    const rpc = element('td')
+    rpc.appendChild(element('span', 'mono', `${chain.healthy_nodes} / ${chain.nodes}`))
+    row.appendChild(rpc)
+    return row
+}
+
+function render() {
+    const focusedChain = document.activeElement && document.activeElement.dataset.chain
+    const ordered = statusOrder.map(name => chains.get(name)).filter(Boolean)
+    renderSummary()
+    statusTable.replaceChildren()
+    const visible = ordered.filter(chain => {
+        if (filter === 'attention') return stateFor(chain).rank < 4
+        if (filter === 'unavailable') return stateFor(chain).label === 'No data'
+        return true
+    })
+    if (visible.length === 0) {
+        const row = element('tr')
+        const cell = element('td', 'empty', chains.size ? 'No validators match this view.' : 'Waiting for chain data…')
+        cell.colSpan = 6
+        row.appendChild(cell)
+        statusTable.appendChild(row)
+    } else {
+        statusTable.append(...visible.map(renderRow))
+    }
+    if (focusedChain) {
+        const target = [...statusTable.querySelectorAll('[data-chain]')].find(node => node.dataset.chain === focusedChain)
+        if (target) target.focus({ preventScroll: true })
     }
 }
 
-const blocks = new Map();
-function updateTable(status) {
-    for (let i = document.getElementById("statusTable").rows.length; i > 0; i--) {
-        document.getElementById("statusTable").deleteRow(i-1)
+function showDetail(name) {
+    const chain = chains.get(name)
+    if (!chain) return
+    document.getElementById('detail-heading').textContent = name
+    document.getElementById('detail-subtitle').textContent = `${chain.chain_id || 'Unknown chain'} · ${chain.moniker || 'Unknown validator'}`
+    const facts = document.getElementById('detail-facts')
+    facts.replaceChildren()
+    const rows = [
+        ['Status', stateFor(chain).label],
+        ['Height', chain.height > 0 ? number(chain.height) : 'Unavailable'],
+        ['Last observed block', age(chain.last_block_at)],
+        [chain.signing_stale ? 'Missed / signing window (last known)' : 'Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : 'Unavailable'],
+        ['Healthy RPC endpoints', `${chain.healthy_nodes} / ${chain.nodes}`],
+        ['Active alerts', String(chain.active_alerts || 0)]
+    ]
+    for (const [label, value] of rows) {
+        const item = element('div', 'detail-fact')
+        item.appendChild(element('small', '', label))
+        item.appendChild(element('strong', '', value))
+        facts.appendChild(item)
     }
-    const fade = `uk-animation-scale-up`
-    for (let i = 0; i < status.Status.length; i++) {
+    const history = document.getElementById('detail-blocks')
+    history.replaceChildren()
+    history.appendChild(blockTrace(chain.blocks, 512, `${name} block history`))
+    document.getElementById('detail-error').textContent = chain.last_error || ''
+    chainDialog.showModal()
+}
 
-        let alerts = "&nbsp;"
-        if (status.Status[i].active_alerts > 0 || status.Status[i].last_error !== "") {
-            if (status.Status[i].last_error !== "") {
-                alerts = `
-            <a href="#modal-center-${status.Status[i].name}" uk-toggle><span uk-icon='warning' uk-tooltip="${_.escape(status.Status[i].active_alerts)} active issues" style='color: darkorange'></span></a>
-            <div id="modal-center-${_.escape(status.Status[i].name)}" class="uk-flex-top" uk-modal>
-                <div class="uk-modal-dialog uk-modal-body uk-margin-auto-vertical uk-background-secondary">
-                    <button class="uk-modal-close-default" type="button" uk-close></button>
-                    <pre class=" uk-background-secondary" style="color: white">${_.escape(status.Status[i].last_error)}</pre>
-                </div>
-            </div>
-            `
-            } else {
-                alerts = `<span uk-icon='warning' uk-tooltip="${_.escape(status.Status[i].active_alerts)} active issues" style='color: darkorange'></span>`
+function addActivity(entry) {
+    if (!entry || !entry.msg) return
+    if (activity.some(item => item.ts === entry.ts && item.msg === entry.msg)) return
+    activity.unshift(entry)
+    if (activity.length > 20) activity.pop()
+    const list = document.getElementById('activity-list')
+    list.replaceChildren()
+    for (const item of activity.slice(0, 8)) {
+        const row = element('li', 'activity-item')
+        row.appendChild(element('time', 'mono', item.ts ? new Date(item.ts * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '—'))
+        row.appendChild(element('span', '', item.msg))
+        list.appendChild(row)
+    }
+}
+
+async function loadInitial() {
+    try {
+        const [settings, snapshot] = await Promise.all([fetch('logsenabled'), fetch('state')])
+        if (!settings.ok || !snapshot.ok) throw new Error('Could not load monitor state')
+        logsEnabled = (await settings.json()).enabled === true
+        document.getElementById('log-section').hidden = !logsEnabled
+        document.getElementById('activity-nav').hidden = !logsEnabled
+        setStatus(await snapshot.json())
+        if (logsEnabled) {
+            const response = await fetch('logs')
+            if (response.ok) {
+                const recent = await response.json()
+                if (Array.isArray(recent)) recent.reverse().forEach(addActivity)
             }
         }
-
-        let bonded = ""
-        switch (true) {
-            case status.Status[i].tombstoned:
-                bonded = "<div class='uk-text-warning'><span uk-icon='ban'></span> <strong>Tombstoned</strong></div>"
-                break
-            case status.Status[i].jailed:
-                bonded = "<span uk-icon='warning'></span> <strong>Jailed</strong>"
-                break
-            case status.Status[i].bonded:
-                bonded = "<span uk-icon='check'></span>"
-                break
-            default:
-                bonded = "<span uk-icon='minus-circle'></span> Not active"
-        }
-
-        let window = `<div class="uk-width-1-2" style="text-align: end">`
-        if (status.Status[i].missed === 0 && status.Status[i].window === 0) {
-            window += "error</div>"
-        } else if (status.Status[i].missed === 0) {
-            window += `100%</div>`
-        } else {
-            window += `${(100 - (status.Status[i].missed / status.Status[i].window) * 100).toFixed(2)}%</div>`
-        }
-        window += `<div class="uk-width-1-2">${_.escape(status.Status[i].missed)} / ${_.escape(status.Status[i].window)}</div>`
-
-        let nodes = `${_.escape(status.Status[i].healthy_nodes)} / ${_.escape(status.Status[i].nodes)}`
-        if (status.Status[i].healthy_nodes < status.Status[i].nodes) {
-            nodes = "<strong><span uk-icon='arrow-down' style='color: darkorange'></span>" + nodes + "</strong>"
-        }
-
-        let heightClass = ""
-        if (blocks.get(status.Status[i].chain_id) !== status.Status[i].height){
-            heightClass = fade
-        }
-        blocks.set(status.Status[i].chain_id, status.Status[i].height)
-
-        let r=document.getElementById('statusTable').insertRow(i)
-        r.insertCell(0).innerHTML = `<div>${alerts}</div>`
-        r.insertCell(1).innerHTML = `<div>${_.escape(status.Status[i].name)} (${_.escape(status.Status[i].chain_id)})</div>`
-        r.insertCell(2).innerHTML = `<div class="${heightClass}" style="font-family: monospace; color: #6f6f6f; text-align: start">${_.escape(status.Status[i].height)}</div>`
-        if (status.Status[i].moniker === "not connected") {
-            r.insertCell(3).innerHTML = `<div class="uk-text-warning">${_.escape(status.Status[i].moniker)}</div>`
-            bonded = "unknown"
-        } else {
-            r.insertCell(3).innerHTML = `<div class='uk-text-truncate'>${_.escape(status.Status[i].moniker.substring(0,24))}</div>`
-        }
-        r.insertCell(4).innerHTML = `<div style="text-align: center">${bonded}</div>`
-        r.insertCell(5).innerHTML = `<div uk-grid>${window}</div>`
-        r.insertCell(6).innerHTML = `<div class="uk-text-center">${nodes}</div>`
-    }
-}
-
-let logs = new Array(1);
-function addLogMsg(str) {
-    if (logs.length >= 256) {
-        logs.pop()
-    }
-    logs.unshift(str)
-    if (document.visibilityState !== "hidden") {
-        document.getElementById("logs").innerText = logs.join("\n")
+    } catch (error) {
+        document.getElementById('monitor-detail').textContent = error.message
     }
 }
 
 function connect() {
-    let wsProto = "ws://"
-    if (location.protocol === "https:") {
-        wsProto = "wss://"
-    }
-    const parse = function (event) {
-        const msg = JSON.parse(event.data);
-        if (msg.msgType === "log"){
-            addLogMsg(`${new Date(msg.ts*1000).toLocaleTimeString()} - ${msg.msg}`)
-        } else if (msg.msgType === "update" && document.visibilityState !== "hidden"){
-            updateTable(msg)
-            drawSeries(msg)
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    socket = new WebSocket(`${protocol}//${location.host}/ws`)
+    socket.addEventListener('open', () => {
+        reconnectDelay = 3000
+        setConnection(true)
+        loadInitial()
+    })
+    socket.addEventListener('message', event => {
+        try {
+            const message = JSON.parse(event.data)
+            if (message.msgType === 'update') setStatus(message)
+            if (message.msgType === 'log' && logsEnabled) addActivity(message)
+        } catch (error) {
+            console.error('Could not read monitor update', error)
         }
-        event = null
-    }
-    const socket = new WebSocket(wsProto + location.host + '/ws');
-    //const socket = new WebSocket('ws://127.0.0.1:8888/ws');
-    socket.addEventListener('message', function (event) {parse(event)});
-    socket.onclose = function(e) {
-        console.log('Socket is closed, retrying /ws ...', e.reason);
-        addLogMsg('Socket is closed, retrying /ws ...' + e.reason)
-        setTimeout(function() {
-            connect();
-        }, 3000);
-    };
+    })
+    socket.addEventListener('close', () => {
+        setConnection(false)
+        setTimeout(connect, reconnectDelay)
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000)
+    })
+    socket.addEventListener('error', () => socket.close())
 }
+
+for (const button of document.querySelectorAll('[data-filter]')) {
+    button.addEventListener('click', () => {
+        filter = button.dataset.filter
+        for (const option of document.querySelectorAll('[data-filter]')) {
+            const selected = option === button
+            option.classList.toggle('current', selected)
+            option.setAttribute('aria-pressed', String(selected))
+        }
+        render()
+    })
+}
+document.getElementById('detail-close').addEventListener('click', () => chainDialog.close())
+document.getElementById('sort-urgency').addEventListener('click', () => {
+    statusOrder.splice(0, statusOrder.length, ...[...chains.values()]
+        .sort((left, right) => stateFor(left).rank - stateFor(right).rank || left.name.localeCompare(right.name))
+        .map(chain => chain.name))
+    render()
+})
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) loadInitial()
+})
+setInterval(() => {
+    setConnection(socket && socket.readyState === WebSocket.OPEN)
+    render()
+}, 30000)
+loadInitial()
 connect()

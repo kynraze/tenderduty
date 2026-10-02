@@ -24,19 +24,23 @@ func init() {
 		for msg := range logs {
 			msg = strings.TrimRight(strings.TrimLeft(fmt.Sprint(msg), "["), "]")
 			log.Println("tenderduty | ", msg)
-			if td.EnableDash && !td.HideLogs && td.logChan != nil {
-				td.logChan <- dash.LogMessage{
-					MsgType: "log",
-					Ts:      time.Now().UTC().Unix(),
-					Msg:     msg.(string),
-				}
-			}
 		}
 	}()
 }
 
-var logs = make(chan interface{})
+var logs = make(chan interface{}, 128)
 
 func l(v ...any) {
-	logs <- v
+	c := td
+	if c.EnableDash && !c.HideLogs && c.logChan != nil {
+		select {
+		case c.logChan <- dash.LogMessage{MsgType: "log", Ts: time.Now().UTC().Unix(), Msg: strings.TrimSpace(fmt.Sprintln(v...))}:
+		default:
+		}
+	}
+	select {
+	case logs <- v:
+	default:
+		log.Println(v...)
+	}
 }

@@ -68,5 +68,6 @@ func main() {
 	err := td2.Run(configFile, stateFile, chainConfigDirectory, &password)
 	if err != nil {
 		log.Println(err.Error(), "... exiting.")
+		os.Exit(1)
 	}
 }

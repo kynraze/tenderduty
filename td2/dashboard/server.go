@@ -1,12 +1,13 @@
 package dash
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"github.com/gorilla/websocket"
 	"github.com/textileio/go-threads/broadcast"
 	"io/fs"
-	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -17,21 +18,33 @@ import (
 var (
 	Content embed.FS
 	rootDir fs.FS
-	rex     = regexp.MustCompile(`\W(https?|tcp|wss?)://.+\w`)
+	rex     = regexp.MustCompile(`(?:https?|tcp|wss?)://[^\s]+`)
 )
 
 const logLength = 256
 
-func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool) {
+func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
+	copy := *status
+	copy.Blocks = append([]int(nil), status.Blocks...)
+	if hideLogs {
+		copy.LastError = rex.ReplaceAllString(copy.LastError, "-redacted-")
+	}
+	return &copy
+}
+
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var err error
 	rootDir, err = fs.Sub(Content, "static")
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	var cast broadcast.Broadcaster
 
 	// cache the json .... don't serialize on-demand
-	logCache, statusCache := []byte{'[', ']'}, []byte{'{', '}'}
+	logCache, statusCache := []byte("[]"), []byte(`{"msgType":"update","Status":[]}`)
+	cacheMux := sync.RWMutex{}
 
 	statusMux := sync.Mutex{}
 	status := make(map[string]*ChainStatus)
@@ -42,22 +55,28 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 		Status      []*ChainStatus
 	}
 
+	finished := make(chan struct{})
+	defer func() { cancel(); cast.Discard(); <-finished }()
 	go func() {
+		defer close(finished)
 		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
 		update := false
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-tick.C:
 				if update {
+					cacheMux.RLock()
 					_ = cast.Send(statusCache)
+					cacheMux.RUnlock()
 					update = false
 				}
 
 			case u := <-updates:
 				// try to catch any accidental rpc endpoint leaks
-				if hideLogs && rex.MatchString(u.LastError) {
-					rex.ReplaceAllString(u.LastError, "-redacted-")
-				}
+				u = statusSnapshot(u, hideLogs)
 				statusMux.Lock() // probably unnecessary
 				status[u.Name] = u
 				result := make([]*ChainStatus, 0)
@@ -66,7 +85,7 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 				}
 				statusMux.Unlock()
 				sort.Slice(result, func(i, j int) bool {
-					return sort.StringsAreSorted([]string{result[i].Name, result[j].Name})
+					return result[i].Name < result[j].Name
 				})
 				j, e := json.Marshal(statusUpdate{
 					MessageType: "update",
@@ -75,7 +94,9 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 				if e != nil {
 					continue
 				}
+				cacheMux.Lock()
 				statusCache = j
+				cacheMux.Unlock()
 				update = true
 
 			case l := <-logs:
@@ -91,7 +112,9 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 				if e != nil {
 					continue
 				}
+				cacheMux.Lock()
 				logCache = j
+				cacheMux.Unlock()
 				j, e = json.Marshal(l)
 				if e != nil {
 					continue
@@ -102,10 +125,13 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 	}()
 
 	var upgrader = websocket.Upgrader{}
-	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	upgrader.EnableCompression = true
 
-	http.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
+	mux := http.NewServeMux()
+	for _, path := range []string{"/health", "/ready"} {
+		mux.HandleFunc(path, healthHandler(health, path == "/ready"))
+	}
+	mux.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
 		c, err := upgrader.Upgrade(writer, request, nil)
 		if err != nil {
 			return
@@ -114,6 +140,7 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 		sub := cast.Listen()
 		defer sub.Discard()
 		for message := range sub.Channel() {
+			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			e := c.WriteMessage(websocket.TextMessage, message.([]byte))
 			if e != nil {
 				return
@@ -121,33 +148,62 @@ func Serve(port string, updates chan *ChainStatus, logs chan LogMessage, hideLog
 		}
 	})
 
-	http.HandleFunc("/logsenabled", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/logsenabled", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		writer.Header().Set("Cache-Control", "no-store")
 		j, _ := json.Marshal(map[string]bool{"enabled": !hideLogs})
 		_, _ = writer.Write(j)
 	})
 
-	http.HandleFunc("/logs", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/logs", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		writer.Header().Set("Cache-Control", "no-store")
+		cacheMux.RLock()
+		defer cacheMux.RUnlock()
 		_, _ = writer.Write(logCache)
 	})
 
-	http.HandleFunc("/state", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/state", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		writer.Header().Set("Cache-Control", "no-store")
+		cacheMux.RLock()
+		defer cacheMux.RUnlock()
 		_, _ = writer.Write(statusCache)
 	})
 
-	http.Handle("/", &CacheHandler{})
+	mux.Handle("/", &CacheHandler{})
 	server := &http.Server{
 		Addr:              ":" + port,
+		Handler:           mux,
 		ReadHeaderTimeout: 3 * time.Second,
 	}
+	serverDone := make(chan struct{})
+	defer close(serverDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = server.Close()
+		case <-serverDone:
+		}
+	}()
 	err = server.ListenAndServe()
 	cast.Discard()
-	log.Fatal("tenderduty dashboard server failed", err)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		status := health()
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Cache-Control", "no-store")
+		if !status.Alive || (readiness && !status.Ready) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(writer).Encode(status)
+	}
 }
 
 // CacheHandler implements the Handler interface with a Cache-Control set on responses

@@ -130,12 +130,9 @@ func decrypt(encodedFile []byte, password string) (plainText []byte, err error) 
 	if err != nil {
 		return
 	}
-	// decoding can leave null bytes at the end of our slice, which will result in an invalid hmac key
-	for cipherText[len(cipherText)-1] == 0 {
-		cipherText = cipherText[:len(cipherText)-1]
-	}
-
-	if size <= 2*idKeySize+ivSize {
+	// Decode returns the exact length; trailing zero bytes may belong to the MAC.
+	cipherText = cipherText[:size]
+	if size < idKeySize+ivSize+macSize+aes.BlockSize || (size-idKeySize-ivSize-macSize)%aes.BlockSize != 0 {
 		err = errors.New("ciphertext is too short")
 		return
 	}
@@ -155,7 +152,7 @@ func decrypt(encodedFile []byte, password string) (plainText []byte, err error) 
 		return
 	}
 	authSum := auth.Sum(nil)
-	if !bytes.Equal(cipherText[len(cipherText)-macSize:], authSum) {
+	if !hmac.Equal(cipherText[len(cipherText)-macSize:], authSum) {
 		err = errors.New("HMAC authentication failed")
 		return
 	}
@@ -174,10 +171,15 @@ func decrypt(encodedFile []byte, password string) (plainText []byte, err error) 
 
 	// strip padding
 	padLen := int(plainText[len(plainText)-1])
-	if (len(plainText)-padLen)%block.BlockSize() != 0 {
-		return plainText[:len(plainText)-padLen], nil
+	if padLen < 1 || padLen > block.BlockSize() || padLen > len(plainText) {
+		return nil, errors.New("invalid plaintext padding")
 	}
-	return
+	for _, value := range plainText[len(plainText)-padLen:] {
+		if int(value) != padLen {
+			return nil, errors.New("invalid plaintext padding")
+		}
+	}
+	return plainText[:len(plainText)-padLen], nil
 }
 
 // EncryptedConfig handles conversion of an encrypted or plaintext config to disk

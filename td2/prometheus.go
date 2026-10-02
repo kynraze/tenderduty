@@ -2,11 +2,11 @@ package tenderduty
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -61,7 +61,9 @@ func (m metrics) setStat(update *promUpdate) {
 	m[update.metric].With(lbls).Set(update.counter)
 }
 
-func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
+func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// attributes used to uniquely identify each chain
 	var chainLabels = []string{"name", "chain_id", "moniker"}
 	var hostLabels = []string{"name", "chain_id", "moniker", "endpoint"}
@@ -145,7 +147,10 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
 		metricNodeDownSeconds:          nodeDownSec, // todo
 	}
 
+	finished := make(chan struct{})
+	defer func() { cancel(); <-finished }()
 	go func() {
+		defer close(finished)
 		for {
 			select {
 			case u := <-updates:
@@ -158,7 +163,7 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
 
 	promMux := http.NewServeMux()
 
-	l("serving prometheus metrics at 0.0.0.0:%d/metrics", td.PrometheusListenPort)
+	l(fmt.Sprintf("serving prometheus metrics at 0.0.0.0:%d/metrics", td.PrometheusListenPort))
 	promMux.Handle("/metrics", promhttp.Handler())
 	promSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", td.PrometheusListenPort),
@@ -168,5 +173,18 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 20 * time.Second,
 	}
-	log.Fatal(promSrv.ListenAndServe())
+	serverDone := make(chan struct{})
+	defer close(serverDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = promSrv.Close()
+		case <-serverDone:
+		}
+	}()
+	err := promSrv.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }

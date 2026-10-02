@@ -11,7 +11,7 @@ $ tenderduty -example-config > config.yml
 Or if using the docker image:
 
 ```
-$ docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
+$ docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 ```
 
 * [General Settings](#general-settings)
@@ -44,6 +44,63 @@ chains:
     nodes:
       - url: tcp://localhost:26657
 ```
+
+## Shared configuration
+
+### Shared alert settings
+
+Set `alert_defaults` once to apply alert thresholds and notification destinations to every chain. A chain can include only the values that differ under its own `alerts` section. An explicit `enabled: no` overrides an inherited `enabled: yes`. Existing configurations without `alert_defaults` keep their current behavior.
+
+Unknown settings, missing credentials and invalid RPC URLs are logged as warnings. A `chains.d` file replaces a chain with the same name in `config.yml`.
+
+```yaml
+telegram:
+  enabled: yes
+  api_key: "your-bot-token"
+  channel: "your-chat-id"
+
+alert_defaults:
+  consecutive_enabled: yes
+  consecutive_missed: 5
+  telegram:
+    enabled: yes
+
+chains:
+  Osmosis:
+    chain_id: osmosis-1
+    valoper_address: osmovaloper1...
+    nodes:
+      - url: http://localhost:26657
+    alerts:
+      consecutive_missed: 3
+```
+
+Both the global notification destination and its effective chain setting must be enabled. Use a chain override to turn a destination off for one chain.
+
+### Realio multistaking support
+
+Running several validators on one chain, like Realio multistaking? List them under `validators` instead of `valoper_address`, each with its own `nodes`. Works on any chain.
+
+```yaml
+chains:
+  Realio:
+    chain_id: realionetwork_3301-1
+    validators:
+      - name: RIO
+        valoper_address: realiovaloper1first...
+        nodes:
+          - url: http://node-a:26657
+            alert_if_down: yes
+      - name: dstrx
+        valoper_address: realiovaloper1second...
+        nodes:
+          - url: http://node-b:26657
+            alert_if_down: yes
+```
+
+- Each validator alerts on its own, as `Realio / RIO` and `Realio / dstrx`.
+- A node going down alerts under its validator.
+- Chain level `nodes` aren't allowed here, use `public_fallback` for a backup.
 
 ## General Settings
 
