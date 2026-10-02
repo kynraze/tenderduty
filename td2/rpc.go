@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sync"
 	"time"
 
@@ -89,16 +87,11 @@ func (cc *ChainConfig) newRpc() error {
 		return nil
 	}
 	if cc.PublicFallback {
-		if u, ok := getRegistryUrl(cc.ChainId); ok {
-			node := guessPublicEndpoint(td.context(), u)
-			l(cc.ChainId, "⛑ attemtping to use public fallback node", node)
-			if _, kk, _ := tryUrl(node); !kk {
-				l(cc.ChainId, "⛑ connected to public endpoint", node)
-				return nil
-			}
-		} else {
-			l("could not find a public endpoint for", cc.ChainId)
+		if node, ok := cc.publicFallback(tryUrl); ok {
+			l(cc.ChainId, "⛑ connected to public endpoint", node)
+			return nil
 		}
+		l(cc.ChainId, "⛑ no public endpoint with a working websocket")
 	}
 	cc.setNoNodes(true)
 	if td.EnableDash {
@@ -234,40 +227,4 @@ func pingURL(ctx context.Context, client *http.Client, endpoint string) error {
 		return fmt.Errorf("healthcheck returned status %d", response.StatusCode)
 	}
 	return nil
-}
-
-// endpointRex matches the first a tag's hostname and port if present.
-var endpointRex = regexp.MustCompile(`//([^/:]+)(:\d+)?`)
-
-// guessPublicEndpoint attempts to deal with a shortcoming in the tendermint RPC client that doesn't allow path prefixes.
-// The cosmos.directory requires them. This is a workaround to get the actual URL for the server behind their proxy.
-// The RPC base URL will return links endpoints, and we can parse this to guess the original URL.
-func guessPublicEndpoint(ctx context.Context, u string) string {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"/", nil)
-	if err != nil {
-		return u
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return u
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return u
-	}
-	matches := endpointRex.FindStringSubmatch(string(b))
-	if len(matches) < 2 {
-		// didn't work
-		return u
-	}
-	proto := "https://"
-	port := ":443"
-	// will be 3 elements if there is a port no port means listening on https
-	if len(matches) == 3 && matches[2] != "" && matches[2] != ":443" {
-		proto = "http://"
-		port = matches[2]
-	}
-	return proto + matches[1] + port
 }

@@ -125,6 +125,7 @@ type ChainConfig struct {
 	blockTime           time.Duration // running average of the time between blocks
 	proposals           []govProposal // proposals in voting, from the last refresh
 	proposalsLoaded     bool
+	publicNode          string       // the public fallback node that worked last
 	upgrade             *upgradePlan // the scheduled upgrade, nil when there is none
 	upgradeLoaded       bool
 

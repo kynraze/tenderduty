@@ -109,8 +109,7 @@ var cosmosPaths = map[string]string{
 }
 var pathMux sync.Mutex
 
-const registryJson = "https://chains.cosmos.directory/"
-const publicRpcUrl = "https://rpc.cosmos.directory:443/"
+var registryJson = "https://chains.cosmos.directory/"
 
 // a trimmed down version only holding the info we need to create a lookup map
 type registryResults struct {
@@ -120,7 +119,7 @@ type registryResults struct {
 	} `json:"chains"`
 }
 
-// refreshRegistry updates the path map for public RPC endpoints for @eco_stake's public RPC proxy
+// refreshRegistry updates the chain id to registry path map, the public fallback looks nodes up by it
 func refreshRegistry(ctx context.Context) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryJson, nil)
@@ -156,10 +155,4 @@ func refreshRegistry(ctx context.Context) error {
 		cosmosPaths[c.ChainId] = c.Path
 	}
 	return nil
-}
-
-func getRegistryUrl(chainid string) (url string, ok bool) {
-	pathMux.Lock()
-	defer pathMux.Unlock()
-	return publicRpcUrl + cosmosPaths[chainid], cosmosPaths[chainid] != ""
 }

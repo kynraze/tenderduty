@@ -126,8 +126,8 @@ chains:
     #     nodes:
     #       - url: http://node-b:26657
     #         alert_if_down: yes
-    # Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
-    # This isn't always reliable, not all public nodes have websocket proxying setup correctly.
+    # Should the monitor fall back to a public RPC node if all supplied nodes fail? It picks one from the chain registry
+    # that is on the right chain, synced, and accepts websockets. Public nodes aren't yours, only use this as a backup.
     public_fallback: no
     # Added to every alert for this chain, useful to tell which tenderduty instance sent it.
     # extra_info: "sent from monitor-eu"
