@@ -17,9 +17,6 @@ var altValopers = &valoperOverrides{
 	Prefixes: map[string]string{
 		"ival":    "ica",         // Iris hub
 		"crocncl": "crocnclcons", // Crypto.org
-
-		// TODO: was told tgrade also has a custom prefix, but not sure what the pair is
-		// "tval": "tvalcons",
 	},
 }
 

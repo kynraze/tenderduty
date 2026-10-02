@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gorilla/websocket"
-	"github.com/textileio/go-threads/broadcast"
 	"io/fs"
 	"net/http"
 	"regexp"
@@ -40,7 +39,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	if err != nil {
 		return err
 	}
-	var cast broadcast.Broadcaster
+	var cast broadcaster
 
 	// cache the json .... don't serialize on-demand
 	logCache, statusCache := []byte("[]"), []byte(`{"msgType":"update","Status":[]}`)
@@ -56,7 +55,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	}
 
 	finished := make(chan struct{})
-	defer func() { cancel(); cast.Discard(); <-finished }()
+	defer func() { cancel(); cast.close(); <-finished }()
 	go func() {
 		defer close(finished)
 		tick := time.NewTicker(time.Second)
@@ -69,7 +68,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 			case <-tick.C:
 				if update {
 					cacheMux.RLock()
-					_ = cast.Send(statusCache)
+					cast.send(statusCache)
 					cacheMux.RUnlock()
 					update = false
 				}
@@ -119,7 +118,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 				if e != nil {
 					continue
 				}
-				_ = cast.Send(j)
+				cast.send(j)
 			}
 		}
 	}()
@@ -137,11 +136,11 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 			return
 		}
 		defer c.Close()
-		sub := cast.Listen()
-		defer sub.Discard()
-		for message := range sub.Channel() {
+		sub, stop := cast.listen()
+		defer stop()
+		for message := range sub {
 			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			e := c.WriteMessage(websocket.TextMessage, message.([]byte))
+			e := c.WriteMessage(websocket.TextMessage, message)
 			if e != nil {
 				return
 			}
@@ -187,7 +186,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 		}
 	}()
 	err = server.ListenAndServe()
-	cast.Discard()
+	cast.close()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

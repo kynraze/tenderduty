@@ -28,7 +28,6 @@ All remaining advisories come from `cosmos-sdk` v0.45.11 (EOL) and `tendermint` 
 
 The fix is to stop depending on them: tenderduty only needs a few RPC calls (`status`, `abci_query`), the staking/slashing query types and bech32. Those can come from a small RPC client and `cosmossdk.io/api`, which would drop the SDK and Tendermint entirely. This needs testing against the chain versions people run.
 
-Smaller items:
+Also left: move to YAML v4 once it's stable (still a release candidate).
 
-- Replace `textileio/go-threads`, only its broadcast package is used by the dashboard.
-- Move to YAML v4 once it's stable.
+`textileio/go-threads` is gone, the dashboard has its own small broadcaster now.
