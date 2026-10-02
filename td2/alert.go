@@ -379,17 +379,29 @@ type Attachment struct {
 	TitleLink string `json:"title_link"`
 }
 
-func buildSlackMessage(msg *alertMsg) *SlackMessage {
-	icon, state := msg.header()
-	color := "danger"
-	message := msg.text()
+// tone is how serious a notification looks, the colors discord and slack show are picked from it. Only the three
+// states that need an eye get a color, anything else stays plain so a channel doesn't read as a rainbow.
+func (msg *alertMsg) tone() string {
 	switch {
 	case msg.resolved:
-		message = "OK: " + message
-		color = "good"
+		return "good"
+	case msg.severity == "info":
+		return "plain"
 	case msg.severity == "warning":
-		color = "warning"
+		return "warning"
+	default:
+		return "danger"
 	}
+}
+
+func buildSlackMessage(msg *alertMsg) *SlackMessage {
+	icon, state := msg.header()
+	message := msg.text()
+	if msg.resolved {
+		message = "OK: " + message
+	}
+	// slack's own words, "plain" leaves the bar off
+	color := map[string]string{"good": "good", "warning": "warning", "danger": "danger"}[msg.tone()]
 	return &SlackMessage{
 		Text: message,
 		Attachments: []Attachment{
@@ -454,14 +466,8 @@ type DiscordEmbed struct {
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 	icon, state := msg.header()
-	// red, amber and green, the dashboard's colors
-	color := uint(0xf27c76)
-	switch {
-	case msg.resolved:
-		color = 0x63d6c4
-	case msg.severity == "warning":
-		color = 0xf1b663
-	}
+	// the dashboard's colors, "plain" is 0 which discord draws without a bar
+	color := map[string]uint{"good": 0x63d6c4, "warning": 0xf1b663, "danger": 0xf27c76}[msg.tone()]
 	return &DiscordMessage{
 		Username: "Tenderduty",
 		Content:  strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions)),

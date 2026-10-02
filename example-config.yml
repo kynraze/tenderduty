@@ -35,6 +35,10 @@ discord:
   enabled: no
   # The webhook is set by right-clicking on a channel, editing the settings, and configuring a webhook in the intergrations section.
   webhook: https://discord.com/api/webhooks/999999999999999999/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+  # Added to the first line of every alert. Only discord's own forms ping, plain text like @ken does not:
+  # a user is <@807168869361975357>, a role is <@&1130372261596303381>, or use @here and @everyone.
+  # Turn on developer mode in discord to copy an id: right click a name > Copy User ID.
+  mentions: []
 
 # Telegram settings
 telegram:
@@ -44,6 +48,8 @@ telegram:
   api_key: "5555555555:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   # The group ID for the chat where messages will be sent. Google how to find this, will include better info later.
   channel: "-666666666"
+  # Added to the end of every alert. A telegram ping needs @username, a plain name does not notify.
+  mentions: []
   # Answer /status (every chain) and /status <chain> sent to the bot in the channel above. In a group only the admins
   # (telegram user ids) can use it. Nothing else may read the bot's updates at the same time.
   commands: no

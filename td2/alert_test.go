@@ -169,3 +169,26 @@ func TestTelegramMessageIsReadable(t *testing.T) {
 		t.Fatalf("resolved message is %q", got)
 	}
 }
+
+func TestNotificationColorsFollowSeverity(t *testing.T) {
+	for _, tc := range []struct {
+		severity string
+		resolved bool
+		discord  uint
+		slack    string
+	}{
+		{"info", false, 0, ""},
+		{"warning", false, 0xf1b663, "warning"},
+		{"critical", false, 0xf27c76, "danger"},
+		{"info", true, 0x63d6c4, "good"},
+		{"critical", true, 0x63d6c4, "good"},
+	} {
+		msg := &alertMsg{chain: "AtomOne", message: "something happened", severity: tc.severity, resolved: tc.resolved}
+		if got := buildDiscordMessage(msg).Embeds[0].Color; got != tc.discord {
+			t.Fatalf("%+v discord color %#x, want %#x", tc, got, tc.discord)
+		}
+		if got := buildSlackMessage(msg).Attachments[0].Color; got != tc.slack {
+			t.Fatalf("%+v slack color %q, want %q", tc, got, tc.slack)
+		}
+	}
+}
