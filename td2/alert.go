@@ -53,7 +53,7 @@ func (msg *alertMsg) summary() string {
 			return rest
 		}
 	}
-	if strings.HasPrefix(msg.message, "Proposal #") && !msg.resolved {
+	if (strings.HasPrefix(msg.message, "Proposal #") || strings.Contains(msg.message, "\nCan unjail after ")) && !msg.resolved {
 		return govTimeLeft(msg.message)
 	}
 	if strings.HasPrefix(msg.message, "Upgrade ") && !msg.resolved {
@@ -83,6 +83,28 @@ func (msg *alertMsg) header() (icon, state string) {
 			return "⏰", "Vote reminder"
 		}
 		return "🗳", "New proposal"
+	}
+	switch first, _, _ := strings.Cut(msg.message, "\n"); {
+	case strings.Contains(first, " is tombstoned on "):
+		if msg.resolved {
+			return "✅", "Resolved"
+		}
+		return "☠️", "Tombstoned"
+	case strings.Contains(first, " is jailed on "):
+		if msg.resolved {
+			return "✅", "Active again"
+		}
+		return "🚨", "Jailed"
+	case strings.Contains(first, " is no longer in the active set on "):
+		if msg.resolved {
+			return "✅", "Active again"
+		}
+		return "🚨", "Inactive"
+	case strings.Contains(first, " can unjail on "):
+		if msg.resolved {
+			return "✅", "Unjailed"
+		}
+		return "🔓", "Can unjail"
 	}
 	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
 		if msg.resolved {
@@ -522,7 +544,7 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 		action = "resolve"
 	}
 	payload := &pagerduty.V2Payload{
-		Summary:  msg.summary(),
+		Summary:  strings.ReplaceAll(msg.summary(), "\n", " · "), // pagerduty shows one line
 		Source:   msg.uniqueId,
 		Severity: msg.severity,
 	}
@@ -701,7 +723,16 @@ func (cc *ChainConfig) watch() {
 	jailSoonAlarm = alarmIsActive(cc.name, cc.jailSoonMessage(valInfo.Moniker))
 	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
+	// the old message is still matched so alarms saved by earlier versions clear
 	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
+	if inactiveMessage == "" {
+		inactiveMessage = activeMessage(cc.name, " is no longer in the active set on ")
+	}
+	if inactiveMessage == "" {
+		inactiveMessage = activeMessage(cc.name, " is jailed on ")
+	}
+	tombstoneMessage := activeMessage(cc.name, " is tombstoned on ")
+	unjailMessage := activeMessage(cc.name, " can unjail on ")
 	for _, node := range cc.Nodes {
 		message := nodeDownMessage(node.Url, cc.ChainId)
 		nodeAlarms[node.Url] = alarmIsActive(cc.name, message)
@@ -796,29 +827,46 @@ func (cc *ChainConfig) watch() {
 
 		// inactive status must also be reconciled after a restart.
 		if cc.Alerts.AlertIfInactive && !valInfo.ValidatorStale {
-			id := valInfo.Valcons + "jailed"
-			if !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned {
-				reason := "inactive"
-				if valInfo.Tombstoned {
-					reason = "☠️ tombstoned 🪦"
-				} else if valInfo.Jailed {
-					reason = "jailed"
+			id, tombId, unjailId := valInfo.Valcons+"jailed", valInfo.Valcons+"tombstoned", valInfo.Valcons+"unjail"
+			// tombstoning is only in the signing info, wait a little for it instead of calling a tombstoned validator
+			// jailed. A chain that never answers signing info queries gets the jailed message.
+			waitForSigning := valInfo.Jailed && !valInfo.Tombstoned && valInfo.SigningStale &&
+				!valInfo.SigningUpdatedAt.IsZero() && time.Since(valInfo.SigningUpdatedAt) < 3*time.Minute
+			out := !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned
+			switch {
+			case waitForSigning:
+			case valInfo.Tombstoned:
+				// permanent, so it is never cleared. A jailed alarm sent before stays as it was.
+				if tombstoneMessage == "" || reconcile {
+					tombstoneMessage = jailMessage(valInfo, cc.ChainId)
+					td.alert(cc.name, tombstoneMessage, "critical", false, &tombId)
 				}
+			case out:
 				// a validator that was already outside the active set when we started isn't news, only alert if it
-				// drops out while we are watching. Jailing and tombstoning always alert.
-				if reason != "inactive" || wasActive || inactiveMessage != "" {
-					message := fmt.Sprintf("%s is no longer active: validator is %s", valInfo.Moniker, reason)
-					if inactiveMessage != "" {
-						message = inactiveMessage
-					}
-					if inactiveMessage == "" || reconcile {
-						td.alert(cc.name, message, "critical", false, &id)
-					}
-					inactiveMessage = message
+				// drops out while we are watching. Jailing always alerts.
+				if inactiveMessage == "" && (valInfo.Jailed || wasActive) {
+					inactiveMessage = jailMessage(valInfo, cc.ChainId)
+					td.alert(cc.name, inactiveMessage, "critical", false, &id)
+				} else if inactiveMessage != "" && reconcile {
+					td.alert(cc.name, inactiveMessage, "critical", false, &id)
 				}
-			} else if inactiveMessage != "" && (!strings.Contains(inactiveMessage, "tombstoned") || !valInfo.SigningStale) {
+			case inactiveMessage != "" && !valInfo.SigningStale:
 				td.alert(cc.name, inactiveMessage, "info", true, &id)
 				inactiveMessage = ""
+			}
+			if tombstoneMessage != "" && !valInfo.Tombstoned && !valInfo.SigningStale {
+				td.alert(cc.name, tombstoneMessage, "info", true, &tombId)
+				tombstoneMessage = ""
+			}
+
+			// jailed for downtime ends after jailed_until, then it takes an unjail transaction
+			canUnjail := valInfo.Jailed && !valInfo.Tombstoned && valInfo.JailedUntil.After(time.Unix(0, 0)) && time.Now().After(valInfo.JailedUntil)
+			if canUnjail && (unjailMessage == "" || reconcile) {
+				unjailMessage = fmt.Sprintf("%s can unjail on %s", valInfo.Moniker, cc.ChainId)
+				td.alert(cc.name, unjailMessage, "info", false, &unjailId)
+			} else if unjailMessage != "" && !valInfo.Jailed {
+				td.alert(cc.name, unjailMessage, "info", true, &unjailId)
+				unjailMessage = ""
 			}
 		}
 		if valInfo.Bonded && !valInfo.Jailed && !valInfo.Tombstoned && !valInfo.ValidatorStale {
@@ -1004,6 +1052,21 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
+// jailMessage says why the validator is out of the active set. A jailing's end is part of it, the time left is added
+// when the message is sent.
+func jailMessage(valInfo *ValInfo, chainId string) string {
+	switch {
+	case valInfo.Tombstoned:
+		return fmt.Sprintf("%s is tombstoned on %s\nPermanent, the validator can't be unjailed", valInfo.Moniker, chainId)
+	case valInfo.Jailed && valInfo.JailedUntil.After(time.Unix(0, 0)):
+		return fmt.Sprintf("%s is jailed on %s\nCan unjail after %s", valInfo.Moniker, chainId, valInfo.JailedUntil.UTC().Format(govEndFormat))
+	case valInfo.Jailed:
+		return fmt.Sprintf("%s is jailed on %s", valInfo.Moniker, chainId)
+	default:
+		return fmt.Sprintf("%s is no longer in the active set on %s", valInfo.Moniker, chainId)
+	}
+}
+
 func nodeDownMessage(url, chainId string) string {
 	return fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %s on %s", td.NodeDownSeverity, url, plural(td.NodeDownMin, "minute"), chainId)
 }
@@ -1061,11 +1124,22 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 		switch {
 		case expected[message]:
 			continue
-		case strings.Contains(message, " is no longer active: validator is "):
+		case strings.Contains(message, " is no longer active: validator is "), strings.Contains(message, " is no longer in the active set on "),
+			strings.Contains(message, " is jailed on "):
 			if cc.Alerts.AlertIfInactive {
 				continue // the inactive check picks these up, whatever the moniker was
 			}
 			id = valInfo.Valcons + "jailed"
+		case strings.Contains(message, " is tombstoned on "):
+			if cc.Alerts.AlertIfInactive {
+				continue
+			}
+			id = valInfo.Valcons + "tombstoned"
+		case strings.Contains(message, " can unjail on "):
+			if cc.Alerts.AlertIfInactive {
+				continue
+			}
+			id = valInfo.Valcons + "unjail"
 		case strings.Contains(message, " of the slashing window's blocks on "):
 			id = valInfo.Valcons + "percent"
 		case strings.HasPrefix(message, "Proposal #"):

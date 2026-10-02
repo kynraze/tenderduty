@@ -193,12 +193,16 @@ func (cc *ChainConfig) govRemindMessage(p govProposal, moniker string) string {
 
 var govMessageId = regexp.MustCompile(`^Proposal #(\d+)`)
 
-// govTimeLeft adds the time left to a governance message's Ends line, while voting is still open.
+// govTimeLeft adds the time left to a message's Ends or Can unjail after line, while that time is still ahead.
 func govTimeLeft(message string) string {
 	lines := strings.Split(message, "\n")
 	for i, line := range lines {
-		end, err := time.Parse(govEndFormat, strings.TrimPrefix(line, "Ends "))
-		if !strings.HasPrefix(line, "Ends ") || err != nil {
+		prefix := "Ends "
+		if strings.HasPrefix(line, "Can unjail after ") {
+			prefix = "Can unjail after "
+		}
+		end, err := time.Parse(govEndFormat, strings.TrimPrefix(line, prefix))
+		if !strings.HasPrefix(line, prefix) || err != nil {
 			continue
 		}
 		if left := time.Until(end); left > 0 {

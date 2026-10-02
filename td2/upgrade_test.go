@@ -3,6 +3,8 @@ package tenderduty
 import (
 	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/encoding/protowire"
 	"time"
 )
 
@@ -44,5 +46,13 @@ func TestUpgradeMessages(t *testing.T) {
 	defer upgradeOutcomes.Delete("AtomOne@12345678")
 	if icon, label := scheduled.header(); icon != "🚫" || label != "Cancelled" {
 		t.Fatalf("cancelled is %s %s", icon, label)
+	}
+}
+
+func TestParsePlanRejectsABogusHeight(t *testing.T) {
+	plan := protowire.AppendVarint(protowire.AppendTag(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), []byte("v4")), 3, protowire.VarintType), 1<<63)
+	got, err := parsePlan(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), plan))
+	if err == nil || got != nil {
+		t.Fatalf("a height past int64 gave %+v, %v", got, err)
 	}
 }

@@ -3,6 +3,7 @@ package tenderduty
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,6 +45,10 @@ func parsePlan(b []byte) (*upgradePlan, error) {
 			case num == 1 && typ == protowire.BytesType:
 				plan.Name = string(value)
 			case num == 3 && typ == protowire.VarintType:
+				// the height comes from a node's answer, a bogus one would wrap around to a negative height
+				if varint > math.MaxInt64 {
+					return fmt.Errorf("upgrade height %d is out of range", varint)
+				}
 				plan.Height = int64(varint)
 			}
 			return nil

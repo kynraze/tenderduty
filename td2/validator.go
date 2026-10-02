@@ -27,6 +27,7 @@ type ValInfo struct {
 	Bonded           bool      `json:"bonded"`
 	Jailed           bool      `json:"jailed"`
 	Tombstoned       bool      `json:"tombstoned"`
+	JailedUntil      time.Time `json:"jailed_until"` // when a jailed validator can unjail, from the signing info
 	Missed           int64     `json:"missed"`
 	Window           int64     `json:"window"`
 	Conspub          []byte    `json:"conspub"`
@@ -58,7 +59,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 				info.ValidatorStale = true
 			} else if info.Valcons == previous.Valcons {
 				if !signingRead {
-					info.Tombstoned, info.Missed = previous.Tombstoned, previous.Missed
+					info.Tombstoned, info.Missed, info.JailedUntil = previous.Tombstoned, previous.Missed, previous.JailedUntil
 				}
 				info.Window, info.MaxMissed, info.MaxValidators = previous.Window, previous.MaxMissed, previous.MaxValidators
 				info.SigningUpdatedAt = previous.SigningUpdatedAt
@@ -155,6 +156,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		l(fmt.Sprintf("❗️☠️ %s (%s) is tombstoned 🪦❗️", cc.ValAddress, info.Moniker))
 	}
 	info.Missed = slash.ValSigningInfo.MissedBlocksCounter
+	info.JailedUntil = slash.ValSigningInfo.JailedUntil.UTC()
 	signingRead = true
 
 	// finally get the signed blocks window, it rarely changes so only on (re)connect
