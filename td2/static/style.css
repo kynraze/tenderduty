@@ -99,6 +99,8 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .block-tape i.prevote { background: var(--prevote); height: 19px; }
 .block-tape i.missed { background: var(--critical); height: 20px; }
 .block-tape i.unobserved { background: var(--line); }
+.block-tape.fill { overflow: hidden; gap: 1px; }
+.block-tape.fill i { flex: 0 0 3px; min-width: 3px; max-width: 3px; }
 .empty { padding: 28px 12px; color: var(--muted); text-align: center; }
 
 .below { display: grid; grid-template-columns: 1.4fr 1fr; gap: 26px; margin-top: 29px; }

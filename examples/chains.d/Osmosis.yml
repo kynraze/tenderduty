@@ -1,0 +1,25 @@
+---
+# The file name is the label: Osmosis.yml is "Osmosis". No chains: section needed here.
+
+# chain_id is validated for a match when connecting to an RPC endpoint, also used as a label in several places.
+chain_id: osmosis-1
+# Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how
+# to convert ed25519 keys to the appropriate bech32 address.
+valoper_address: osmovaloper1xxxxxxx...
+# Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
+# This isn't always reliable, not all public nodes have websocket proxying setup correctly.
+public_fallback: no
+
+# Only settings that differ from alert_defaults need to be set here.
+alerts:
+  consecutive_missed: 3
+  # telegram:
+  #   enabled: no
+
+# This section covers our RPC providers. No LCD (aka REST) endpoints are used, only TM's RPC endpoints
+# Multiple hosts are encouraged, and will be tried sequentially until a working endpoint is discovered.
+nodes:
+  # URL for the endpoint. Must include protocol://hostname:port
+  - url: http://YOUR_OSMOSIS_NODE:26657
+    # Should we send an alert if this host isn't responding?
+    alert_if_down: yes

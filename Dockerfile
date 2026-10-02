@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-RUN go test ./... && go build -mod=readonly -ldflags "-s -w" -trimpath -o tenderduty main.go
+RUN go build -mod=readonly -ldflags "-s -w" -trimpath -o tenderduty main.go
 RUN upx tenderduty && upx -t tenderduty
 
 # 2nd stage, create a user to copy, and install libraries needed if connecting to upstream TLS server

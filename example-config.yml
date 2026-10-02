@@ -90,12 +90,18 @@ chains:
     # to convert ed25519 keys to the appropriate bech32 address.
     # Use valcons address if using ICS
     valoper_address: osmovaloper1xxxxxxx...
-    # To monitor several validators on this chain, replace valoper_address with:
+    # Realio multistaking: for several validators on this chain, replace valoper_address and nodes with:
     # validators:
-    #   - name: Primary
-    #     valoper_address: osmovaloper1primary...
-    #   - name: Backup
-    #     valoper_address: osmovaloper1backup...
+    #   - name: RIO
+    #     valoper_address: realiovaloper1first...
+    #     nodes:
+    #       - url: http://node-a:26657
+    #         alert_if_down: yes
+    #   - name: dstrx
+    #     valoper_address: realiovaloper1second...
+    #     nodes:
+    #       - url: http://node-b:26657
+    #         alert_if_down: yes
     # Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
     # This isn't always reliable, not all public nodes have websocket proxying setup correctly.
     public_fallback: no

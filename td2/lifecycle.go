@@ -76,6 +76,7 @@ func (c *Config) healthStatus() dash.HealthStatus {
 		}
 	}
 	status.Chains = len(networks)
-	status.Ready = status.Alive && status.Validators > 0 && status.Monitoring == status.Validators
+	// one node being down shouldn't fail a container healthcheck, the counts show partial outages
+	status.Ready = status.Alive && status.Monitoring > 0
 	return status
 }

@@ -187,8 +187,10 @@ func (c *Config) deliverQueue(key string) {
 			return
 		}
 		// try to save the queue first, but a broken state file should never hold back an alert
-		if err := c.persistState(); err != nil {
-			l("⚠️ could not save notification queue, sending anyway", err)
+		if !c.queueSaved(item.Sequence) {
+			if err := c.persistState(); err != nil {
+				l("⚠️ could not save notification queue, sending anyway", err)
+			}
 		}
 		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
 		if msg == nil {

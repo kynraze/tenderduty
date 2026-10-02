@@ -139,7 +139,10 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	info.Missed = slash.ValSigningInfo.MissedBlocksCounter
 	signingRead = true
 
-	// finally get the signed blocks window
+	// finally get the signed blocks window, it rarely changes so only on (re)connect
+	if !first && previous.Valcons == info.Valcons {
+		info.Window = previous.Window
+	}
 	if info.Window == 0 {
 		qParams := &slashing.QueryParamsRequest{}
 		b, err = qParams.Marshal()

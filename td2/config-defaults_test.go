@@ -3,6 +3,7 @@ package tenderduty
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,27 +73,59 @@ chains:
 	}
 }
 
-func TestMultipleValidatorsKeepSeparateNodeState(t *testing.T) {
+func TestValidatorsHaveTheirOwnNodes(t *testing.T) {
 	c := &Config{Chains: map[string]*ChainConfig{
-		"Osmosis": {
-			ChainId: "osmosis-1",
-			Nodes:   []*NodeConfig{{Url: "http://localhost:26657"}},
+		"Realio": {
+			ChainId: "realionetwork_3301-1",
 			Validators: []ValidatorConfig{
-				{Name: "Primary", ValAddress: "osmovaloper1primary"},
-				{Name: "Backup", ValAddress: "osmovaloper1backup"},
+				{Name: "RIO", ValAddress: "realiovaloper1rio", Nodes: []*NodeConfig{{Url: "http://node-a:26657", AlertIfDown: true}}},
+				{Name: "dstrx", ValAddress: "realiovaloper1dstrx", Nodes: []*NodeConfig{{Url: "http://node-b:26657", AlertIfDown: true}}},
 			},
 		},
 	}}
 	if err := expandValidators(c); err != nil {
 		t.Fatal(err)
 	}
-	primary := c.Chains["Osmosis / Primary"]
-	backup := c.Chains["Osmosis / Backup"]
-	if primary == nil || backup == nil || primary.ValAddress == backup.ValAddress {
+	rio, dstrx := c.Chains["Realio / RIO"], c.Chains["Realio / dstrx"]
+	if rio == nil || dstrx == nil || rio.ValAddress == dstrx.ValAddress {
 		t.Fatalf("validators were not expanded: %+v", c.Chains)
 	}
-	primary.Nodes[0].down = true
-	if backup.Nodes[0].down {
-		t.Fatal("validator node state is shared")
+	if len(rio.Nodes) != 1 || rio.Nodes[0].Url != "http://node-a:26657" || len(dstrx.Nodes) != 1 || dstrx.Nodes[0].Url != "http://node-b:26657" {
+		t.Fatalf("validators did not get their own nodes: %v %v", rio.Nodes, dstrx.Nodes)
+	}
+}
+
+func TestValidatorsRejectChainNodes(t *testing.T) {
+	c := &Config{Chains: map[string]*ChainConfig{
+		"Realio": {
+			ChainId: "realionetwork_3301-1",
+			Nodes:   []*NodeConfig{{Url: "http://node-a:26657"}},
+			Validators: []ValidatorConfig{
+				{Name: "RIO", ValAddress: "realiovaloper1rio"},
+				{Name: "dstrx", ValAddress: "realiovaloper1dstrx"},
+			},
+		},
+	}}
+	if err := expandValidators(c); err == nil || !strings.Contains(err.Error(), "under each validator") {
+		t.Fatalf("nodes shared by several validators were accepted: %v", err)
+	}
+}
+
+func TestExampleConfigsLoad(t *testing.T) {
+	oldAlarms := alarms
+	defer func() { alarms = oldAlarms }()
+	password := ""
+	c, err := loadConfig("../examples/config.yml", filepath.Join(t.TempDir(), "state.json"), "../examples/chains.d", &password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { c.cancel(); c.deliveryCancel() }()
+	if fatal, problems := validateConfig(c); fatal || len(problems) != 0 {
+		t.Fatalf("examples do not load cleanly: %v", problems)
+	}
+	for _, name := range []string{"Osmosis", "Realio / RIO", "Realio / dstrx"} {
+		if c.Chains[name] == nil {
+			t.Fatalf("example chain %s is missing: %v", name, c.Chains)
+		}
 	}
 }

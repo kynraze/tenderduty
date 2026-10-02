@@ -40,7 +40,8 @@ type Config struct {
 	workers        sync.WaitGroup
 	stateFile      string
 	saveMux        sync.Mutex
-	stateInPlace   bool // state file can't be replaced, write it in place. guarded by saveMux
+	stateInPlace   bool   // state file can't be replaced, write it in place. guarded by saveMux
+	savedSequence  uint64 // last queued notification known to be on disk, guarded by saveMux
 	deliveryCtx    context.Context
 	deliveryCancel context.CancelFunc
 
@@ -146,6 +147,8 @@ type ValidatorConfig struct {
 	Name            string `yaml:"name"`
 	ValAddress      string `yaml:"valoper_address"`
 	ValconsOverride string `yaml:"valcons_override"`
+	// Nodes are this validator's own RPC nodes.
+	Nodes []*NodeConfig `yaml:"nodes"`
 }
 
 // mkUpdate returns the info needed by prometheus for a gauge.
@@ -287,8 +290,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 	}
 
 	if c.NodeDownMin < 1 {
-		fatal = true
-		problems = append(problems, "error: node_down_alert_minutes must be positive")
+		// older configs could leave this out
+		c.NodeDownMin = 3
+		problems = append(problems, "warning: 'node_down_alert_minutes' is not set, using 3 minutes")
 	} else if c.NodeDownMin < 3 {
 		problems = append(problems, "warning: setting 'node_down_alert_minutes' to less than three minutes might result in false alarms")
 	}
@@ -318,21 +322,22 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			}
 			parsed, parseErr := url.Parse(node.Url)
 			if parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "tcp") {
-				fatal = true
-				problems = append(problems, fmt.Sprintf("error: %s has an invalid RPC URL: %s", k, node.Url))
+				// older versions accepted this
+				problems = append(problems, fmt.Sprintf("warning: %s has an invalid RPC URL, it will be treated as down: %s", k, node.Url))
 			}
 		}
+		// a zero threshold would alert all the time, use the example config's values
 		if v.Alerts.StalledAlerts && v.Alerts.Stalled < 1 {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s requires a positive stalled_minutes", k))
+			v.Alerts.Stalled = 10
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive stalled_minutes, using 10", k))
 		}
 		if v.Alerts.ConsecutiveAlerts && v.Alerts.ConsecutiveMissed < 1 {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s requires a positive consecutive_missed", k))
+			v.Alerts.ConsecutiveMissed = 5
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive consecutive_missed, using 5", k))
 		}
 		if v.Alerts.PercentageAlerts && (v.Alerts.Window < 1 || v.Alerts.Window > 100) {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s requires percentage_missed between 1 and 100", k))
+			v.Alerts.Window = 10
+			problems = append(problems, fmt.Sprintf("warning: %s percentage_missed is not between 1 and 100, using 10", k))
 		}
 		if len(v.blocksResults) != showBLocks {
 			blocks := make([]int, showBLocks)
@@ -381,20 +386,16 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Pagerduty.DefaultSeverity = c.Pagerduty.DefaultSeverity
 		}
 		if c.Telegram.Enabled && v.Alerts.Telegram.Enabled && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s telegram alerts require an API key and channel", k))
+			problems = append(problems, fmt.Sprintf("warning: %s telegram alerts need an API key and channel, they will not be sent", k))
 		}
 		if c.Discord.Enabled && v.Alerts.Discord.Enabled && !validHTTPURL(v.Alerts.Discord.Webhook) {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s discord alerts require a valid webhook URL", k))
+			problems = append(problems, fmt.Sprintf("warning: %s discord alerts need a valid webhook URL, they will not be sent", k))
 		}
 		if c.Slack.Enabled && v.Alerts.Slack.Enabled && !validHTTPURL(v.Alerts.Slack.Webhook) {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s slack alerts require a valid webhook URL", k))
+			problems = append(problems, fmt.Sprintf("warning: %s slack alerts need a valid webhook URL, they will not be sent", k))
 		}
 		if c.Pagerduty.Enabled && v.Alerts.Pagerduty.Enabled && v.Alerts.Pagerduty.ApiKey == "" {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: %s pagerduty alerts require an API key", k))
+			problems = append(problems, fmt.Sprintf("warning: %s pagerduty alerts need an API key, they will not be sent", k))
 		}
 		if v.Alerts.ConsecutivePriority == "" {
 			v.Alerts.ConsecutivePriority = "critical"
@@ -450,11 +451,22 @@ func loadChainConfig(yamlFile string) (*ChainConfig, error) {
 		return nil, e
 	}
 	c := &ChainConfig{}
-	e = yaml.UnmarshalStrict(b, c)
+	e = unmarshalConfig(yamlFile, b, c, &ChainConfig{})
 	if e != nil {
 		return nil, e
 	}
 	return c, nil
+}
+
+// unmarshalConfig ignores unknown settings like older versions did, but warns about them so typos get noticed.
+func unmarshalConfig(name string, data []byte, out, check interface{}) error {
+	if err := yaml.Unmarshal(data, out); err != nil {
+		return err
+	}
+	if err := yaml.UnmarshalStrict(data, check); err != nil {
+		l("⚠️", name, "has settings that are not understood and will be ignored:", err)
+	}
+	return nil
 }
 
 // loadConfig creates a new Config from a file.
@@ -488,7 +500,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		empty := ""
 		password = &empty             // let gc get password out of memory, it's still referenced in main()
 		_ = os.Setenv("PASSWORD", "") // also clear the ENV var
-		err = yaml.UnmarshalStrict(decrypted, c)
+		err = unmarshalConfig("remote config", decrypted, c, &Config{})
 		if err != nil {
 			return nil, err
 		}
@@ -499,7 +511,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		if e != nil {
 			return nil, e
 		}
-		e = yaml.UnmarshalStrict(b, c)
+		e = unmarshalConfig(yamlFile, b, c, &Config{})
 		if e != nil {
 			return nil, e
 		}
@@ -529,9 +541,10 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 			return nil, e
 		}
 
-		chainName := strings.TrimSuffix(chainConfigFile.Name(), ".yml")
+		// same naming as older versions so saved state matches: osmosis.mainnet.yml is "osmosis"
+		chainName := strings.Split(chainConfigFile.Name(), ".")[0]
 		if c.Chains[chainName] != nil {
-			return nil, fmt.Errorf("duplicate chain name %s", chainName)
+			l("⚠️", chainConfigFile.Name(), "replaces the existing configuration for", chainName)
 		}
 		chainFiles[chainName], e = os.ReadFile(path.Join(chainConfigDirectory, chainConfigFile.Name()))
 		if e != nil {

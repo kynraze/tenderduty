@@ -49,7 +49,7 @@ Signing-query failures retain the last known values and mark them as stale. Stal
 
 During shutdown, monitoring workers stop and active notification requests have up to 20 seconds to finish before cancellation. The final state is saved after workers exit. If a destination accepts a message just before a crash prevents its acknowledgement from being saved, the message may be delivered again after restart.
 
-When the dashboard is enabled, `/health` reports process liveness and `/ready` reports monitoring readiness. `/ready` returns HTTP 503 when any configured validator has no active stream of recent block observations. Both responses include counts for monitored validators, unavailable RPC connections, and stale validator information. The outbound healthcheck remains a process heartbeat; only HTTP 2xx responses count as successful pings.
+When the dashboard is enabled, `/health` reports process liveness and `/ready` reports monitoring readiness. `/ready` returns HTTP 503 until at least one validator is monitored. Both responses include counts for monitored validators, unavailable RPC connections, and stale validator information. The outbound healthcheck remains a process heartbeat; only HTTP 2xx responses count as successful pings.
 
 ![dashboard screenshot](dash.png)
 

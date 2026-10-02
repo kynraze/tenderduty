@@ -150,7 +150,9 @@ function renderRow(chain) {
     row.appendChild(height)
 
     const trace = element('td')
-    trace.appendChild(blockTrace(chain.blocks, 48, `${chain.name} recent blocks`))
+    const tape = blockTrace(chain.blocks, 160, `${chain.name} recent blocks`)
+    tape.classList.add('fill')
+    trace.appendChild(tape)
     row.appendChild(trace)
 
     const missed = element('td')

@@ -2,7 +2,8 @@ package tenderduty
 
 import "fmt"
 
-// expandValidators lets validators on the same chain share one configuration.
+// expandValidators turns a chain with several validators (Realio multistaking) into one chain per validator,
+// each with its own nodes.
 func expandValidators(c *Config) error {
 	for chainName, chain := range c.Chains {
 		if len(chain.Validators) == 0 {
@@ -10,6 +11,9 @@ func expandValidators(c *Config) error {
 		}
 		if chain.ValAddress != "" {
 			return fmt.Errorf("%s cannot set both valoper_address and validators", chainName)
+		}
+		if len(chain.Nodes) > 0 {
+			return fmt.Errorf("%s: put the nodes under each validator, every validator runs its own node", chainName)
 		}
 		delete(c.Chains, chainName)
 		for _, validator := range chain.Validators {
@@ -24,11 +28,11 @@ func expandValidators(c *Config) error {
 				name: name, ChainId: chain.ChainId, ValAddress: validator.ValAddress,
 				ValconsOverride: validator.ValconsOverride, ExtraInfo: chain.ExtraInfo,
 				Alerts: chain.Alerts, PublicFallback: chain.PublicFallback,
-				Nodes: make([]*NodeConfig, len(chain.Nodes)),
+				Nodes: make([]*NodeConfig, len(validator.Nodes)),
 			}
-			for i, node := range chain.Nodes {
+			for i, node := range validator.Nodes {
 				if node == nil {
-					return fmt.Errorf("%s has an empty RPC node", chainName)
+					return fmt.Errorf("%s has an empty RPC node", name)
 				}
 				copy.Nodes[i] = &NodeConfig{Url: node.Url, AlertIfDown: node.AlertIfDown}
 			}

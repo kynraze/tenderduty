@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PagerDuty/go-pagerduty"
+	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -522,6 +524,7 @@ func (cc *ChainConfig) watch() {
 	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
 	var missedAlarm, pctAlarm, noNodes, wasActive bool
+	var lastStatus *dash.ChainStatus
 	nodeAlarms := make(map[string]bool)
 
 	// wait until we have a moniker:
@@ -788,10 +791,15 @@ func (cc *ChainConfig) watch() {
 			}
 		}
 		if td.EnableDash {
-			select {
-			case td.updateChan <- cc.dashboardStatus():
-			case <-td.ctx.Done():
-				return
+			// blocks are pushed as they arrive, only send node and alarm changes here
+			status := cc.dashboardStatus()
+			if !reflect.DeepEqual(status, lastStatus) {
+				lastStatus = status
+				select {
+				case td.updateChan <- status:
+				case <-td.ctx.Done():
+					return
+				}
 			}
 		}
 		reconcile = false

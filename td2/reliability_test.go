@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
+	slashing "github.com/cosmos/cosmos-sdk/x/slashing/types"
 	"github.com/gorilla/websocket"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
@@ -867,5 +869,171 @@ func TestInactiveAtStartupOnlyAlertsWhenJailed(t *testing.T) {
 	chain.validatorMux.Unlock()
 	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || !strings.Contains(raised[0].message, "jailed") {
 		t.Fatalf("jailed validator did not alert: %+v", raised)
+	}
+}
+
+func TestOldConfigsStillLoad(t *testing.T) {
+	oldAlarms := alarms
+	defer func() { alarms = oldAlarms }()
+	directory := t.TempDir()
+	chains := filepath.Join(directory, "chains.d")
+	if err := os.Mkdir(chains, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// unknown setting and no node_down_alert_minutes
+	config := "enable_dashbord: yes\nchains:\n  Juno:\n    chain_id: juno-1\n    valoper_address: junovaloper1example\n    nodes:\n      - url: http://localhost:26657\n"
+	files := map[string]string{
+		filepath.Join(directory, "config.yml"):       config,
+		filepath.Join(chains, "Osmosis.mainnet.yml"): "chain_id: osmosis-1\nvaloper_address: osmovaloper1example\nnodes:\n  - url: http://localhost:26657\n",
+		filepath.Join(chains, "Juno.yml"):            "chain_id: juno-2\nvaloper_address: junovaloper1example\nnodes:\n  - url: http://localhost:26657\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(name, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	password := ""
+	c, err := loadConfig(filepath.Join(directory, "config.yml"), filepath.Join(directory, "state.json"), chains, &password)
+	if err != nil {
+		t.Fatalf("old config was rejected: %v", err)
+	}
+	defer func() { c.cancel(); c.deliveryCancel() }()
+	if fatal, problems := validateConfig(c); fatal {
+		t.Fatalf("old config was rejected: %v", problems)
+	}
+	if c.NodeDownMin != 3 || c.Chains["Osmosis"] == nil || c.Chains["Juno"] == nil || c.Chains["Juno"].ChainId != "juno-2" {
+		t.Fatalf("old config was not loaded the same way: %d %v", c.NodeDownMin, c.Chains)
+	}
+}
+
+func TestRefreshReusesSlashingWindow(t *testing.T) {
+	auditConfig(t)
+	address, _ := bech32.ConvertAndEncode("cosmosvalcons", make([]byte, 20))
+	signing, _ := (&slashing.QuerySigningInfoResponse{ValSigningInfo: slashing.ValidatorSigningInfo{Address: address}}).Marshal()
+	params, _ := (&slashing.QueryParamsResponse{Params: slashing.Params{SignedBlocksWindow: 1000}}).Marshal()
+	var mux sync.Mutex
+	paramQueries := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     interface{}       `json:"id"`
+			Params map[string]string `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		value := signing
+		if request.Params["path"] == "/cosmos.slashing.v1beta1.Query/Params" {
+			mux.Lock()
+			paramQueries++
+			mux.Unlock()
+			value = params
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": request.ID, "result": map[string]interface{}{"response": map[string]interface{}{"code": 0, "value": value}}})
+	}))
+	defer server.Close()
+	client, _ := rpchttp.New(server.URL, "/websocket")
+	chain := &ChainConfig{ValAddress: address, client: client}
+	for _, first := range []bool{true, false, false, true} {
+		if err := chain.GetValInfo(first); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, _ := chain.validatorState()
+	if paramQueries != 2 || info.Window != 1000 {
+		t.Fatalf("slashing params were queried %d times, expected only when connecting", paramQueries)
+	}
+}
+
+func TestQueuedNotificationIsOnlySavedOnce(t *testing.T) {
+	c := notificationConfig(t, "http://127.0.0.1:1")
+	c.alert("Chain", "missed blocks", "critical", false, nil)
+	if !c.queueSaved(alarms.Outbox[0].Sequence) {
+		t.Fatal("queued notification was not recorded as saved")
+	}
+	alarms.notifyMux.Lock()
+	alarms.NextNotification++
+	alarms.notifyMux.Unlock()
+	if c.queueSaved(alarms.NextNotification) {
+		t.Fatal("unsaved notification was reported as saved")
+	}
+}
+
+func TestDashboardOnlyUpdatedOnChange(t *testing.T) {
+	c := auditConfig(t)
+	c.EnableDash = true
+	c.updateChan = make(chan *dash.ChainStatus, 16)
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", blocksResults: make([]int, showBLocks),
+		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
+	watchFor(t, c, chain, 5*time.Second)
+	if len(c.updateChan) != 1 {
+		t.Fatalf("dashboard was sent %d updates for an unchanged chain", len(c.updateChan))
+	}
+}
+
+func TestValidatorNodesLoadFromConfig(t *testing.T) {
+	oldAlarms := alarms
+	defer func() { alarms = oldAlarms }()
+	directory := t.TempDir()
+	config := `node_down_alert_minutes: 3
+chains:
+  Realio:
+    chain_id: realionetwork_3301-1
+    validators:
+      - name: RIO
+        valoper_address: realiovaloper1rio
+        nodes:
+          - url: http://node-a:26657
+            alert_if_down: yes
+      - name: dstrx
+        valoper_address: realiovaloper1dstrx
+        nodes:
+          - url: http://node-b:26657
+            alert_if_down: yes
+`
+	if err := os.WriteFile(filepath.Join(directory, "config.yml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	password := ""
+	c, err := loadConfig(filepath.Join(directory, "config.yml"), filepath.Join(directory, "state.json"), filepath.Join(directory, "chains.d"), &password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { c.cancel(); c.deliveryCancel() }()
+	if fatal, problems := validateConfig(c); fatal {
+		t.Fatalf("validators with their own nodes were rejected: %v", problems)
+	}
+	dstrx := c.Chains["Realio / dstrx"]
+	if dstrx == nil || len(dstrx.Nodes) != 1 || dstrx.Nodes[0].Url != "http://node-b:26657" {
+		t.Fatalf("dstrx did not get node B: %+v", dstrx)
+	}
+}
+
+func TestIncompleteAlertSettingsOnlyWarn(t *testing.T) {
+	c := &Config{Listen: "8888", NodeDownMin: 3, Discord: DiscordConfig{Enabled: true}, Chains: map[string]*ChainConfig{
+		"Juno": {ChainId: "juno-1", ValAddress: "junovaloper1example", Nodes: []*NodeConfig{{Url: "not a url"}}},
+	}}
+	alerts := &c.Chains["Juno"].Alerts
+	alerts.Discord.Enabled = true
+	alerts.StalledAlerts, alerts.ConsecutiveAlerts, alerts.PercentageAlerts = true, true, true
+	fatal, problems := validateConfig(c)
+	if fatal {
+		t.Fatalf("settings older versions accepted stopped startup: %v", problems)
+	}
+	if alerts.Stalled != 10 || alerts.ConsecutiveMissed != 5 || alerts.Window != 10 {
+		t.Fatalf("zero thresholds were not replaced: %+v", alerts)
+	}
+	if !strings.Contains(strings.Join(problems, "\n"), "discord alerts need a valid webhook URL") {
+		t.Fatalf("missing webhook was not reported: %v", problems)
+	}
+}
+
+func TestReadyWhileSomeValidatorsAreMonitored(t *testing.T) {
+	c := auditConfig(t)
+	c.Chains["A"] = &ChainConfig{}
+	c.Chains["B"] = &ChainConfig{}
+	if c.healthStatus().Ready {
+		t.Fatal("ready before anything is monitored")
+	}
+	c.Chains["A"].setMonitoring(true)
+	if status := c.healthStatus(); !status.Ready || status.Monitoring != 1 || status.Validators != 2 {
+		t.Fatalf("one validator's node being down marked the monitor as not ready: %+v", status)
 	}
 }

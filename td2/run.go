@@ -194,6 +194,7 @@ func saveState(stateFile string) error {
 	td.chainsMux.RUnlock()
 
 	alarms.notifyMux.RLock()
+	sequence := alarms.NextNotification
 	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
@@ -202,14 +203,29 @@ func saveState(stateFile string) error {
 	if !td.stateInPlace {
 		err = replaceStateFile(stateFile, data)
 		var replaceErr stateReplaceError
-		if !errors.As(err, &replaceErr) {
+		if err != nil && !errors.As(err, &replaceErr) {
 			return err
 		}
-		// read-only directory or a bind mounted file? fall back to writing it in place
-		l("⚠️ could not replace state file, writing it in place instead", err)
-		td.stateInPlace = true
+		if err != nil {
+			// read-only directory or bind mounted file, write it in place
+			l("⚠️ could not replace state file, writing it in place instead", err)
+			td.stateInPlace = true
+		}
 	}
-	return writeStateFile(stateFile, data)
+	if td.stateInPlace {
+		if err = writeStateFile(stateFile, data); err != nil {
+			return err
+		}
+	}
+	td.savedSequence = sequence
+	return nil
+}
+
+// queueSaved reports if a queued notification already made it to disk.
+func (c *Config) queueSaved(sequence uint64) bool {
+	c.saveMux.Lock()
+	defer c.saveMux.Unlock()
+	return c.stateFile == "" || sequence <= c.savedSequence
 }
 
 // stateReplaceError means the state file couldn't be replaced, it may still be possible to write it in place.

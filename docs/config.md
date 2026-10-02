@@ -11,7 +11,7 @@ $ tenderduty -example-config > config.yml
 Or if using the docker image:
 
 ```
-$ docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
+$ docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 ```
 
 * [General Settings](#general-settings)
@@ -51,7 +51,7 @@ chains:
 
 Set `alert_defaults` once to apply alert thresholds and notification destinations to every chain. A chain can include only the values that differ under its own `alerts` section. An explicit `enabled: no` overrides an inherited `enabled: yes`. Existing configurations without `alert_defaults` keep their current behavior.
 
-Unknown YAML settings are rejected instead of being silently ignored. Duplicate names between `config.yml` and `chains.d` are also rejected. Enabled alert thresholds must be positive, and enabled notification destinations must have their required credentials.
+Unknown settings, missing credentials and invalid RPC URLs are logged as warnings. A `chains.d` file replaces a chain with the same name in `config.yml`.
 
 ```yaml
 telegram:
@@ -77,24 +77,30 @@ chains:
 
 Both the global notification destination and its effective chain setting must be enabled. Use a chain override to turn a destination off for one chain.
 
-### Several validators on one chain
+### Realio multistaking support
 
-Use `validators` instead of `valoper_address` when the same chain and RPC settings apply to several validators. Give each validator a stable name so its dashboard and saved-state entry remain recognizable.
+Running several validators on one chain, like Realio multistaking? List them under `validators` instead of `valoper_address`, each with its own `nodes`. Works on any chain.
 
 ```yaml
 chains:
-  Osmosis:
-    chain_id: osmosis-1
-    nodes:
-      - url: http://localhost:26657
+  Realio:
+    chain_id: realionetwork_3301-1
     validators:
-      - name: Primary
-        valoper_address: osmovaloper1primary...
-      - name: Backup
-        valoper_address: osmovaloper1backup...
+      - name: RIO
+        valoper_address: realiovaloper1first...
+        nodes:
+          - url: http://node-a:26657
+            alert_if_down: yes
+      - name: dstrx
+        valoper_address: realiovaloper1second...
+        nodes:
+          - url: http://node-b:26657
+            alert_if_down: yes
 ```
 
-Each validator is monitored independently after configuration is loaded. RPC subscriptions are not shared yet.
+- Each validator alerts on its own, as `Realio / RIO` and `Realio / dstrx`.
+- A node going down alerts under its validator.
+- Chain level `nodes` aren't allowed here, use `public_fallback` for a backup.
 
 ## General Settings
 
