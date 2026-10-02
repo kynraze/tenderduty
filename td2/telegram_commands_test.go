@@ -1,0 +1,66 @@
+package tenderduty
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestCommandAllowed(t *testing.T) {
+	c := &Config{}
+	c.Telegram.Channel, c.Telegram.Admins = "-1001234", []int64{42}
+	for _, tc := range []struct {
+		chat     int64
+		chatType string
+		from     int64
+		want     bool
+	}{
+		{-1001234, "supergroup", 42, true},
+		{-1001234, "supergroup", 7, false},
+		{-1001234, "channel", 0, false},
+		{-999, "supergroup", 42, false},
+	} {
+		if got := c.commandAllowed(tc.chat, tc.chatType, tc.from); got != tc.want {
+			t.Fatalf("%+v allowed %v", tc, got)
+		}
+	}
+	c.Telegram.Channel = "555"
+	if !c.commandAllowed(555, "private", 555) || c.commandAllowed(556, "private", 556) {
+		t.Fatal("a private chat is allowed only when it is the configured one")
+	}
+}
+
+func TestStatusCommand(t *testing.T) {
+	c := auditConfig(t)
+	healthy := &ChainConfig{ChainId: "atomone-1", lastBlockNum: 10_622_456, lastBlockTime: time.Now().Add(-4 * time.Second), monitoring: true,
+		valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true, Missed: 12, Window: 10_000, MaxMissed: 5_000, VotingPower: 169_960, TotalPower: 61_441_660, Rank: 72, ActiveSet: 100}}
+	healthy.Nodes = []*NodeConfig{{Url: "http://a"}}
+	jailed := &ChainConfig{ChainId: "realionetwork_3301-1", monitoring: true, valInfo: &ValInfo{Moniker: "Kynraze", Jailed: true}}
+	c.Chains["AtomOne"], c.Chains["Realio"] = healthy, jailed
+	alarms.AllAlarms["AtomOne"] = map[string]time.Time{"Severity: critical\nRPC node http://b has been down for > 3 minutes on atomone-1": time.Now()}
+
+	summary := c.telegramCommand("status", "", time.Now())
+	if !strings.HasPrefix(summary, "📊 <b>Status</b> · 0 of 2 chains healthy") || strings.Index(summary, "Realio") > strings.Index(summary, "AtomOne") && !strings.Contains(summary, "🔴 <b>Realio</b> · jailed") {
+		t.Fatalf("summary %q", summary)
+	}
+	detail := c.telegramCommand("status", "atomone-1", time.Now())
+	for _, want := range []string{"🔴 <b>AtomOne</b> · 1 active alert", "Height 10,622,456 · last block 4s ago", "Missed 12 / 10,000 · 4,988 left before jail", "rank 72/100", "RPC 1/1 healthy", "• RPC node http://b has been down"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail is missing %q:\n%s", want, detail)
+		}
+	}
+	if reply := c.telegramCommand("status", "nope", time.Now()); !strings.Contains(reply, "No chain named nope") {
+		t.Fatalf("unknown chain %q", reply)
+	}
+	if reply := c.telegramCommand("mute", "AtomOne 2h", time.Now()); strings.Contains(reply, "muted") {
+		t.Fatal("mute is still answered")
+	}
+}
+
+func TestSplitMessage(t *testing.T) {
+	line := strings.Repeat("x", 1000)
+	parts := splitMessage(strings.Join([]string{line, line, line, line, line}, "\n"))
+	if len(parts) != 2 || len(parts[0]) > telegramMessageLimit {
+		t.Fatalf("%d parts, first %d long", len(parts), len(parts[0]))
+	}
+}

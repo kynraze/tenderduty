@@ -475,7 +475,7 @@ func notifyTg(msg *alertMsg) (err error) {
 }
 
 // timeLeft finds the time left that governance and upgrade messages show, to make it stand out.
-var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhm] left)`)
+var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 
 // buildTelegramMessage formats an alert as telegram HTML: a bold header, the message, then extra_info in italics.
 func buildTelegramMessage(msg *alertMsg) string {
@@ -630,7 +630,19 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 		// would send a resolve for the new alarm after a restart.
 		delete(alarms.PendingRecoveries, key)
 	}
-	alarms.enqueue(a)
+	heldMux.Lock()
+	_, wasHeld := held[key]
+	if resolved {
+		// never sent, so there is nothing to recover
+		delete(held, key)
+	} else if c.holdsAlert(chainName, severity, resolved, time.Now()) {
+		held[key] = heldAlert{chain: chainName, message: message, severity: severity, id: uniq}
+		wasHeld = true
+	}
+	heldMux.Unlock()
+	if !wasHeld || resolved {
+		alarms.enqueue(a)
+	}
 	alarms.notifyMux.Unlock()
 	if err := c.persistState(); err != nil {
 		l("could not persist alert:", err)

@@ -50,6 +50,22 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	})
 	td.restoreRecoveries()
 	td.startWorker(td.runNotifications)
+	// alerts held for quiet hours go out once they end
+	td.startWorker(func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				td.releaseHeld()
+			case <-td.ctx.Done():
+				return
+			}
+		}
+	})
+	if td.Telegram.Enabled && td.Telegram.Commands {
+		td.startWorker(td.telegramCommands)
+	}
 	if td.EnableDash {
 		td.startWorker(func() {
 			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus); err != nil {

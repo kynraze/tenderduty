@@ -44,6 +44,10 @@ telegram:
   api_key: "5555555555:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   # The group ID for the chat where messages will be sent. Google how to find this, will include better info later.
   channel: "-666666666"
+  # Answer /status (every chain) and /status <chain> sent to the bot in the channel above. In a group only the admins
+  # (telegram user ids) can use it. Nothing else may read the bot's updates at the same time.
+  commands: no
+  admins: []
 
 # Slack settings
 slack:
@@ -51,6 +55,14 @@ slack:
   enabled: no
   # The webhook can be added in the Slack app directory.
   webhook: https://hooks.slack.com/services/AAAAAAAAAAAAAAAAAAAAAAA/bbbbbbbbbbbbbbbbbbbbbbbb
+
+# Quiet hours: alerts below min_severity wait until they end, and are only sent if still active then.
+quiet_hours:
+  enabled: no
+  start: "23:00"
+  end: "07:00"
+  timezone: Asia/Jakarta
+  min_severity: critical
 
 # Healthcheck settings (dead man's switch)
 healthcheck:

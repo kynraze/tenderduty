@@ -74,6 +74,8 @@ type Config struct {
 	Slack SlackConfig `yaml:"slack"`
 	// Healthcheck information
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
+	// QuietHours holds back less severe alerts during part of the day
+	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
 
@@ -290,6 +292,9 @@ type TeleConfig struct {
 	ApiKey   string   `yaml:"api_key"`
 	Channel  string   `yaml:"channel"`
 	Mentions []string `yaml:"mentions"`
+	// Commands answers /status sent to the bot from the channel, in a group only from Admins
+	Commands bool    `yaml:"commands"`
+	Admins   []int64 `yaml:"admins"`
 	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
 	MinSeverity string `yaml:"min_severity"`
 }
@@ -324,6 +329,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 	if c.Prom && (c.PrometheusListenPort < 1 || c.PrometheusListenPort > 65535) {
 		fatal = true
 		problems = append(problems, "error: The prometheus listen port is invalid")
+	}
+	if err := c.QuietHours.parse(); err != nil {
+		c.QuietHours.Enabled = false
+		problems = append(problems, "warning: "+err.Error()+", quiet hours are off")
 	}
 	if c.Healthcheck.Enabled && (c.Healthcheck.PingRate < 1 || c.Healthcheck.PingURL == "") {
 		fatal = true
@@ -392,29 +401,47 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Window = 10
 			problems = append(problems, fmt.Sprintf("warning: %s percentage_missed is not between 1 and 100, using 10", k))
 		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed < 1 {
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed == 0 {
 			v.Alerts.ProposalMissed = 3
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive proposal_missed, using 3", k))
 		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes < 1 {
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed < 0 {
+			v.Alerts.ProposalMissed = 3
+			problems = append(problems, fmt.Sprintf("warning: %s proposal_missed can't be negative, using 3", k))
+		}
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes == 0 {
 			v.Alerts.ProposalMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive proposal_minutes, using 60", k))
+		}
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes < 0 {
+			v.Alerts.ProposalMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s proposal_minutes can't be negative, using 60", k))
+		}
+		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskPercent == 0 {
+			v.Alerts.JailRiskPercent = 50
 		}
 		if v.Alerts.JailRiskAlerts && (v.Alerts.JailRiskPercent < 1 || v.Alerts.JailRiskPercent > 100) {
 			v.Alerts.JailRiskPercent = 50
 			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 50", k))
 		}
-		if v.Alerts.UpgradeAlerts && v.Alerts.UpgradeRemindMinutes < 1 {
+		if v.Alerts.UpgradeAlerts && v.Alerts.UpgradeRemindMinutes == 0 {
 			v.Alerts.UpgradeRemindMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive upgrade_remind_minutes, using 60", k))
 		}
-		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes < 1 {
+		if v.Alerts.UpgradeAlerts && v.Alerts.UpgradeRemindMinutes < 0 {
+			v.Alerts.UpgradeRemindMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s upgrade_remind_minutes can't be negative, using 60", k))
+		}
+		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes == 0 {
 			v.Alerts.GovRemindMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive gov_remind_minutes, using 60", k))
 		}
-		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes < 1 {
+		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes < 0 {
+			v.Alerts.GovRemindMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s gov_remind_minutes can't be negative, using 60", k))
+		}
+		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes == 0 {
 			v.Alerts.JailRiskMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive jail_risk_minutes, using 60", k))
+		}
+		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes < 0 {
+			v.Alerts.JailRiskMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_minutes can't be negative, using 60", k))
 		}
 		if len(v.blocksResults) != showBLocks {
 			blocks := make([]int, showBLocks)
