@@ -36,7 +36,9 @@ Text and status colors adapt to the selected palette. Color combinations that ma
 $ tenderduty -h
 Usage of tenderduty:
   -example-config
-    	print the an example config.yml and exit
+    	print an example config.yml with the shared settings and exit
+  -example-chain
+    	print an example chains.d/<Chain>.yml for one chain and exit
   -f string
     	configuration file to use (default "config.yml")
   -state string
@@ -56,7 +58,8 @@ Build this fork's image if you already have Docker installed:
 ```
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
-# edit config.yml and add chains, notification methods etc.
+mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
+# edit config.yml for the notification methods, and chains.d/Osmosis.yml for the chain
 docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
@@ -70,8 +73,9 @@ git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
 go mod download
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
-cp example-config.yml config.yml
-# edit config.yml and add chains, notification methods etc.
+cp examples/config.yml config.yml
+cp -r examples/chains.d chains.d
+# edit config.yml for the notification methods, and chains.d/Osmosis.yml for the chain
 ./tenderduty -f config.yml
 ```
 
@@ -102,7 +106,7 @@ Dependency upgrade details and remaining migration work are listed in the [depen
 
 ## Split Configuration
 
-Shared alert settings go in `alert_defaults`, each chain's `alerts` only needs what's different. See the [configuration guide](docs/config.md), including Realio multistaking support.
+Shared alert settings go in `alert_defaults`, each chain's `alerts` only needs what's different. See the [shared settings](docs/config.md) and the [settings for a chain](docs/chains.md), including several validators on one chain.
 
 For validators with many chains, chain specific configuration may be split into additional files and placed into the directory "chains.d".
 

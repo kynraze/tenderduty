@@ -1,55 +1,43 @@
 # Settings for config.yml
 
-Almost everything in tenderduty is controlled via the `config.yml` file. There are many options, and this attempts to explain them. 
+`config.yml` holds the settings every chain shares: the dashboard, the notification destinations, quiet hours and `alert_defaults`. Each chain goes in its own file in `chains.d`, documented in [chains.md](chains.md). See [examples/](../examples) for both.
 
-**ProTip:** If you only have a binary, or are using the docker image the `-example-config` flag will have tenderduty dump the [example-config.yml](../example-config.yml) file to STDOUT and exit. This can be used to get started without needing to download from Github. Example:
+**ProTip:** If you only have a binary, or are using the docker image, `-example-config` dumps [examples/config.yml](../examples/config.yml) to STDOUT and `-example-chain` dumps [examples/chains.d/Osmosis.yml](../examples/chains.d/Osmosis.yml). This can be used to get started without needing to download from Github. Example:
 
 ```
 $ tenderduty -example-config > config.yml
+$ mkdir chains.d && tenderduty -example-chain > chains.d/Osmosis.yml
 ```
 
 Or if using the docker image:
 
 ```
 $ docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
+$ mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
 ```
 
+* [Shared configuration](#shared-configuration)
 * [General Settings](#general-settings)
-* [Pagerduty Settins](#pagerduty-settings)
+* [Alert Destinations](#alert-destinations)
+* [Pagerduty Settings](#pagerduty-settings)
 * [Discord Settings](#discord-settings)
 * [Telegram Settings](#telegram-settings)
-* [Chain Specific Settings](#chain-specific-settings)
-* [Chain Alerting Settings](#chain-alerting-settings)
-* [Node Settings](#node-settings)
+* [Slack Settings](#slack-settings)
+* [Quiet Hours](#quiet-hours)
+* [Health Check Settings](#health-check-settings)
+* [Settings for a chain](chains.md)
 
 A few notes on how Go handles YAML:
 
 * Booleans can be specified with either true/false or yes/no
 * If a setting is omitted it will default to an empty string for strings, zero for numbers, false for booleans, and nil for arrays and structures.
-* This can be useful for building a more compact config file. 
-
-For example if not using telegram and discord, and only alerting on consecutive missed blocks the config for a chain could be condensed to:
-
-```yaml
-chains:
-
-  "Osmosis":
-    chain_id: osmosis-1
-    valoper_address: osmovaloper1xxxxxxx...
-    alerts:
-      consecutive_enabled: yes
-      consecutive_missed: 5
-      pagerduty:
-        enabled: yes
-    nodes:
-      - url: tcp://localhost:26657
-```
+* This can be useful for building a more compact config file.
 
 ## Shared configuration
 
 ### Shared alert settings
 
-Set `alert_defaults` once to apply alert thresholds and notification destinations to every chain. A chain can include only the values that differ under its own `alerts` section. An explicit `enabled: no` overrides an inherited `enabled: yes`. Existing configurations without `alert_defaults` keep their current behavior.
+Set `alert_defaults` once to apply alert thresholds to every chain. A chain can include only the values that differ under its own `alerts` section. Existing configurations without `alert_defaults` keep their current behavior.
 
 Unknown settings, missing credentials and invalid RPC URLs are logged as warnings. A `chains.d` file replaces a chain with the same name in `config.yml`.
 
@@ -62,8 +50,6 @@ telegram:
 alert_defaults:
   consecutive_enabled: yes
   consecutive_missed: 5
-  telegram:
-    enabled: yes
 
 chains:
   Osmosis:
@@ -75,32 +61,9 @@ chains:
       consecutive_missed: 3
 ```
 
-Both the global notification destination and its effective chain setting must be enabled. Use a chain override to turn a destination off for one chain.
+Osmosis gets telegram alerts without mentioning telegram at all, see [alert destinations](#alert-destinations).
 
-### Realio multistaking support
-
-Running several validators on one chain, like Realio multistaking? List them under `validators` instead of `valoper_address`, each with its own `nodes`. Works on any chain.
-
-```yaml
-chains:
-  Realio:
-    chain_id: realionetwork_3301-1
-    validators:
-      - name: RIO
-        valoper_address: realiovaloper1first...
-        nodes:
-          - url: http://node-a:26657
-            alert_if_down: yes
-      - name: dstrx
-        valoper_address: realiovaloper1second...
-        nodes:
-          - url: http://node-b:26657
-            alert_if_down: yes
-```
-
-- Each validator alerts on its own, as `Realio / RIO` and `Realio / dstrx`.
-- A node going down alerts under its validator.
-- Chain level `nodes` aren't allowed here, use `public_fallback` for a backup.
+Running several validators on one chain, like Realio multistaking? See [several validators on one chain](chains.md#several-validators-on-one-chain).
 
 ## General Settings
 
@@ -110,8 +73,24 @@ chains:
 | `listen_port`                | What TCP port the dashboard will listen on. Only the port is controllable for now.                                                                                                                                |
 | `hide_logs`                  | hide_logs is useful if the dashboard will be posted publicly. It disables the log feed, and obscures most node-related details. Be aware this isn't fully vetted for preventing info leaks about node names, etc. |
 | `node_down_alert_minutes`    | How long to wait before alerting that a node is down.                                                                                                                                                             |
+| `node_down_alert_severity`   | Severity sent with node down alerts, info, warning, error or critical.                                                                                                                                            |
 | `prometheus_enabled`         | Should the prometheus exporter be enabled? See the [prometheus doc](prometheus.md) for information about what endpoints are available.                                                                            |
 | `prometheus_listen_port`     | What port should it listen on? For now only port is configurable                                                                                                                                                  |
+
+## Alert Destinations
+
+Turning a destination on in `config.yml` is enough, every chain uses it. A chain only has to say anything if it wants to be left out:
+
+```yaml
+# chains.d/Osmosis.yml
+alerts:
+  telegram:
+    enabled: no      # every other chain still gets telegram alerts
+```
+
+The shared switch has the last word: with `telegram.enabled: no` in `config.yml` no chain gets telegram alerts, whatever its own file says. Setting the destinations under `alert_defaults` still works and does the same thing, it is just no longer needed.
+
+The older `pagerduty_alerts`, `discord_alerts` and `telegram_alerts` under a chain's `alerts` are deprecated and still honoured: they turn the destination on, the same as `pagerduty.enabled: yes`.
 
 ## PagerDuty Settings
 
@@ -138,6 +117,31 @@ chains:
 | `telegram.enabled` | Alert via telegram? Note: also supersedes chain-specific settings.                  |
 | `telegram.api_key` | API key ... talk to @BotFather. More setup info in the [telegram doc](telegram.md). |
 | `telegram.channel` | See the [telegram doc](telegram.md) for how to get this value.                      |
+| `telegram.commands` | Answer commands sent to the bot, `/status` and `/mentionme`. Off by default, see the [telegram doc](telegram.md). |
+| `telegram.admins`  | Telegram user ids allowed to send commands in a group. Only the chat in `channel` is listened to.    |
+
+## Slack Settings
+
+| Config Setting   | Description                                                                         |
+|------------------|-------------------------------------------------------------------------------------|
+| `slack.enabled`  | Send alerts to Slack? Also overrides chain-specific alerts if "no".                 |
+| `slack.webhook`  | The webhook can be added in the Slack app directory.                                |
+
+## Quiet Hours
+
+Holds back alerts below `min_severity` during the given hours, and sends what is still alarming once they end. Anything at or above `min_severity` is sent straight away.
+
+| Config Setting            | Description                                                                         |
+|---------------------------|-------------------------------------------------------------------------------------|
+| `quiet_hours.enabled`     | Hold back the quieter alerts during the hours below?                                |
+| `quiet_hours.start`       | When the quiet hours start, `23:00`. A range may cross midnight.                    |
+| `quiet_hours.end`         | When they end, `07:00`.                                                             |
+| `quiet_hours.timezone`    | An IANA name like `Europe/Berlin`, which follows daylight saving, or a fixed offset like `UTC+7` or `UTC-05:30`, which does not. UTC when empty. |
+| `quiet_hours.min_severity`| Severity that is sent anyway, info, warning, error or critical. Critical when empty. |
+
+With the default `critical`, what still wakes you is jailing, a chain that stopped, every RPC node failing, consecutive missed blocks and being close to jail. What waits for morning is a new governance proposal, a scheduled upgrade, missed proposals and being able to unjail.
+
+Worth knowing: `percentage_priority` is `warning` by default, so with `percentage_enabled` turned on a chain missing blocks slowly can wait until quiet hours end. Consecutive missed blocks are critical and still page immediately, but set `percentage_priority: critical` if you want that one to as well.
 
 ## Health Check Settings
 
@@ -146,58 +150,3 @@ chains:
 | `healthcheck.enabled`   | Send pings to determine if the monitor is running?                                  |
 | `healthcheck.ping_url`  | URL to send pings to.                                                               |
 | `healthcheck.ping_rate` | Rate in which pings are sent in seconds.                                            |
-
-## Chain Specific Settings
-
-*This section can be repeated for monitoring multiple chains.*
-
-| Config Setting                 | Description                                                                                                                                                                                                                                                    |
-|--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `chain."name"`                 | The user-friendly name that will be used for labels. Highly suggest wrapping in quotes to prevent YAML parsing issues if there is a space or special characters.                                                                                               |
-| `chain."name".chain_id`        | The chain-id for the chain, this is verified to match when connecting to an RPC server                                                                                                                                                                         |
-| `chain."name".valoper_address` | Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how to convert ed25519 keys to the appropriate bech32 address                                                                                      |
-| `chain."name".public_fallback` | Should the monitor fall back to a public RPC node if all supplied nodes fail? One is picked from the [chain registry](https://cosmos.directory) that is on the right chain, synced, and accepts websockets. |
-| `chain."name".extra_info`      | Text added to every alert for this chain, e.g. which tenderduty instance sent it. PagerDuty gets it in the custom details.                                                                                                                                     |
-
-## Chain Alerting Settings
-
-| Config Setting                             | Description                                                                                                                                                                                                                                                                                                                                                                        |
-|--------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `chain."name".alerts.stalled_enabled`      | If the chain stops seeing new blocks, should an alert be sent?                                                                                                                                                                                                                                                                                                                     |
-| `chain."name".alerts.stalled_minutes`      | How long a halted chain takes in minutes to generate an alarm.                                                                                                                                                                                                                                                                                                                     |
-| `chain."name".alerts.consecutive_enabled`  | Most basic alarm, you just missed x blocks ... would you like to know?                                                                                                                                                                                                                                                                                                             |
-| `chain."name".alerts.consecutive_missed`   | How many missed blocks should trigger a notification?                                                                                                                                                                                                                                                                                                                              |
-| `chain."name".alerts.consecutive_priority` | NOT USED: future hint for pagerduty's routing.                                                                                                                                                                                                                                                                                                                                     |
-| `chain."name".alerts.percentage_enabled`   | For each chain there is a specific window of blocks and a percentage of missed blocks that will result in a downtime jail infraction. Should an alert be sent if a certain percentage of this window is exceeded?                                                                                                                                                                  |
-| `chain."name".alerts.percentage_missed`    | What percentage should trigger the alert?                                                                                                                                                                                                                                                                                                                                          |
-| `chain."name".alerts.percentage_priority`  | NOT USED: future hint for pagerduty's routing.                                                                                                                                                                                                                                                                                                                                     |
-| `chain."name".alerts.proposal_enabled`     | Alert on missed proposals: the validator was due to propose a block but another validator did. Off by default.                                                                                                                                                                                                                                                                     |
-| `chain."name".alerts.proposal_missed`      | How many missed proposals within proposal_minutes should trigger a notification?                                                                                                                                                                                                                                                                                                   |
-| `chain."name".alerts.proposal_minutes`     | The window in minutes that missed proposals are counted over.                                                                                                                                                                                                                                                                                                                      |
-| `chain."name".alerts.proposal_priority`    | Severity sent with the alert, used by pagerduty.                                                                                                                                                                                                                                                                                                                                   |
-| `chain."name".alerts.jail_risk_enabled`    | Alert when the validator gets close to being jailed for downtime. The limit comes from the chain's slashing params.                                                                                                                                                                                                                                                                |
-| `chain."name".alerts.jail_risk_percent`    | How much of the misses allowed before jailing, in percent, should trigger the alert?                                                                                                                                                                                                                                                                                               |
-| `chain."name".alerts.jail_risk_minutes`    | While the validator is missing blocks, alert when at the chain's block time it would be jailed within this many minutes.                                                                                                                                                                                                                                                           |
-| `chain."name".alerts.jail_risk_priority`   | Severity sent with the alert, used by pagerduty.                                                                                                                                                                                                                                                                                                                                   |
-| `chain."name".alerts.gov_enabled`          | Send a message when a proposal opens for voting, cleared once the validator votes. The voter is the account of the valoper address.                                                                                                                                                                                                                                                |
-| `chain."name".alerts.gov_remind_minutes`   | Remind when voting ends within this many minutes and the validator has not voted.                                                                                                                                                                                                                                                                                                  |
-| `chain."name".alerts.gov_priority`         | Severity sent with new proposals, used by pagerduty. Reminders are critical.                                                                                                                                                                                                                                                                                                       |
-| `chain."name".alerts.upgrade_enabled`      | Send a message when an upgrade is scheduled in x/upgrade, with its height and the time estimated from the block time.                                                                                                                                                                                                                                                              |
-| `chain."name".alerts.upgrade_remind_minutes` | Remind this many minutes before the estimated time of the upgrade.                                                                                                                                                                                                                                                                                                                 |
-| `chain."name".alerts.upgrade_priority`     | Severity sent with scheduled upgrades, used by pagerduty. Reminders are critical.                                                                                                                                                                                                                                                                                                  |
-| `chain."name".alerts.alert_if_inactive`    | Should an alert be sent if the validator is not in the active set: jailed, tombstoned, or unbonding?                                                                                                                                                                                                                                                                               |
-| `chain."name".alerts.alert_if_no_servers`  | Should an alert be sent if no RPC servers are responding? (Note this alarm uses the node_down_alert_minutes setting)                                                                                                                                                                                                                                                               |
-| `chain."name".alerts.pagerduty.*`          | This section is the same as the pagerduty structure above. It allows disabling or enabling specific settings on a per-chain basis. Including routing to a different destination. If the api_key is blank it will use the settings defined in `pagerduty.*` <br />*Note both `pagerduty.enabled` and `chain."name".alerts.pagerduty.enabled` must be 'yes' to get alerts.*          |
-| `chain."name".alerts.discord.*`            | This section is the same as the discord structure above. It allows disabling or enabling specific settings on a per-chain basis. Including routing to a different destination. If the webhook is blank it will use the settings defined in `discord.*` <br />*Note both `discord.enabled` and `chain."name".alerts.discord.enabled` must be 'yes' to get alerts.*                  |
-| `chain."name".alerts.telegram.*`           | This section is the same as the telegram structure above. It allows disabling or enabling specific settings on a per-chain basis. Including routing to a different destination. If the api_key and channel are blank it will use the settings defined in `telegram.*` <br />*Note both `telegram.enabled` and `chain."name".alerts.telegram.enabled` must be 'yes' to get alerts.* |
-
-## Node Settings: 
-
-*Note: if this section is omitted and public fallbacks are enabled, tenderduty will only use public endpoints. This is not encouraged for a few reasons: public nodes can be unreliable, some proxy servers do not support websockets (which td relies on for watching blocks,) and it consumes resources from other validators.*
-
-| Config Setting                       | Description                                                                                                                                                                 |
-|--------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `chain."name".nodes[]`               | This is an array of nodes to use as RPC servers.                                                                                                                            |
-| `chain."name".nodes[].url`           | protocol://hostname:port, without a port https uses 443 and http 80. For now only http (tcp is an alias) and https (with a valid certificate) are supported. UDS and insecure TLS support is planned |
-| `chain."name".nodes[].alert_if_down` | Should an alert be sent if this host isn't responding? Uses the `node_down_alert_minutes` setting to determine threshold.                                                   |
-

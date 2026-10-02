@@ -7,7 +7,8 @@ This is a tool for validators running tendermint nodes. It sends notifications w
 ## Detailed Documentation Topics
 
 - [Installation](install.md)
-- [Configuration File Settings](config.md)
+- [Shared Configuration File Settings](config.md)
+- [Settings for a chain](chains.md)
 - [Setting up PagerDuty](pagerduty.md)
 - [Setting up Discord](discord.md)
 - [Setting up Telegram](telegram.md)
@@ -25,6 +26,7 @@ Monitors a validator's performance across multiple chains
 - Optional governance messages: a proposal opened for voting, and a reminder before voting ends without a vote.
 - Optional upgrade messages: an upgrade scheduled in x/upgrade with its estimated time, and a reminder before it.
 - Optional jail risk alerts, from the chain's own slashing params.
+- Optional quiet hours, holding back the quieter alerts overnight and sending what is still alarming once they end.
 - Alert destinations can be customized for each chain.
 - Monitors node health:
     * Optional alerting if syncing or not responding.

@@ -15,7 +15,8 @@ Opens the dashboard (8888) and metrics (28686) ports, see [dashboard and metrics
 ```shell
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
-# edit config.yml and add chains, notification methods etc.
+mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
+# edit config.yml for the notification methods, and chains.d/Osmosis.yml for the chain
 docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
@@ -54,8 +55,9 @@ EOF
 docker compose pull
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 mkdir -p chains.d
+docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
 
-# Edit the config.yml file, and then start the container
+# Edit config.yml and chains.d/Osmosis.yml, and then start the container
 docker compose up -d
 docker compose logs -f --tail 20
 ```
@@ -87,8 +89,9 @@ Clone the repository before building because its dependencies use replace direct
 ```
 git clone --branch main https://github.com/kynraze/tenderduty.git
 cd tenderduty
-cp example-config.yml config.yml
-# edit config.yml with your favorite editor
+cp examples/config.yml config.yml
+cp -r examples/chains.d chains.d
+# edit config.yml and chains.d/Osmosis.yml with your favorite editor
 go mod download
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
@@ -124,7 +127,7 @@ sudo cp examples/config.yml /etc/tenderduty/config.yml
 sudo cp examples/chains.d/Osmosis.yml /etc/tenderduty/chains.d/
 ```
 
-- `config.yml`: notifications and `alert_defaults`.
+- `config.yml`: notifications and `alert_defaults`. A destination turned on here is used by every chain.
 - `chains.d/`: one file per chain, use `Realio.yml` for several validators on one chain.
 
 Then let the service user read them:
