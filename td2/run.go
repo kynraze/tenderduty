@@ -172,12 +172,14 @@ func saveState(stateFile string) error {
 	blocks := make(map[string][]int)
 	lastBlocks := make(map[string]time.Time)
 	heights := make(map[string]int64)
+	consecutive := make(map[string]float64)
 	nodesDown := make(map[string]map[string]time.Time)
 	for name, chain := range td.Chains {
 		chain.stateMux.RLock()
 		blocks[name] = append([]int(nil), chain.blocksResults...)
 		lastBlocks[name] = chain.lastBlockTime
 		heights[name] = chain.lastBlockNum
+		consecutive[name] = chain.statConsecutiveMiss
 		chain.stateMux.RUnlock()
 		for _, node := range chain.Nodes {
 			status := node.snapshot()
@@ -192,15 +194,32 @@ func saveState(stateFile string) error {
 	td.chainsMux.RUnlock()
 
 	alarms.notifyMux.RLock()
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err
 	}
-	// Write the new state before replacing the old file.
+	if !td.stateInPlace {
+		err = replaceStateFile(stateFile, data)
+		var replaceErr stateReplaceError
+		if !errors.As(err, &replaceErr) {
+			return err
+		}
+		// read-only directory or a bind mounted file? fall back to writing it in place
+		l("⚠️ could not replace state file, writing it in place instead", err)
+		td.stateInPlace = true
+	}
+	return writeStateFile(stateFile, data)
+}
+
+// stateReplaceError means the state file couldn't be replaced, it may still be possible to write it in place.
+type stateReplaceError struct{ error }
+
+// replaceStateFile writes the new state to a temp file, then moves it over the old one.
+func replaceStateFile(stateFile string, data []byte) error {
 	file, err := os.CreateTemp(filepath.Dir(stateFile), ".tenderduty-state-*")
 	if err != nil {
-		return err
+		return stateReplaceError{err}
 	}
 	defer os.Remove(file.Name())
 	if err := file.Chmod(0600); err != nil {
@@ -218,5 +237,26 @@ func saveState(stateFile string) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), stateFile)
+	if err := os.Rename(file.Name(), stateFile); err != nil {
+		return stateReplaceError{err}
+	}
+	return nil
+}
+
+// writeStateFile overwrites the state file in place, this isn't atomic so it's only used as a fallback.
+func writeStateFile(stateFile string, data []byte) error {
+	//#nosec -- variable specified on command line
+	file, err := os.OpenFile(stateFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }

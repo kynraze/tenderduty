@@ -1,6 +1,7 @@
 package tenderduty
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -39,6 +40,7 @@ type Config struct {
 	workers        sync.WaitGroup
 	stateFile      string
 	saveMux        sync.Mutex
+	stateInPlace   bool // state file can't be replaced, write it in place. guarded by saveMux
 	deliveryCtx    context.Context
 	deliveryCancel context.CancelFunc
 
@@ -82,11 +84,12 @@ type Config struct {
 // savedState is dumped to a JSON file at exit time, and is loaded at start. If successful it will prevent
 // duplicate alerts, and will show old blocks in the dashboard.
 type savedState struct {
-	Heights    map[string]int64                `json:"heights,omitempty"`
-	Alarms     *alarmCache                     `json:"alarms"`
-	Blocks     map[string][]int                `json:"blocks"`
-	LastBlocks map[string]time.Time            `json:"last_blocks"`
-	NodesDown  map[string]map[string]time.Time `json:"nodes_down"`
+	Heights     map[string]int64                `json:"heights,omitempty"`
+	Alarms      *alarmCache                     `json:"alarms"`
+	Blocks      map[string][]int                `json:"blocks"`
+	LastBlocks  map[string]time.Time            `json:"last_blocks"`
+	NodesDown   map[string]map[string]time.Time `json:"nodes_down"`
+	Consecutive map[string]float64              `json:"consecutive_missed,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -565,12 +568,15 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	saved := &savedState{}
 	//#nosec -- variable specified on command line
 	b, e := os.ReadFile(stateFile)
-	if e == nil {
+	switch {
+	case e == nil && len(bytes.TrimSpace(b)) > 0:
 		if e = json.Unmarshal(b, saved); e != nil {
-			return nil, fmt.Errorf("could not decode saved state: %w", e)
+			// a broken state file shouldn't stop monitoring, just start fresh
+			l("⚠️ could not decode saved state, starting without it", e)
+			saved = &savedState{}
 		}
-	} else if !os.IsNotExist(e) {
-		return nil, fmt.Errorf("could not load saved state: %w", e)
+	case e != nil && !os.IsNotExist(e):
+		l("⚠️ could not load saved state, starting without it", e)
 	}
 	for k, v := range saved.Blocks {
 		if c.Chains[k] != nil {
@@ -582,6 +588,12 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 				}
 				c.Chains[k].statConsecutiveMiss++
 			}
+		}
+	}
+	// the block history can't tell a gap apart from a reset, use the saved counter if we have it
+	for k, missed := range saved.Consecutive {
+		if c.Chains[k] != nil {
+			c.Chains[k].statConsecutiveMiss = missed
 		}
 	}
 	for k, observed := range saved.LastBlocks {

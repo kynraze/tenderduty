@@ -513,6 +513,7 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 // and also updates a few prometheus stats
 // FIXME: not watching for nodes that are lagging the head block!
 func (cc *ChainConfig) watch() {
+	started := time.Now()
 	valInfo, _ := cc.validatorState()
 	var missedAlarm, pctAlarm, noNodes bool
 	nodeAlarms := make(map[string]bool)
@@ -612,9 +613,14 @@ func (cc *ChainConfig) watch() {
 			noNodesSec = 0
 		}
 
-		// stalled chain detection
+		// stalled chain detection, the saved block time is from before we restarted so give the chain the full
+		// stall period after startup before alerting
+		stallSince := lastBlockTime
+		if stallSince.Before(started) {
+			stallSince = started
+		}
 		if cc.Alerts.StalledAlerts && (!cc.lastBlockAlarm || reconcile) && !lastBlockTime.IsZero() &&
-			lastBlockTime.Before(time.Now().Add(time.Duration(-cc.Alerts.Stalled)*time.Minute)) {
+			stallSince.Before(time.Now().Add(time.Duration(-cc.Alerts.Stalled)*time.Minute)) {
 
 			// chain is stalled send an alert!
 			cc.lastBlockAlarm = true

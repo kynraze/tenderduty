@@ -186,13 +186,9 @@ func (c *Config) deliverQueue(key string) {
 		if !exists {
 			return
 		}
-		// Do not send an event until its queue entry has reached disk.
+		// try to save the queue first, but a broken state file should never hold back an alert
 		if err := c.persistState(); err != nil {
-			l("could not persist notification queue:", err)
-			if !waitContext(c.context(), delay) {
-				return
-			}
-			continue
+			l("⚠️ could not save notification queue, sending anyway", err)
 		}
 		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
 		if msg == nil {

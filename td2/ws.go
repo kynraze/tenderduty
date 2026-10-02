@@ -207,7 +207,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			previousTime, previousHeight := cc.lastBlockTime, cc.lastBlockNum
 			gap := update.HeadHeight - previousHeight - 1
 			if previousHeight > 0 && gap > 0 {
-				cc.statConsecutiveMiss = 0
+				// we didn't see the blocks in the gap, don't reset the counter or a reconnect would clear an active alarm
 				if gap > int64(len(cc.blocksResults)) {
 					gap = int64(len(cc.blocksResults))
 				}
@@ -285,13 +285,17 @@ type rawBlock struct {
 	} `json:"block"`
 }
 
-// find determines if a validator's pre-commit was included in a finalized block.
+// blockIDFlagAbsent is the commit signature flag for a validator that didn't vote.
+const blockIDFlagAbsent = 1
+
+// find determines if a validator's pre-commit was included in a finalized block. Same as the slashing module, a nil
+// precommit counts as signed, only an absent signature is a miss.
 func (rb rawBlock) find(val string) bool {
 	if rb.Block.LastCommit.Signatures == nil {
 		return false
 	}
 	for _, v := range rb.Block.LastCommit.Signatures {
-		if v.ValidatorAddress == val && v.BlockIDFlag == 2 {
+		if v.ValidatorAddress == val && v.BlockIDFlag != blockIDFlagAbsent {
 			return true
 		}
 	}

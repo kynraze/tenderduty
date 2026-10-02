@@ -108,7 +108,7 @@ func TestCommitFlagsAndVoteHeights(t *testing.T) {
 	for _, flag := range []int{1, 2, 3} {
 		block := rawBlock{}
 		block.Block.LastCommit.Signatures = []signature{{ValidatorAddress: "ABCD", BlockIDFlag: flag}}
-		if block.find("ABCD") != (flag == 2) {
+		if block.find("ABCD") != (flag != blockIDFlagAbsent) {
 			t.Fatalf("incorrect result for flag %d", flag)
 		}
 	}
@@ -136,7 +136,7 @@ func TestBlockCommitHeightAndCanceledWorkers(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- handleBlocks(ctx, blocks, results, "ABCD") }()
 	reply := &WsReply{}
-	reply.Result.Data.Value = json.RawMessage(`{"block":{"header":{"height":"101","proposer_address":"OTHER"},"last_commit":{"height":"100","signatures":[{"block_id_flag":3,"validator_address":"ABCD"}]}}}`)
+	reply.Result.Data.Value = json.RawMessage(`{"block":{"header":{"height":"101","proposer_address":"OTHER"},"last_commit":{"height":"100","signatures":[{"block_id_flag":1,"validator_address":"ABCD"}]}}}`)
 	blocks <- reply
 	select {
 	case update := <-results:
@@ -308,17 +308,45 @@ func TestPersistentQueueResumesWithCurrentCredentials(t *testing.T) {
 	}
 }
 
-func TestQueueDoesNotSendWhenStateCannotBeSaved(t *testing.T) {
+func TestQueueSendsWhenStateCannotBeSaved(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusNoContent) }))
 	defer server.Close()
 	c := notificationConfig(t, server.URL)
 	c.stateFile = filepath.Join(t.TempDir(), "missing", "state.json")
 	c.alert("Chain", "missed blocks", "critical", false, nil)
-	time.AfterFunc(100*time.Millisecond, c.cancel)
+	time.AfterFunc(time.Second, c.cancel)
 	c.deliverQueue(alarms.Outbox[0].workerKey())
-	if calls != 0 || len(alarms.Outbox) != 1 {
-		t.Fatal("unpersisted notification was sent or dropped")
+	if calls != 1 || len(alarms.Outbox) != 0 {
+		t.Fatal("a state file problem held back the notification")
+	}
+}
+
+func TestStateIsWrittenInPlaceWhenItCannotBeReplaced(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	c := auditConfig(t)
+	directory := t.TempDir()
+	c.stateFile = filepath.Join(directory, "state.json")
+	if err := os.WriteFile(c.stateFile, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(directory, 0700) }()
+	c.Chains["Chain"] = &ChainConfig{lastBlockNum: 42}
+	if err := c.persistState(); err != nil {
+		t.Fatal(err)
+	}
+	var saved savedState
+	data, err := os.ReadFile(c.stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &saved); err != nil || saved.Heights["Chain"] != 42 {
+		t.Fatal("state was not written in place")
 	}
 }
 
@@ -448,7 +476,8 @@ func TestStaleSigningInfoCannotClearPercentageAlert(t *testing.T) {
 	}
 }
 
-func TestReconnectGapDoesNotCountUnobservedBlocksAsConsecutive(t *testing.T) {
+// a gap shouldn't count unseen blocks as missed, or reset the counter (that would clear an active alarm)
+func TestReconnectGapKeepsConsecutiveMisses(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{lastBlockNum: 100, statConsecutiveMiss: 10, blocksResults: make([]int, showBLocks), valInfo: &ValInfo{Bonded: true}}
 	results := make(chan StatusUpdate)
@@ -468,8 +497,8 @@ func TestReconnectGapDoesNotCountUnobservedBlocksAsConsecutive(t *testing.T) {
 	<-done
 	_, _, consecutive := chain.blockState()
 	blocks := chain.blocksSnapshot()
-	if consecutive != 1 || blocks[1] != -1 || blocks[2] != -1 || blocks[3] != -1 {
-		t.Fatal("unknown reconnect gap contaminated consecutive misses")
+	if consecutive != 11 || blocks[0] != int(Statusmissed) || blocks[1] != -1 || blocks[2] != -1 || blocks[3] != -1 {
+		t.Fatalf("reconnect gap changed consecutive misses to %v", consecutive)
 	}
 }
 
@@ -546,7 +575,7 @@ func TestRuntimeShutdownSavesStateAfterMonitoringStops(t *testing.T) {
 				return
 			}
 		}
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"result":{"data":{"type":"tendermint/event/NewBlock","value":{"block":{"header":{"height":"101"},"last_commit":{"height":"100","signatures":[{"validator_address":"0000000000000000000000000000000000000000","block_id_flag":3}]}}}}}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"result":{"data":{"type":"tendermint/event/NewBlock","value":{"block":{"header":{"height":"101"},"last_commit":{"height":"100","signatures":[{"validator_address":"0000000000000000000000000000000000000000","block_id_flag":1}]}}}}}}`))
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
@@ -622,5 +651,75 @@ func TestRuntimeShutdownSavesStateAfterMonitoringStops(t *testing.T) {
 	_ = json.Unmarshal(data, &saved)
 	if saved.Heights["Chain"] != 101 || saved.Blocks["Chain"][0] != int(Statusmissed) || len(saved.Alarms.Outbox) != 0 || len(saved.Alarms.SentDiAlarms) != 1 {
 		t.Fatal("final monitoring state was not saved")
+	}
+}
+
+func TestBrokenStateFileDoesNotStopStartup(t *testing.T) {
+	oldAlarms := alarms
+	defer func() { alarms = oldAlarms }()
+	for name, contents := range map[string]string{"empty": "", "truncated": `{"alarms":{"sent_`, "invalid": "not json"} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			configFile, stateFile := filepath.Join(directory, "config.yml"), filepath.Join(directory, "state.json")
+			config := "node_down_alert_minutes: 3\nchains:\n  Juno:\n    chain_id: juno-1\n    valoper_address: junovaloper1example\n    nodes:\n      - url: http://localhost:26657\n"
+			if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stateFile, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			password := ""
+			c, err := loadConfig(configFile, stateFile, filepath.Join(directory, "chains.d"), &password)
+			if err != nil {
+				t.Fatalf("broken state file stopped startup: %v", err)
+			}
+			c.cancel()
+			c.deliveryCancel()
+		})
+	}
+}
+
+func TestSavedConsecutiveMissesSurviveGapsInHistory(t *testing.T) {
+	oldAlarms := alarms
+	defer func() { alarms = oldAlarms }()
+	directory := t.TempDir()
+	configFile, stateFile := filepath.Join(directory, "config.yml"), filepath.Join(directory, "state.json")
+	config := "node_down_alert_minutes: 3\nchains:\n  Juno:\n    chain_id: juno-1\n    valoper_address: junovaloper1example\n    nodes:\n      - url: http://localhost:26657\n"
+	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocks := make([]int, showBLocks)
+	for i := range blocks {
+		blocks[i] = int(StatusSigned)
+	}
+	blocks[0], blocks[1], blocks[2] = int(Statusmissed), -1, int(Statusmissed)
+	data, _ := json.Marshal(savedState{Blocks: map[string][]int{"Juno": blocks}, Consecutive: map[string]float64{"Juno": 12}})
+	if err := os.WriteFile(stateFile, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	password := ""
+	c, err := loadConfig(configFile, stateFile, filepath.Join(directory, "chains.d"), &password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { c.cancel(); c.deliveryCancel() }()
+	if _, _, missed := c.Chains["Juno"].blockState(); missed != 12 {
+		t.Fatalf("restored %v consecutive misses instead of 12", missed)
+	}
+}
+
+func TestRestoredBlockTimeDoesNotRaiseStallAlarm(t *testing.T) {
+	c := auditConfig(t)
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", observedBlock: true, lastBlockTime: time.Now().Add(-time.Hour),
+		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
+	chain.Alerts.StalledAlerts, chain.Alerts.Stalled = true, 1
+	c.Chains["Juno"] = chain
+	done := make(chan struct{})
+	go func() { chain.watch(); close(done) }()
+	defer func() { c.cancel(); <-done }()
+	select {
+	case alert := <-c.alertChan:
+		t.Fatalf("restart raised an alert from a saved block time: %+v", alert)
+	case <-time.After(3 * time.Second):
 	}
 }
