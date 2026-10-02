@@ -29,6 +29,7 @@ type alertMsg struct {
 	resolved bool
 	chain    string
 	message  string
+	extra    string
 	uniqueId string
 	key      string
 
@@ -41,6 +42,14 @@ type alertMsg struct {
 
 	slkHook     string
 	slkMentions string
+}
+
+// text is the message with the chain's extra_info on its own line.
+func (msg *alertMsg) text() string {
+	if msg.extra == "" {
+		return msg.message
+	}
+	return msg.message + "\n" + msg.extra
 }
 
 type notifyDest uint8
@@ -293,7 +302,7 @@ type Attachment struct {
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
 	prefix := "🚨 ALERT: "
 	color := "danger"
-	message := msg.message
+	message := msg.text()
 	if msg.resolved {
 		message = "OK: " + message
 		prefix = "💜 Resolved: "
@@ -370,7 +379,7 @@ func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 		Username: "Tenderduty",
 		Content:  prefix + msg.chain,
 		Embeds: []DiscordEmbed{{
-			Description: msg.message,
+			Description: msg.text(),
 		}},
 	}
 }
@@ -394,7 +403,7 @@ func notifyTg(msg *alertMsg) (err error) {
 		prefix = "💜 Resolved: "
 	}
 
-	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, fmt.Sprintf("%s: %s - %s", msg.chain, prefix, msg.message))
+	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, fmt.Sprintf("%s: %s - %s", msg.chain, prefix, msg.text()))
 	_, err = bot.Send(mc)
 	if err != nil {
 		l("telegram send:", err)
@@ -419,17 +428,21 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 	if msg.resolved {
 		action = "resolve"
 	}
+	payload := &pagerduty.V2Payload{
+		Summary:  msg.message,
+		Source:   msg.uniqueId,
+		Severity: msg.severity,
+	}
+	if msg.extra != "" {
+		payload.Details = map[string]string{"extra_info": msg.extra}
+	}
 	ctx, cancel := context.WithTimeout(msg.context(), 10*time.Second)
 	defer cancel()
 	_, err = pagerduty.ManageEventWithContext(ctx, pagerduty.V2Event{
 		RoutingKey: msg.key,
 		Action:     action,
 		DedupKey:   msg.uniqueId,
-		Payload: &pagerduty.V2Payload{
-			Summary:  msg.message,
-			Source:   msg.uniqueId,
-			Severity: msg.severity,
-		},
+		Payload:    payload,
 	})
 	return
 }
@@ -468,6 +481,7 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		resolved:     resolved,
 		chain:        chainName,
 		message:      message,
+		extra:        c.Chains[chainName].ExtraInfo,
 		uniqueId:     uniq,
 		key:          c.Chains[chainName].Alerts.Pagerduty.ApiKey,
 		tgChannel:    c.Chains[chainName].Alerts.Telegram.Channel,

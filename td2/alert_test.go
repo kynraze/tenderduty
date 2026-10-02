@@ -141,3 +141,18 @@ func TestSlackRecoveryDoesNotChangeAlertIdentity(t *testing.T) {
 		t.Fatalf("alert identity changed during formatting: %#v", msg)
 	}
 }
+
+func TestExtraInfoIsAddedToAlerts(t *testing.T) {
+	msg := &alertMsg{chain: "Osmosis", message: "missed blocks", extra: "sent from monitor-eu"}
+	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\nsent from monitor-eu" {
+		t.Fatalf("discord message is %q", got)
+	}
+	if got := buildSlackMessage(msg).Text; got != "missed blocks\nsent from monitor-eu" {
+		t.Fatalf("slack message is %q", got)
+	}
+
+	msg.extra = ""
+	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks" {
+		t.Fatalf("discord message without extra_info is %q", got)
+	}
+}

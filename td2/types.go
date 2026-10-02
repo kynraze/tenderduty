@@ -130,10 +130,10 @@ type ChainConfig struct {
 	Validators []ValidatorConfig `yaml:"validators"`
 	// ValconsOverride allows skipping the lookup of the consensus public key and setting it directly.
 	ValconsOverride string `yaml:"valcons_override"`
-	// ExtraInfo will be appended to the alert data. This is useful for pagerduty because multiple tenderduty instances
+	// ExtraInfo is added to every alert for this chain. This is useful for pagerduty because multiple tenderduty instances
 	// can be pointed at pagerduty and duplicate alerts will be filtered by using a key. The first alert will win, this
 	// can be useful for knowing what tenderduty instance sent the alert.
-	ExtraInfo string `yaml:"extra_info"` // FIXME not used yet!
+	ExtraInfo string `yaml:"extra_info"`
 	// Alerts defines the types of alerts to send for this chain.
 	Alerts AlertConfig `yaml:"alerts"`
 	// PublicFallback determines if tenderduty should attempt to use public RPC endpoints in the situation that not

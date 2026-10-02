@@ -154,6 +154,7 @@ chains:
 | `chain."name".chain_id`        | The chain-id for the chain, this is verified to match when connecting to an RPC server                                                                                                                                                                         |
 | `chain."name".valoper_address` | Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how to convert ed25519 keys to the appropriate bech32 address                                                                                      |
 | `chain."name".public_fallback` | Should the monitor revert to using public API endpoints if all supplied RCP nodes fail? This isn't always reliable, not all public nodes have websocket proxying setup correctly. Endpoints are sourced from the [cosmos directory](https://cosmos.directory). |
+| `chain."name".extra_info`      | Text added to every alert for this chain, e.g. which tenderduty instance sent it. PagerDuty gets it in the custom details.                                                                                                                                     |
 
 ## Chain Alerting Settings
 

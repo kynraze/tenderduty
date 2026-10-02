@@ -105,6 +105,8 @@ chains:
     # Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
     # This isn't always reliable, not all public nodes have websocket proxying setup correctly.
     public_fallback: no
+    # Added to every alert for this chain, useful to tell which tenderduty instance sent it.
+    # extra_info: "sent from monitor-eu"
 
     # Only settings that differ from alert_defaults need to be set here.
     alerts:
