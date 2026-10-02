@@ -52,6 +52,9 @@ func (msg *alertMsg) summary() string {
 			return rest
 		}
 	}
+	if strings.HasPrefix(msg.message, "Proposal #") && !msg.resolved {
+		return govTimeLeft(msg.message)
+	}
 	return msg.message
 }
 
@@ -65,6 +68,16 @@ func (msg *alertMsg) text() string {
 
 // header gives the first line of every notification: an icon and the severity, or Resolved.
 func (msg *alertMsg) header() (icon, state string) {
+	// governance isn't a problem, it gets its own labels
+	if strings.HasPrefix(msg.message, "Proposal #") {
+		if msg.resolved {
+			return govResolvedLabel(msg.chain, msg.message)
+		}
+		if strings.Contains(msg.message, " has not voted") {
+			return "⏰", "Vote reminder"
+		}
+		return "🗳", "New proposal"
+	}
 	if msg.resolved {
 		return "✅", "Resolved"
 	}
@@ -449,7 +462,14 @@ func notifyTg(msg *alertMsg) (err error) {
 // buildTelegramMessage formats an alert as telegram HTML: a bold header, the message, then extra_info in italics.
 func buildTelegramMessage(msg *alertMsg) string {
 	icon, state := msg.header()
-	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, html.EscapeString(msg.summary()))
+	body := html.EscapeString(msg.summary())
+	if strings.HasPrefix(msg.message, "Proposal #") {
+		// the proposal's number and title read as its heading
+		if first, rest, ok := strings.Cut(body, "\n"); ok {
+			body = "<b>" + strings.TrimPrefix(first, "Proposal ") + "</b>\n" + rest
+		}
+	}
+	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, body)
 	if msg.extra != "" {
 		text += "\n\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
@@ -520,11 +540,14 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 	if id != nil && *id != "" {
 		uniq = *id
 	}
+	alerts := c.Chains[chainName].Alerts
+	// a recovery always goes out, it is only delivered where the alert was
+	routed := func(min string) bool { return resolved || severityRank(severity) >= severityRank(min) }
 	a := &alertMsg{
-		pd:           c.Pagerduty.Enabled && c.Chains[chainName].Alerts.Pagerduty.Enabled,
-		disc:         c.Discord.Enabled && c.Chains[chainName].Alerts.Discord.Enabled,
-		tg:           c.Telegram.Enabled && c.Chains[chainName].Alerts.Telegram.Enabled,
-		slk:          c.Slack.Enabled && c.Chains[chainName].Alerts.Slack.Enabled,
+		pd:           c.Pagerduty.Enabled && alerts.Pagerduty.Enabled && routed(alerts.Pagerduty.MinSeverity),
+		disc:         c.Discord.Enabled && alerts.Discord.Enabled && routed(alerts.Discord.MinSeverity),
+		tg:           c.Telegram.Enabled && alerts.Telegram.Enabled && routed(alerts.Telegram.MinSeverity),
+		slk:          c.Slack.Enabled && alerts.Slack.Enabled && routed(alerts.Slack.MinSeverity),
 		severity:     severity,
 		resolved:     resolved,
 		chain:        chainName,
@@ -540,6 +563,22 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		slkHook:      c.Chains[chainName].Alerts.Slack.Webhook,
 	}
 	return a
+}
+
+// severityRank orders severities for min_severity, an unknown one ranks as critical so it is never dropped.
+func severityRank(severity string) int {
+	switch severity {
+	case "":
+		return 0
+	case "info":
+		return 1
+	case "warning":
+		return 2
+	case "error":
+		return 3
+	default:
+		return 4
+	}
 }
 
 // alert records the incident and its ordered notification queue before waking delivery workers.
@@ -840,6 +879,10 @@ func (cc *ChainConfig) watch() {
 			}
 		}
 
+		if cc.Alerts.GovAlerts && valInfo.Valcons != "" {
+			cc.govAlarms(valInfo, reconcile)
+		}
+
 		// node down alarms
 		for _, node := range cc.Nodes {
 			status := node.snapshot()
@@ -985,6 +1028,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			id = valInfo.Valcons + "jailed"
 		case strings.Contains(message, " of the slashing window's blocks on "):
 			id = valInfo.Valcons + "percent"
+		case strings.HasPrefix(message, "Proposal #"):
+			if cc.Alerts.GovAlerts {
+				continue // the governance check works these out itself
+			}
+			id = govAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " of the misses allowed before jailing on "):

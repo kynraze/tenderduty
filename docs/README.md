@@ -22,6 +22,8 @@ Monitors a validator's performance across multiple chains
 - The main purpose of tenderduty is to monitor consensus state, and alert if the validator is missing blocks. This can be based on consecutive misses or on a percentage missed within the slashing window.
 - Alerting if jailed, tombstoned, or inactive.
 - Optional alerting on missed proposals: blocks the validator was due to propose but another validator did.
+- Optional governance messages: a proposal opened for voting, and a reminder before voting ends without a vote.
+- Optional jail risk alerts, from the chain's own slashing params.
 - Alert destinations can be customized for each chain.
 - Monitors node health:
     * Optional alerting if syncing or not responding.

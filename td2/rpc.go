@@ -181,6 +181,11 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 			if err != nil {
 				l("❓ refreshing signing info for", cc.ValAddress, err)
 			}
+			if client := cc.clientSnapshot(); client != nil && cc.Alerts.GovAlerts {
+				ctx, cancel := context.WithTimeout(td.context(), 30*time.Second)
+				cc.refreshProposals(ctx, client)
+				cancel()
+			}
 		}
 	}
 }

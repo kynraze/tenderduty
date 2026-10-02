@@ -123,6 +123,8 @@ type ChainConfig struct {
 	statProposalMiss    float64
 	proposalMisses      []time.Time   // when proposals were missed, for the alert window
 	blockTime           time.Duration // running average of the time between blocks
+	proposals           []govProposal // proposals in voting, from the last refresh
+	proposalsLoaded     bool
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -200,6 +202,13 @@ type AlertConfig struct {
 
 	// JailRiskPercent is how much of the misses allowed before jailing can be used before alerting
 	JailRiskPercent int `yaml:"jail_risk_percent"`
+	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
+	GovRemindMinutes int `yaml:"gov_remind_minutes"`
+	// GovPriority is a tag for pagerduty to route new proposals on priority, reminders are critical
+	GovPriority string `yaml:"gov_priority"`
+	// GovAlerts is whether to alert on proposals in voting
+	GovAlerts bool `yaml:"gov_enabled"`
+
 	// JailRiskMinutes alerts when, missing every block, the validator would be jailed within this many minutes
 	JailRiskMinutes int `yaml:"jail_risk_minutes"`
 	// JailRiskPriority is a tag for pagerduty to route on priority
@@ -252,6 +261,8 @@ type PDConfig struct {
 	Enabled         bool   `yaml:"enabled"`
 	ApiKey          string `yaml:"api_key"`
 	DefaultSeverity string `yaml:"default_severity"`
+	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	MinSeverity string `yaml:"min_severity"`
 }
 
 // DiscordConfig holds the information needed to publish to a Discord webhook for sending alerts
@@ -259,6 +270,8 @@ type DiscordConfig struct {
 	Enabled  bool     `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
+	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	MinSeverity string `yaml:"min_severity"`
 }
 
 // TeleConfig holds the information needed to publish to a Telegram webhook for sending alerts
@@ -267,6 +280,8 @@ type TeleConfig struct {
 	ApiKey   string   `yaml:"api_key"`
 	Channel  string   `yaml:"channel"`
 	Mentions []string `yaml:"mentions"`
+	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	MinSeverity string `yaml:"min_severity"`
 }
 
 // SlackConfig holds the information needed to publish to a Slack webhook for sending alerts
@@ -274,6 +289,8 @@ type SlackConfig struct {
 	Enabled  bool     `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
+	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	MinSeverity string `yaml:"min_severity"`
 }
 
 // HealthcheckConfig holds the information needed to send pings to a healthcheck endpoint
@@ -377,6 +394,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.JailRiskPercent = 50
 			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 50", k))
 		}
+		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes < 1 {
+			v.Alerts.GovRemindMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive gov_remind_minutes, using 60", k))
+		}
 		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes < 1 {
 			v.Alerts.JailRiskMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s has no positive jail_risk_minutes, using 60", k))
@@ -427,6 +448,23 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Pagerduty.ApiKey = c.Pagerduty.ApiKey
 			v.Alerts.Pagerduty.DefaultSeverity = c.Pagerduty.DefaultSeverity
 		}
+		for _, min := range []*string{&v.Alerts.Pagerduty.MinSeverity, &v.Alerts.Discord.MinSeverity, &v.Alerts.Telegram.MinSeverity, &v.Alerts.Slack.MinSeverity} {
+			if *min != "" && severityRank(*min) == 4 && *min != "critical" {
+				problems = append(problems, fmt.Sprintf("warning: %s min_severity %q is not info, warning, error or critical, using critical", k, *min))
+			}
+		}
+		if v.Alerts.Pagerduty.MinSeverity == "" {
+			v.Alerts.Pagerduty.MinSeverity = c.Pagerduty.MinSeverity
+		}
+		if v.Alerts.Discord.MinSeverity == "" {
+			v.Alerts.Discord.MinSeverity = c.Discord.MinSeverity
+		}
+		if v.Alerts.Telegram.MinSeverity == "" {
+			v.Alerts.Telegram.MinSeverity = c.Telegram.MinSeverity
+		}
+		if v.Alerts.Slack.MinSeverity == "" {
+			v.Alerts.Slack.MinSeverity = c.Slack.MinSeverity
+		}
 		if c.Telegram.Enabled && v.Alerts.Telegram.Enabled && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
 			problems = append(problems, fmt.Sprintf("warning: %s telegram alerts need an API key and channel, they will not be sent", k))
 		}
@@ -448,6 +486,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.ProposalPriority == "" {
 			v.Alerts.ProposalPriority = "warning"
 		}
+		if v.Alerts.GovPriority == "" {
+			v.Alerts.GovPriority = "info"
+		}
 		if v.Alerts.JailRiskPriority == "" {
 			v.Alerts.JailRiskPriority = "critical"
 		}
@@ -464,7 +505,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {

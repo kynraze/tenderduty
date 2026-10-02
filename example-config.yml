@@ -25,6 +25,9 @@ pagerduty:
   api_key: aaaaaaaaaaaabbbbbbbbbbbbbcccccccccccc
   # Not currently used, but will be soon. This allows setting escalation priorities etc.
   default_severity: alert
+  # Only send alerts of this severity and up: info, warning, error or critical. Every destination has this setting,
+  # empty sends everything. Here new governance proposals (info) stay out of pagerduty.
+  min_severity: warning
 
 # Discord settings
 discord:
@@ -80,6 +83,11 @@ alert_defaults:
   # Also alert when it is missing blocks and, at the chain's block time, would be jailed within this many minutes.
   jail_risk_minutes: 60
   jail_risk_priority: critical
+  # Governance: a message when a proposal opens for voting, cleared once the validator votes, and a reminder when
+  # voting ends within gov_remind_minutes without a vote. The voter is the valoper's account.
+  gov_enabled: no
+  gov_remind_minutes: 60
+  gov_priority: info
   alert_if_inactive: yes
   alert_if_no_servers: yes
   pagerduty:
