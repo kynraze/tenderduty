@@ -486,6 +486,9 @@ func newClientContext(ctx context.Context, u string, allowInsecure bool) (*TmCon
 			_ = response.Body.Close()
 		}
 		conn, err = connected, dialErr
+		if errors.Is(err, websocket.ErrBadHandshake) && response != nil {
+			return nil, fmt.Errorf("%s refused the websocket connection (HTTP %d), tenderduty needs /websocket enabled on the RPC node", endpoint.String(), response.StatusCode)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("could not dial ws client to %s: %s", endpoint.String(), err.Error())
 		}

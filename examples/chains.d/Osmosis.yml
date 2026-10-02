@@ -19,7 +19,7 @@ alerts:
 # This section covers our RPC providers. No LCD (aka REST) endpoints are used, only TM's RPC endpoints
 # Multiple hosts are encouraged, and will be tried sequentially until a working endpoint is discovered.
 nodes:
-  # URL for the endpoint. Must include protocol://hostname:port
+  # URL for the endpoint, protocol://hostname:port. Without a port https uses 443 and http 80
   - url: http://YOUR_OSMOSIS_NODE:26657
     # Should we send an alert if this host isn't responding?
     alert_if_down: yes

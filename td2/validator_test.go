@@ -40,3 +40,9 @@ func TestConsensusAddressStillMonitorsWhenSlashingQueryIsUnsupported(t *testing.
 		t.Fatalf("block monitoring identity was lost: %+v", info)
 	}
 }
+
+func TestCryptoOrgValconsPrefix(t *testing.T) {
+	if prefix, ok := altValopers.getAltPrefix("crocncl1qz7k6tlc37u02yw95pp2rx2d"); !ok || prefix != "crocnclcons" {
+		t.Fatalf("got %q %v", prefix, ok)
+	}
+}
