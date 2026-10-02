@@ -47,9 +47,9 @@ Detailed installation info is in the [installation doc.](docs/install.md)
 
 ```
 mkdir tenderduty && cd tenderduty
-docker run --rm ghcr.io/blockpane/tenderduty:latest -example-config >config.yml
+docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
 # edit config.yml and add chains, notification methods etc.
-docker run -d --name tenderduty -p "127.0.0.1:8888:8888" -p "127.0.0.1:28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/blockpane/tenderduty:latest
+docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
@@ -92,11 +92,11 @@ See the [systemd guide](docs/install.md#run-as-a-systemd-service-on-ubuntu) for 
 
 ## Split Configuration
 
-Shared alert settings can be placed in `alert_defaults`, with only chain-specific overrides in each chain's `alerts` section. See the [configuration guide](docs/config.md) for examples, including several validators on one chain.
+Shared alert settings go in `alert_defaults`, each chain's `alerts` only needs what's different. See the [configuration guide](docs/config.md), including Realio multistaking support.
 
 For validators with many chains, chain specific configuration may be split into additional files and placed into the directory "chains.d".
 
-This directory can be changed with the -cc option
+This directory can be changed with the -cc option. See [examples/](examples) to get started.
 
 The user friendly chain label will be taken from the name of the file.  
 
@@ -105,7 +105,10 @@ For example:
 ```
 chains.d/Juno.yml -> Juno
 chains.d/Lum Network.yml -> Lum Network
+chains.d/Osmosis.mainnet.yml -> Osmosis
 ```
+
+The label ends at the first dot.
 
 Configuration inside chains.d/Network.yml will be the YAML contents without the chain label.
 
