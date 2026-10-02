@@ -22,14 +22,43 @@ func TestQuietHoursWrapMidnight(t *testing.T) {
 	}
 }
 
+func TestTimezoneTakesNamesAndOffsets(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offset int // seconds east of UTC
+	}{
+		{"", 0},
+		{"UTC", 0},
+		{"Asia/Jakarta", 7 * 3600},
+		{"UTC+7", 7 * 3600},
+		{"utc+07", 7 * 3600},
+		{"UTC-5", -5 * 3600},
+		{"GMT+05:30", 5*3600 + 30*60},
+		{"UTC+0530", 5*3600 + 30*60},
+	} {
+		location, err := loadTimezone(tc.name)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.name, err)
+		}
+		if _, got := time.Date(2026, 10, 2, 12, 0, 0, 0, location).Zone(); got != tc.offset {
+			t.Fatalf("%q is %d seconds from UTC, want %d", tc.name, got, tc.offset)
+		}
+	}
+	for _, bad := range []string{"WIB", "UTC+15", "UTC+7:70", "+7", "Mars/Olympus"} {
+		if _, err := loadTimezone(bad); err == nil {
+			t.Fatalf("%q was accepted as a timezone", bad)
+		}
+	}
+}
+
 func TestQuietHoursHoldAndRelease(t *testing.T) {
 	c := auditConfig(t)
 	heldMux.Lock()
 	held = make(map[string]heldAlert)
 	heldMux.Unlock()
-	c.Telegram.Enabled = true
+	c.Telegram.Enabled = yes(true)
 	chain := &ChainConfig{}
-	chain.Alerts.Telegram.Enabled = true
+	chain.Alerts.Telegram.Enabled = yes(true)
 	c.Chains["Chain"] = chain
 	now := time.Now().UTC()
 	window := func(from, to time.Time) {

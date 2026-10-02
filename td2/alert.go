@@ -604,10 +604,10 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 	// a recovery always goes out, it is only delivered where the alert was
 	routed := func(min string) bool { return resolved || severityRank(severity) >= severityRank(min) }
 	a := &alertMsg{
-		pd:           c.Pagerduty.Enabled && alerts.Pagerduty.Enabled && routed(alerts.Pagerduty.MinSeverity),
-		disc:         c.Discord.Enabled && alerts.Discord.Enabled && routed(alerts.Discord.MinSeverity),
-		tg:           c.Telegram.Enabled && alerts.Telegram.Enabled && routed(alerts.Telegram.MinSeverity),
-		slk:          c.Slack.Enabled && alerts.Slack.Enabled && routed(alerts.Slack.MinSeverity),
+		pd:           enabledFor(c.Pagerduty.Enabled, alerts.Pagerduty.Enabled) && routed(alerts.Pagerduty.MinSeverity),
+		disc:         enabledFor(c.Discord.Enabled, alerts.Discord.Enabled) && routed(alerts.Discord.MinSeverity),
+		tg:           enabledFor(c.Telegram.Enabled, alerts.Telegram.Enabled) && routed(alerts.Telegram.MinSeverity),
+		slk:          enabledFor(c.Slack.Enabled, alerts.Slack.Enabled) && routed(alerts.Slack.MinSeverity),
 		severity:     severity,
 		resolved:     resolved,
 		chain:        chainName,

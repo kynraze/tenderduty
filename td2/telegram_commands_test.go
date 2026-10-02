@@ -69,9 +69,9 @@ func TestMentionMeRegistersAndPings(t *testing.T) {
 	c := auditConfig(t)
 	restoreMentions(nil)
 	t.Cleanup(func() { restoreMentions(nil) })
-	c.Telegram.Enabled = true
+	c.Telegram.Enabled = yes(true)
 	chain := &ChainConfig{}
-	chain.Alerts.Telegram.Enabled = true
+	chain.Alerts.Telegram.Enabled = yes(true)
 	chain.Alerts.Telegram.Mentions = []string{"@ops <team>"}
 	c.Chains["Chain"] = chain
 	someone := tgMention{ID: 123456789, Name: "Ops"}

@@ -18,6 +18,9 @@ prometheus_enabled: yes
 # What port should it listen on? For now only port is configurable.
 prometheus_listen_port: 28686
 
+# Alert destinations. Turning one on here is enough, every chain uses it unless the chain's own file says
+# 'enabled: no' for it. See chains.d/Osmosis.yml for an example.
+
 # Global setting for pagerduty
 pagerduty:
   # Should we use PD? Be aware that if this is set to no it overrides individual chain alerting settings.
@@ -26,6 +29,9 @@ pagerduty:
   api_key: ""
   # Not currently used, but will be soon. This allows setting escalation priorities etc.
   default_severity: alert
+  # Only send alerts of this severity and up: info, warning, error or critical. Every destination has this
+  # setting, empty sends everything. Here new governance proposals (info) stay out of pagerduty.
+  min_severity: warning
 
 # Discord settings
 discord:
@@ -33,15 +39,27 @@ discord:
   enabled: no
   # The webhook is set by right-clicking on a channel, editing the settings, and configuring a webhook in the intergrations section.
   webhook: ""
+  # Added to the first line of every alert. Only discord's own forms ping, plain text like @someone does not:
+  # a user is <@000000000000000000>, a role is <@&111111111111111111>, or use @here and @everyone.
+  # Turn on developer mode in discord to copy an id: right click a name > Copy User ID.
+  mentions: []
+  # How alerts look: embed is a block with a colour down the side, plain is one ordinary message.
+  style: embed
 
 # Telegram settings
 telegram:
-  # Alert via telegram? Note: also supersedes chain-specific settings
+  # Alert via telegram?
   enabled: yes
   # API key ... talk to @BotFather
   api_key: "YOUR_BOT_TOKEN"
   # The group ID for the chat where messages will be sent. Google how to find this, will include better info later.
   channel: "YOUR_CHAT_ID"
+  # Added to the end of every alert. A telegram ping needs @username, a plain name does not notify.
+  mentions: []
+  # Answer /status (every chain), /status <chain> and /mentionme sent to the bot in the channel above. In a group
+  # only the admins (telegram user ids) can use it. Nothing else may read the bot's updates at the same time.
+  commands: no
+  admins: []
 
 # Slack settings
 slack:
@@ -49,6 +67,16 @@ slack:
   enabled: no
   # The webhook can be added in the Slack app directory.
   webhook: ""
+
+# Quiet hours: alerts below min_severity wait until they end, and are only sent if still active then.
+quiet_hours:
+  enabled: no
+  start: "23:00"
+  end: "07:00"
+  # An IANA name like Europe/Berlin or Asia/Jakarta, which follows daylight saving, or a fixed offset like
+  # UTC+7 or UTC-05:30, which does not. Empty is UTC.
+  timezone: UTC
+  min_severity: critical
 
 # Healthcheck settings (dead man's switch)
 healthcheck:
@@ -59,7 +87,7 @@ healthcheck:
   # Rate in which pings are sent in seconds.
   ping_rate: 60
 
-# These settings apply to every chain unless a chain overrides them.
+# Which alerts to send. These apply to every chain unless a chain's own file overrides them.
 alert_defaults:
   # If the chain stops seeing new blocks, should an alert be sent?
   stalled_enabled: yes
@@ -81,18 +109,33 @@ alert_defaults:
   # Percentage Missed alert Pagerduty Severity
   percentage_priority: warning
 
+  # Missed proposals: the validator was due to propose a block but another validator did. No slashing, usually a
+  # slow node or network. Alerts when proposal_missed happen within proposal_minutes.
+  proposal_enabled: no
+  proposal_missed: 3
+  proposal_minutes: 60
+  proposal_priority: warning
+
+  # Alert when this much of the misses allowed before jailing (from the chain's slashing params) is used.
+  jail_risk_enabled: no
+  jail_risk_percent: 50
+  # Also alert when it is missing blocks and, at the chain's block time, would be jailed within this many minutes.
+  jail_risk_minutes: 60
+  jail_risk_priority: critical
+
+  # Governance: a message when a proposal opens for voting, cleared once the validator votes, and a reminder when
+  # voting ends within gov_remind_minutes without a vote. The voter is the valoper's account.
+  gov_enabled: no
+  gov_remind_minutes: 60
+  gov_priority: info
+
+  # Upgrades scheduled in x/upgrade: a message with the height and estimated time, a reminder when it is close.
+  upgrade_enabled: no
+  upgrade_remind_minutes: 60
+  upgrade_priority: warning
+
   # Should an alert be sent if the validator is not in the active set ie, jailed,
   # tombstoned, unbonding?
   alert_if_inactive: yes
   # Should an alert be sent if no RPC servers are responding? (Uses the node_down_alert_minutes setting)
   alert_if_no_servers: yes
-
-  # Turn on the same destinations you enabled above.
-  pagerduty:
-    enabled: no
-  discord:
-    enabled: no
-  telegram:
-    enabled: yes
-  slack:
-    enabled: no

@@ -23,7 +23,7 @@ COPY --from=ssl /etc/group /etc/group
 COPY --from=ssl --chown=tenderduty:tenderduty /var/lib/tenderduty /var/lib/tenderduty
 
 COPY --from=builder /build/app/tenderduty /bin/tenderduty
-COPY --from=builder /build/app/example-config.yml /var/lib/tenderduty
+COPY --from=builder /build/app/examples /var/lib/tenderduty/examples
 
 USER tenderduty
 WORKDIR /var/lib/tenderduty

@@ -6,13 +6,17 @@ chain_id: osmosis-1
 # Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how
 # to convert ed25519 keys to the appropriate bech32 address.
 valoper_address: osmovaloper1xxxxxxx...
-# Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
-# This isn't always reliable, not all public nodes have websocket proxying setup correctly.
+# Should the monitor fall back to a public RPC node if all supplied nodes fail? It picks one from the chain
+# registry that is on the right chain, synced, and accepts websockets. Public nodes aren't yours, only use this
+# as a backup.
 public_fallback: no
+# Added to every alert for this chain, useful to tell which tenderduty instance sent it.
+# extra_info: "sent from monitor-eu"
 
 # Only settings that differ from alert_defaults need to be set here.
 alerts:
   consecutive_missed: 3
+  # The destinations enabled in config.yml are used for this chain. To leave one out:
   # telegram:
   #   enabled: no
 

@@ -210,9 +210,9 @@ func TestWebsocketCancellationWaitsForConnectionWorkers(t *testing.T) {
 
 func notificationConfig(t *testing.T, endpoint string) *Config {
 	c := auditConfig(t)
-	c.Discord.Enabled = true
+	c.Discord.Enabled = yes(true)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", ValAddress: "validator"}
-	chain.Alerts.Discord.Enabled = true
+	chain.Alerts.Discord.Enabled = yes(true)
 	chain.Alerts.Discord.Webhook = endpoint
 	c.Chains["Chain"] = chain
 	c.stateFile = filepath.Join(t.TempDir(), "state.json")
@@ -1007,11 +1007,11 @@ chains:
 }
 
 func TestIncompleteAlertSettingsOnlyWarn(t *testing.T) {
-	c := &Config{Listen: "8888", NodeDownMin: 3, Discord: DiscordConfig{Enabled: true}, Chains: map[string]*ChainConfig{
+	c := &Config{Listen: "8888", NodeDownMin: 3, Discord: DiscordConfig{Enabled: yes(true)}, Chains: map[string]*ChainConfig{
 		"Juno": {ChainId: "juno-1", ValAddress: "junovaloper1example", Nodes: []*NodeConfig{{Url: "not a url"}}},
 	}}
 	alerts := &c.Chains["Juno"].Alerts
-	alerts.Discord.Enabled = true
+	alerts.Discord.Enabled = yes(true)
 	alerts.StalledAlerts, alerts.ConsecutiveAlerts, alerts.PercentageAlerts = true, true, true
 	fatal, problems := validateConfig(c)
 	if fatal {

@@ -63,7 +63,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 			}
 		}
 	})
-	if td.Telegram.Enabled && td.Telegram.Commands {
+	if on(td.Telegram.Enabled) && td.Telegram.Commands {
 		td.startWorker(td.telegramCommands)
 	}
 	if td.EnableDash {

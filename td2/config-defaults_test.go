@@ -33,11 +33,53 @@ chains:
 	if err := applyAlertDefaults(c, config, files); err != nil {
 		t.Fatal(err)
 	}
-	if c.Chains["Osmosis"].Alerts.ConsecutiveMissed != 3 || c.Chains["Osmosis"].Alerts.Telegram.Enabled {
+	if c.Chains["Osmosis"].Alerts.ConsecutiveMissed != 3 || on(c.Chains["Osmosis"].Alerts.Telegram.Enabled) {
 		t.Fatalf("Osmosis override was not applied: %+v", c.Chains["Osmosis"].Alerts)
 	}
-	if c.Chains["Juno"].Alerts.StalledAlerts || c.Chains["Juno"].Alerts.Stalled != 10 || !c.Chains["Juno"].Alerts.Telegram.Enabled {
+	if c.Chains["Juno"].Alerts.StalledAlerts || c.Chains["Juno"].Alerts.Stalled != 10 || !on(c.Chains["Juno"].Alerts.Telegram.Enabled) {
 		t.Fatalf("Juno did not inherit the expected defaults: %+v", c.Chains["Juno"].Alerts)
+	}
+}
+
+// a chain that doesn't mention a destination follows the shared switch, so it only has to be turned on once
+func TestChainsFollowTheSharedDestinationSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		shared, chain *bool
+		want          bool
+	}{
+		{"shared on, chain quiet", yes(true), nil, true},
+		{"shared on, chain opts out", yes(true), yes(false), false},
+		{"shared off, chain quiet", yes(false), nil, false},
+		{"shared off, chain asks anyway", yes(false), yes(true), false},
+		{"shared unset", nil, yes(true), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := auditConfig(t)
+			c.Telegram.Enabled, c.Telegram.ApiKey, c.Telegram.Channel = tc.shared, "key", "-100"
+			chain := &ChainConfig{ChainId: "atomone-1"}
+			chain.Alerts.Telegram.Enabled = tc.chain
+			c.Chains["AtomOne"] = chain
+			if got := c.makeAlert("AtomOne", "something happened", "critical", false, nil).tg; got != tc.want {
+				t.Fatalf("telegram delivery is %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// leaving the destinations out of alert_defaults still sends alerts, the shared switch is enough
+func TestDestinationsNeedNoAlertDefaultsEntry(t *testing.T) {
+	c := &Config{Chains: map[string]*ChainConfig{"Juno": {}}}
+	config := []byte("alert_defaults:\n  consecutive_enabled: yes\n  consecutive_missed: 5\n")
+	if err := applyAlertDefaults(c, config, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.Chains["Juno"].Alerts.Telegram.Enabled != nil {
+		t.Fatal("a destination nobody configured should stay unset so it can follow the shared switch")
+	}
+	c.Telegram.Enabled = yes(true)
+	if !enabledFor(c.Telegram.Enabled, c.Chains["Juno"].Alerts.Telegram.Enabled) {
+		t.Fatal("the chain did not follow the shared telegram switch")
 	}
 }
 
@@ -83,7 +125,7 @@ func TestValidatorsHaveTheirOwnNodes(t *testing.T) {
 			},
 		},
 	}}
-	if err := expandValidators(c); err != nil {
+	if _, err := expandValidators(c); err != nil {
 		t.Fatal(err)
 	}
 	rio, dstrx := c.Chains["Realio / RIO"], c.Chains["Realio / dstrx"]
@@ -95,19 +137,50 @@ func TestValidatorsHaveTheirOwnNodes(t *testing.T) {
 	}
 }
 
-func TestValidatorsRejectChainNodes(t *testing.T) {
+// chain level nodes are a fallback every validator can use, so a spare RPC only has to be written once
+func TestValidatorsShareTheChainNodes(t *testing.T) {
 	c := &Config{Chains: map[string]*ChainConfig{
 		"Realio": {
 			ChainId: "realionetwork_3301-1",
-			Nodes:   []*NodeConfig{{Url: "http://node-a:26657"}},
+			Nodes:   []*NodeConfig{{Url: "http://spare:26657", AlertIfDown: true}},
 			Validators: []ValidatorConfig{
-				{Name: "RIO", ValAddress: "realiovaloper1rio"},
-				{Name: "dstrx", ValAddress: "realiovaloper1dstrx"},
+				{Name: "RIO", ValAddress: "realiovaloper1rio", Nodes: []*NodeConfig{{Url: "http://node-a:26657", AlertIfDown: true}}},
+				{Name: "dstrx", ValAddress: "realiovaloper1dstrx", Nodes: []*NodeConfig{{Url: "http://node-b:26657", AlertIfDown: true}}},
 			},
 		},
 	}}
-	if err := expandValidators(c); err == nil || !strings.Contains(err.Error(), "under each validator") {
-		t.Fatalf("nodes shared by several validators were accepted: %v", err)
+	warnings, err := expandValidators(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "alert_if_down is ignored") {
+		t.Fatalf("a shared node alerting once per validator was not called out: %v", warnings)
+	}
+	for name, own := range map[string]string{"Realio / RIO": "http://node-a:26657", "Realio / dstrx": "http://node-b:26657"} {
+		nodes := c.Chains[name].Nodes
+		if len(nodes) != 2 || nodes[0].Url != own || !nodes[0].AlertIfDown {
+			t.Fatalf("%s should try its own node first: %+v", name, nodes)
+		}
+		if nodes[1].Url != "http://spare:26657" || nodes[1].AlertIfDown {
+			t.Fatalf("%s did not get the shared node as a quiet fallback: %+v", name, nodes[1])
+		}
+	}
+}
+
+// a validator with no node of its own still needs somewhere to look
+func TestValidatorsNeedANodeOrPublicFallback(t *testing.T) {
+	chain := func() *ChainConfig {
+		return &ChainConfig{ChainId: "realionetwork_3301-1", Validators: []ValidatorConfig{{Name: "RIO", ValAddress: "realiovaloper1rio"}}}
+	}
+	c := &Config{Chains: map[string]*ChainConfig{"Realio": chain()}}
+	if _, err := expandValidators(c); err == nil || !strings.Contains(err.Error(), "no RPC nodes") {
+		t.Fatalf("a validator with nowhere to look was accepted: %v", err)
+	}
+	withFallback := chain()
+	withFallback.PublicFallback = true
+	c = &Config{Chains: map[string]*ChainConfig{"Realio": withFallback}}
+	if _, err := expandValidators(c); err != nil {
+		t.Fatalf("public_fallback should be enough: %v", err)
 	}
 }
 

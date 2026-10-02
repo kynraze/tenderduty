@@ -20,4 +20,6 @@ jobs:
       - name: Build Docker image
         run: docker build -t tenderduty:ci .
       - name: Check Docker entrypoint
-        run: docker run --rm tenderduty:ci -example-config > /dev/null
+        run: |
+          docker run --rm tenderduty:ci -example-config > /dev/null
+          docker run --rm tenderduty:ci -example-chain > /dev/null

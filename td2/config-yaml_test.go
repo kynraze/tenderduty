@@ -30,14 +30,14 @@ func TestConfigYAMLBooleanDefaultsAndOverrides(t *testing.T) {
 		if err := applyAlertDefaults(c, data, nil); err != nil {
 			t.Fatal(err)
 		}
-		if !c.Chains["Chain"].Alerts.StalledAlerts || c.Chains["Chain"].Alerts.Telegram.Enabled {
+		if !c.Chains["Chain"].Alerts.StalledAlerts || on(c.Chains["Chain"].Alerts.Telegram.Enabled) {
 			t.Fatalf("boolean inheritance changed for %+v", spelling)
 		}
 	}
 }
 
 func TestExampleConfigurationAndChainFileStillLoad(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "example-config.yml"))
+	data, err := os.ReadFile(filepath.Join("..", "examples", "config.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestExampleConfigurationAndChainFileStillLoad(t *testing.T) {
 	}
 	defer loaded.cancel()
 	defer loaded.deliveryCancel()
-	if !loaded.Chains["Chain"].Alerts.ConsecutiveAlerts || loaded.Chains["Chain"].Alerts.Telegram.Enabled {
+	if !loaded.Chains["Chain"].Alerts.ConsecutiveAlerts || on(loaded.Chains["Chain"].Alerts.Telegram.Enabled) {
 		t.Fatal("chain file defaults or explicit false override changed")
 	}
 }

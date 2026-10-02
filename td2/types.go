@@ -80,6 +80,8 @@ type Config struct {
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
 
 	chainsMux sync.RWMutex // prevents concurrent map access for Chains
+	// configWarnings is what loading found before the config could be validated
+	configWarnings []string
 	// Chains has settings for each validator to monitor. The map's name does not need to match the chain-id.
 	Chains map[string]*ChainConfig `yaml:"chains"`
 }
@@ -271,7 +273,7 @@ type NodeConfig struct {
 
 // PDConfig is the information required to send alerts to PagerDuty
 type PDConfig struct {
-	Enabled         bool   `yaml:"enabled"`
+	Enabled         *bool  `yaml:"enabled"`
 	ApiKey          string `yaml:"api_key"`
 	DefaultSeverity string `yaml:"default_severity"`
 	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
@@ -280,7 +282,7 @@ type PDConfig struct {
 
 // DiscordConfig holds the information needed to publish to a Discord webhook for sending alerts
 type DiscordConfig struct {
-	Enabled  bool     `yaml:"enabled"`
+	Enabled  *bool    `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
 	// Style is "embed", a block with a colour down the side, or "plain" for one plain message
@@ -291,7 +293,7 @@ type DiscordConfig struct {
 
 // TeleConfig holds the information needed to publish to a Telegram webhook for sending alerts
 type TeleConfig struct {
-	Enabled  bool     `yaml:"enabled"`
+	Enabled  *bool    `yaml:"enabled"`
 	ApiKey   string   `yaml:"api_key"`
 	Channel  string   `yaml:"channel"`
 	Mentions []string `yaml:"mentions"`
@@ -304,11 +306,30 @@ type TeleConfig struct {
 
 // SlackConfig holds the information needed to publish to a Slack webhook for sending alerts
 type SlackConfig struct {
-	Enabled  bool     `yaml:"enabled"`
+	Enabled  *bool    `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
 	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
 	MinSeverity string `yaml:"min_severity"`
+}
+
+// on says if a switch is set to yes, one that was left out is off.
+func on(enabled *bool) bool {
+	return enabled != nil && *enabled
+}
+
+// yes is a switch that was set, for the deprecated settings and for tests.
+func yes(enabled bool) *bool {
+	return &enabled
+}
+
+// enabledFor says if a destination gets a chain's alerts. The shared switch has the last word, a chain that doesn't
+// mention the destination follows it, so it only has to be turned on once.
+func enabledFor(shared, chain *bool) bool {
+	if !on(shared) {
+		return false
+	}
+	return chain == nil || *chain
 }
 
 // HealthcheckConfig holds the information needed to send pings to a healthcheck endpoint
@@ -321,6 +342,7 @@ type HealthcheckConfig struct {
 // validateConfig is a non-exhaustive check for common problems with the configuration. Needs love.
 func validateConfig(c *Config) (fatal bool, problems []string) {
 	problems = make([]string, 0)
+	problems = append(problems, c.configWarnings...)
 
 	if c.EnableDash {
 		port, parseErr := strconv.Atoi(c.Listen)
@@ -346,7 +368,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		problems = append(problems, "error: Healthcheck ping rate is too large")
 	}
 
-	if c.Pagerduty.Enabled {
+	if on(c.Pagerduty.Enabled) {
 		rex := regexp.MustCompile(`[+_-]`)
 		if rex.MatchString(c.Pagerduty.ApiKey) {
 			fatal = true
@@ -462,14 +484,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 
 		// the bools for enabling alerts are deprecated with full configs preferred,
 		// don't break if someone is still using them:
-		if v.Alerts.DiscordAlerts && !v.Alerts.Discord.Enabled {
-			v.Alerts.Discord.Enabled = true
+		if v.Alerts.DiscordAlerts && !on(v.Alerts.Discord.Enabled) {
+			v.Alerts.Discord.Enabled = yes(true)
 		}
-		if v.Alerts.TelegramAlerts && !v.Alerts.Telegram.Enabled {
-			v.Alerts.Telegram.Enabled = true
+		if v.Alerts.TelegramAlerts && !on(v.Alerts.Telegram.Enabled) {
+			v.Alerts.Telegram.Enabled = yes(true)
 		}
-		if v.Alerts.PagerdutyAlerts && !v.Alerts.Pagerduty.Enabled {
-			v.Alerts.Pagerduty.Enabled = true
+		if v.Alerts.PagerdutyAlerts && !on(v.Alerts.Pagerduty.Enabled) {
+			v.Alerts.Pagerduty.Enabled = yes(true)
 		}
 
 		// if the settings are blank, copy in the defaults:
@@ -516,16 +538,20 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Slack.MinSeverity == "" {
 			v.Alerts.Slack.MinSeverity = c.Slack.MinSeverity
 		}
-		if c.Telegram.Enabled && v.Alerts.Telegram.Enabled && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
+		tgOn := enabledFor(c.Telegram.Enabled, v.Alerts.Telegram.Enabled)
+		discOn := enabledFor(c.Discord.Enabled, v.Alerts.Discord.Enabled)
+		slackOn := enabledFor(c.Slack.Enabled, v.Alerts.Slack.Enabled)
+		pdOn := enabledFor(c.Pagerduty.Enabled, v.Alerts.Pagerduty.Enabled)
+		if tgOn && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
 			problems = append(problems, fmt.Sprintf("warning: %s telegram alerts need an API key and channel, they will not be sent", k))
 		}
-		if c.Discord.Enabled && v.Alerts.Discord.Enabled && !validHTTPURL(v.Alerts.Discord.Webhook) {
+		if discOn && !validHTTPURL(v.Alerts.Discord.Webhook) {
 			problems = append(problems, fmt.Sprintf("warning: %s discord alerts need a valid webhook URL, they will not be sent", k))
 		}
-		if c.Slack.Enabled && v.Alerts.Slack.Enabled && !validHTTPURL(v.Alerts.Slack.Webhook) {
+		if slackOn && !validHTTPURL(v.Alerts.Slack.Webhook) {
 			problems = append(problems, fmt.Sprintf("warning: %s slack alerts need a valid webhook URL, they will not be sent", k))
 		}
-		if c.Pagerduty.Enabled && v.Alerts.Pagerduty.Enabled && v.Alerts.Pagerduty.ApiKey == "" {
+		if pdOn && v.Alerts.Pagerduty.ApiKey == "" {
 			problems = append(problems, fmt.Sprintf("warning: %s pagerduty alerts need an API key, they will not be sent", k))
 		}
 		if v.Alerts.ConsecutivePriority == "" {
@@ -547,22 +573,22 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.JailRiskPriority = "critical"
 		}
 
-		if v.Alerts.Slack.Enabled && !c.Slack.Enabled {
+		if on(v.Alerts.Slack.Enabled) && !on(c.Slack.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for slack alerts, but it is not enabled", k))
 		}
-		if v.Alerts.Discord.Enabled && !c.Discord.Enabled {
+		if on(v.Alerts.Discord.Enabled) && !on(c.Discord.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for discord alerts, but it is not enabled", k))
 		}
-		if v.Alerts.Pagerduty.Enabled && !c.Pagerduty.Enabled {
+		if on(v.Alerts.Pagerduty.Enabled) && !on(c.Pagerduty.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for pagerduty alerts, but it is not enabled", k))
 		}
-		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
+		if on(v.Alerts.Telegram.Enabled) && !on(c.Telegram.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
 		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
-		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {
+		if !pdOn && !discOn && !tgOn && !slackOn {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no notifications configured", k))
 		}
 		if c.EnableDash {
@@ -732,9 +758,11 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	if err := applyAlertDefaults(c, configData, chainFiles); err != nil {
 		return nil, err
 	}
-	if err := expandValidators(c); err != nil {
+	expanded, err := expandValidators(c)
+	if err != nil {
 		return nil, err
 	}
+	c.configWarnings = expanded
 	addDefaultPorts(c)
 
 	c.alertChan = make(chan *alertMsg, len(c.Chains)*4)
@@ -804,24 +832,24 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		}
 		if saved.Alarms.SentTgAlarms != nil {
 			alarms.SentTgAlarms = saved.Alarms.SentTgAlarms
-			clearStale(alarms.SentTgAlarms, "telegram", c.Pagerduty.Enabled, staleHours)
+			clearStale(alarms.SentTgAlarms, "telegram", on(c.Pagerduty.Enabled), staleHours)
 		}
 		if saved.Alarms.SentPdAlarms != nil {
 			alarms.SentPdAlarms = saved.Alarms.SentPdAlarms
-			clearStale(alarms.SentPdAlarms, "PagerDuty", c.Pagerduty.Enabled, staleHours)
+			clearStale(alarms.SentPdAlarms, "PagerDuty", on(c.Pagerduty.Enabled), staleHours)
 		}
 		if saved.Alarms.SentDiAlarms != nil {
 			alarms.SentDiAlarms = saved.Alarms.SentDiAlarms
-			clearStale(alarms.SentDiAlarms, "Discord", c.Pagerduty.Enabled, staleHours)
+			clearStale(alarms.SentDiAlarms, "Discord", on(c.Pagerduty.Enabled), staleHours)
 		}
 		if saved.Alarms.SentSlkAlarms != nil {
 			alarms.SentSlkAlarms = saved.Alarms.SentSlkAlarms
-			clearStale(alarms.SentSlkAlarms, "Slack", c.Pagerduty.Enabled, staleHours)
+			clearStale(alarms.SentSlkAlarms, "Slack", on(c.Pagerduty.Enabled), staleHours)
 		}
 		if saved.Alarms.AllAlarms != nil {
 			alarms.AllAlarms = saved.Alarms.AllAlarms
 			for _, alrm := range saved.Alarms.AllAlarms {
-				clearStale(alrm, "dashboard", c.Pagerduty.Enabled, staleHours)
+				clearStale(alrm, "dashboard", on(c.Pagerduty.Enabled), staleHours)
 			}
 		}
 	}

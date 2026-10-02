@@ -80,9 +80,9 @@ func TestGovernanceMessages(t *testing.T) {
 
 func TestMinSeverityRouting(t *testing.T) {
 	c := auditConfig(t)
-	c.Telegram.Enabled, c.Pagerduty.Enabled = true, true
+	c.Telegram.Enabled, c.Pagerduty.Enabled = yes(true), yes(true)
 	chain := &ChainConfig{}
-	chain.Alerts.Telegram.Enabled, chain.Alerts.Pagerduty.Enabled = true, true
+	chain.Alerts.Telegram.Enabled, chain.Alerts.Pagerduty.Enabled = yes(true), yes(true)
 	chain.Alerts.Pagerduty.MinSeverity = "warning"
 	c.Chains["Chain"] = chain
 	if a := c.makeAlert("Chain", "new proposal", "info", false, nil); !a.tg || a.pd {

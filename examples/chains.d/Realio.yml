@@ -4,21 +4,27 @@
 
 # chain_id is validated for a match when connecting to an RPC endpoint, also used as a label in several places.
 chain_id: realionetwork_3301-1
-# Should the monitor revert to using public API endpoints if a validator's nodes fail?
-# This isn't always reliable, not all public nodes have websocket proxying setup correctly.
+# Should the monitor fall back to a public RPC node if a validator's nodes fail? It picks one from the chain
+# registry that is on the right chain, synced, and accepts websockets.
 public_fallback: yes
 
 # Only settings that differ from alert_defaults need to be set here.
 # alerts:
 #   consecutive_missed: 3
 
-# Used instead of valoper_address and nodes.
+# Nodes here are shared: every validator below falls back to them when its own node fails, so a spare RPC only
+# has to be written once. alert_if_down is ignored here, a shared node belongs to no single validator.
+# nodes:
+#   - url: http://YOUR_SPARE_NODE:26657
+
+# Used instead of valoper_address at the chain level.
 validators:
     # Added to the label, keep it stable.
   - name: RIO
     # The validator operator address.
     valoper_address: realiovaloper1xxxxxxx...
-    # This validator's own nodes, protocol://hostname:port. Without a port https uses 443 and http 80
+    # This validator's own nodes, tried before the shared ones above.
+    # protocol://hostname:port, without a port https uses 443 and http 80
     nodes:
       - url: http://YOUR_RIO_NODE:26657
         # Should we send an alert if this host isn't responding?

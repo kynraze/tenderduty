@@ -2,6 +2,9 @@ package tenderduty
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,7 +15,7 @@ type QuietHoursConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	Start       string `yaml:"start"`    // "23:00"
 	End         string `yaml:"end"`      // "07:00"
-	Timezone    string `yaml:"timezone"` // IANA name, UTC when empty
+	Timezone    string `yaml:"timezone"` // IANA name like Europe/Berlin, or a fixed offset like UTC+7, UTC when empty
 	MinSeverity string `yaml:"min_severity"`
 
 	location   *time.Location
@@ -29,14 +32,43 @@ var (
 	held    = make(map[string]heldAlert) // by chain and message
 )
 
+// offsetZone matches a fixed offset from UTC, for anyone who doesn't know their IANA name.
+var offsetZone = regexp.MustCompile(`^(?i:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?$`)
+
+// loadTimezone takes an IANA name like Europe/Berlin, which follows daylight saving, or a fixed offset like UTC+7,
+// which does not. Empty is UTC.
+func loadTimezone(name string) (*time.Location, error) {
+	name = strings.TrimSpace(name)
+	if location, err := time.LoadLocation(name); err == nil {
+		return location, nil
+	}
+	parts := offsetZone.FindStringSubmatch(name)
+	if parts == nil {
+		return nil, fmt.Errorf("quiet_hours timezone %q is not an IANA name like Europe/Berlin or an offset like UTC+7", name)
+	}
+	hours, _ := strconv.Atoi(parts[2])
+	minutes := 0
+	if parts[3] != "" {
+		minutes, _ = strconv.Atoi(parts[3])
+	}
+	if hours > 14 || minutes > 59 {
+		return nil, fmt.Errorf("quiet_hours timezone %q is not a real offset", name)
+	}
+	seconds := hours*3600 + minutes*60
+	if parts[1] == "-" {
+		seconds = -seconds
+	}
+	return time.FixedZone(strings.ToUpper(name), seconds), nil
+}
+
 // parse checks the settings and readies them, quiet hours stay off when they don't make sense.
 func (q *QuietHoursConfig) parse() error {
 	if !q.Enabled {
 		return nil
 	}
 	var err error
-	if q.location, err = time.LoadLocation(q.Timezone); err != nil {
-		return fmt.Errorf("quiet_hours timezone %q: %w", q.Timezone, err)
+	if q.location, err = loadTimezone(q.Timezone); err != nil {
+		return err
 	}
 	for _, t := range []struct {
 		value string
