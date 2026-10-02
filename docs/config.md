@@ -180,6 +180,6 @@ chains:
 | Config Setting                       | Description                                                                                                                                                                 |
 |--------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `chain."name".nodes[]`               | This is an array of nodes to use as RPC servers.                                                                                                                            |
-| `chain."name".nodes[].url`           | Should include the protocol://hostname:port For now only http (tcp is an alias) and https (with a valid certificate) are supported. UDS and insecure TLS support is planned |
+| `chain."name".nodes[].url`           | protocol://hostname:port, without a port https uses 443 and http 80. For now only http (tcp is an alias) and https (with a valid certificate) are supported. UDS and insecure TLS support is planned |
 | `chain."name".nodes[].alert_if_down` | Should an alert be sent if this host isn't responding? Uses the `node_down_alert_minutes` setting to determine threshold.                                                   |
 

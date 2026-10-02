@@ -1037,3 +1037,14 @@ func TestReadyWhileSomeValidatorsAreMonitored(t *testing.T) {
 		t.Fatalf("one validator's node being down marked the monitor as not ready: %+v", status)
 	}
 }
+
+func TestRejectedWebsocketSaysWhy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	_, err := newClientContext(context.Background(), server.URL, true)
+	if err == nil || !strings.Contains(err.Error(), "refused the websocket connection (HTTP 400)") {
+		t.Fatalf("got %v", err)
+	}
+}

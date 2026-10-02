@@ -18,7 +18,7 @@ validators:
   - name: RIO
     # The validator operator address.
     valoper_address: realiovaloper1xxxxxxx...
-    # This validator's own nodes. Must include protocol://hostname:port
+    # This validator's own nodes, protocol://hostname:port. Without a port https uses 443 and http 80
     nodes:
       - url: http://YOUR_RIO_NODE:26657
         # Should we send an alert if this host isn't responding?

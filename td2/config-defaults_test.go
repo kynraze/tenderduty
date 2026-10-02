@@ -129,3 +129,19 @@ func TestExampleConfigsLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestRPCURLsGetADefaultPort(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://rpc.example.com":           "https://rpc.example.com:443",
+		"https://rpc.example.com/celestia/": "https://rpc.example.com:443/celestia/",
+		"http://10.0.0.1":                   "http://10.0.0.1:80",
+		"http://[::1]/":                     "http://[::1]:80/",
+		"https://rpc.example.com:26657":     "https://rpc.example.com:26657",
+		"tcp://127.0.0.1:26657":             "tcp://127.0.0.1:26657",
+		"not a url":                         "not a url",
+	} {
+		if got := withDefaultPort(in); got != want {
+			t.Errorf("%s: got %s, want %s", in, got, want)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -473,6 +474,29 @@ func unmarshalConfig(name string, data []byte, out, check interface{}) error {
 }
 
 // loadConfig creates a new Config from a file.
+// addDefaultPorts adds :443 or :80 to RPC URLs without a port, the RPC client needs one
+func addDefaultPorts(c *Config) {
+	for _, chain := range c.Chains {
+		for _, node := range chain.Nodes {
+			if node != nil {
+				node.Url = withDefaultPort(node.Url)
+			}
+		}
+	}
+}
+
+func withDefaultPort(rpcUrl string) string {
+	u, err := url.Parse(rpcUrl)
+	if err != nil || u.Host == "" || u.Port() != "" {
+		return rpcUrl
+	}
+	port := map[string]string{"https": "443", "http": "80"}[u.Scheme]
+	if port == "" {
+		return rpcUrl
+	}
+	return strings.Replace(rpcUrl, u.Host, net.JoinHostPort(u.Hostname(), port), 1)
+}
+
 func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *string) (*Config, error) {
 
 	c := &Config{}
@@ -572,6 +596,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	if err := expandValidators(c); err != nil {
 		return nil, err
 	}
+	addDefaultPorts(c)
 
 	c.alertChan = make(chan *alertMsg, len(c.Chains)*4)
 	c.logChan = make(chan dash.LogMessage, 128)
