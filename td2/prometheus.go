@@ -32,6 +32,7 @@ const (
 	metricMissedProposals
 	metricVotingPower
 	metricVotingPowerRank
+	metricMissesBeforeJail
 
 	metricTotalNodes
 	metricUnealthyNodes
@@ -104,6 +105,10 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		Name: "tenderduty_voting_power_rank",
 		Help: "the validator's position in the active set by voting power, 0 when not in it",
 	}, chainLabels)
+	missesBeforeJail := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_misses_before_jail",
+		Help: "how many more blocks can be missed in the slashing window before the validator is jailed",
+	}, chainLabels)
 	missedConsecutive := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_consecutive_missed_blocks",
 		Help: "the current count of consecutively missed blocks regardless of precommit or prevote status",
@@ -159,6 +164,7 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		metricMissedProposals:          missedProposals,
 		metricVotingPower:              votingPower,
 		metricVotingPowerRank:          votingPowerRank,
+		metricMissesBeforeJail:         missesBeforeJail,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
 		metricNodeLagSeconds:           nodeLagSec,  // todo

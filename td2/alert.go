@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"reflect"
 	"strings"
@@ -44,12 +45,41 @@ type alertMsg struct {
 	slkMentions string
 }
 
-// text is the message with the chain's extra_info on its own line.
+// summary is the message as people read it, a "Severity: x" line some alarms carry is shown in the header instead.
+func (msg *alertMsg) summary() string {
+	if strings.HasPrefix(msg.message, "Severity: ") {
+		if _, rest, ok := strings.Cut(msg.message, "\n"); ok {
+			return rest
+		}
+	}
+	return msg.message
+}
+
+// text is the summary with the chain's extra_info on its own line.
 func (msg *alertMsg) text() string {
 	if msg.extra == "" {
-		return msg.message
+		return msg.summary()
 	}
-	return msg.message + "\n" + msg.extra
+	return msg.summary() + "\n\n" + msg.extra
+}
+
+// header gives the first line of every notification: an icon and the severity, or Resolved.
+func (msg *alertMsg) header() (icon, state string) {
+	if msg.resolved {
+		return "✅", "Resolved"
+	}
+	state = msg.severity
+	if state != "" {
+		state = strings.ToUpper(state[:1]) + state[1:]
+	}
+	switch msg.severity {
+	case "critical", "error", "alert":
+		return "🚨", state
+	case "warning":
+		return "⚠️", state
+	default:
+		return "ℹ️", state
+	}
 }
 
 type notifyDest uint8
@@ -300,19 +330,21 @@ type Attachment struct {
 }
 
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
-	prefix := "🚨 ALERT: "
+	icon, state := msg.header()
 	color := "danger"
 	message := msg.text()
-	if msg.resolved {
+	switch {
+	case msg.resolved:
 		message = "OK: " + message
-		prefix = "💜 Resolved: "
 		color = "good"
+	case msg.severity == "warning":
+		color = "warning"
 	}
 	return &SlackMessage{
 		Text: message,
 		Attachments: []Attachment{
 			{
-				Title: fmt.Sprintf("TenderDuty %s %s %s", prefix, msg.chain, msg.slkMentions),
+				Title: strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.chain, state, msg.slkMentions)),
 				Color: color,
 			},
 		},
@@ -371,15 +403,21 @@ type DiscordEmbed struct {
 }
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
-	prefix := "🚨 ALERT: "
-	if msg.resolved {
-		prefix = "💜 Resolved: "
+	icon, state := msg.header()
+	// red, amber and green, the dashboard's colors
+	color := uint(0xf27c76)
+	switch {
+	case msg.resolved:
+		color = 0x63d6c4
+	case msg.severity == "warning":
+		color = 0xf1b663
 	}
 	return &DiscordMessage{
 		Username: "Tenderduty",
-		Content:  prefix + msg.chain,
+		Content:  strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions)),
 		Embeds: []DiscordEmbed{{
 			Description: msg.text(),
+			Color:       color,
 		}},
 	}
 }
@@ -398,17 +436,27 @@ func notifyTg(msg *alertMsg) (err error) {
 		return
 	}
 
-	prefix := "🚨 ALERT: "
-	if msg.resolved {
-		prefix = "💜 Resolved: "
-	}
-
-	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, fmt.Sprintf("%s: %s - %s", msg.chain, prefix, msg.text()))
+	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, buildTelegramMessage(msg))
+	mc.ParseMode = tgbotapi.ModeHTML
+	mc.DisableWebPagePreview = true
 	_, err = bot.Send(mc)
 	if err != nil {
 		l("telegram send:", err)
 	}
 	return err
+}
+
+// buildTelegramMessage formats an alert as telegram HTML: a bold header, the message, then extra_info in italics.
+func buildTelegramMessage(msg *alertMsg) string {
+	icon, state := msg.header()
+	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, html.EscapeString(msg.summary()))
+	if msg.extra != "" {
+		text += "\n\n<i>" + html.EscapeString(msg.extra) + "</i>"
+	}
+	if msg.tgMentions != "" {
+		text += "\n\n" + html.EscapeString(msg.tgMentions)
+	}
+	return text
 }
 
 func notifyPagerduty(msg *alertMsg) (err error) {
@@ -429,7 +477,7 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 		action = "resolve"
 	}
 	payload := &pagerduty.V2Payload{
-		Summary:  msg.message,
+		Summary:  msg.summary(),
 		Source:   msg.uniqueId,
 		Severity: msg.severity,
 	}
@@ -537,7 +585,7 @@ func (cc *ChainConfig) watch() {
 	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
 	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
-	var missedAlarm, pctAlarm, proposalAlarm, noNodes, wasActive bool
+	var missedAlarm, pctAlarm, proposalAlarm, jailAlarm, jailSoonAlarm, noNodes, wasActive bool
 	var lastStatus *dash.ChainStatus
 	nodeAlarms := make(map[string]bool)
 
@@ -573,11 +621,13 @@ func (cc *ChainConfig) watch() {
 	missedAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId))
 	pctAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId))
 	proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(valInfo.Moniker))
+	jailAlarm = alarmIsActive(cc.name, cc.jailRiskMessage(valInfo.Moniker))
+	jailSoonAlarm = alarmIsActive(cc.name, cc.jailSoonMessage(valInfo.Moniker))
 	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
 	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
 	for _, node := range cc.Nodes {
-		message := fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)
+		message := nodeDownMessage(node.Url, cc.ChainId)
 		nodeAlarms[node.Url] = alarmIsActive(cc.name, message)
 	}
 	cc.clearOrphanedAlarms(valInfo, noRpcId)
@@ -764,6 +814,32 @@ func (cc *ChainConfig) watch() {
 			}
 		}
 
+		// close to being jailed for downtime, the limit comes from the chain's slashing params
+		if cc.Alerts.JailRiskAlerts && !valInfo.SigningStale && valInfo.MaxMissed > 0 {
+			id := valInfo.Valcons + "jail"
+			atRisk := 100*valInfo.Missed >= int64(cc.Alerts.JailRiskPercent)*valInfo.MaxMissed
+			if (!jailAlarm || reconcile) && atRisk {
+				jailAlarm = true
+				td.alert(cc.name, cc.jailRiskMessage(valInfo.Moniker), cc.Alerts.JailRiskPriority, false, &id)
+			} else if jailAlarm && !atRisk {
+				jailAlarm = false
+				td.alert(cc.name, cc.jailRiskMessage(valInfo.Moniker), "info", true, &id)
+			}
+
+			// while it is missing blocks right now, how long until the misses left run out at the chain's block time
+			soonId := valInfo.Valcons + "jailsoon"
+			blockTime := cc.averageBlockTime()
+			soon := consecutiveMiss >= jailSoonAfter && blockTime > 0 &&
+				time.Duration(valInfo.missesBeforeJail())*blockTime <= time.Duration(cc.Alerts.JailRiskMinutes)*time.Minute
+			if (!jailSoonAlarm || reconcile) && soon {
+				jailSoonAlarm = true
+				td.alert(cc.name, cc.jailSoonMessage(valInfo.Moniker), "critical", false, &soonId)
+			} else if jailSoonAlarm && !soon {
+				jailSoonAlarm = false
+				td.alert(cc.name, cc.jailSoonMessage(valInfo.Moniker), "info", true, &soonId)
+			}
+		}
+
 		// node down alarms
 		for _, node := range cc.Nodes {
 			status := node.snapshot()
@@ -778,7 +854,7 @@ func (cc *ChainConfig) watch() {
 				nodeAlarms[node.Url] = true // used to keep active alert count correct
 				td.alert(
 					cc.name,
-					fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId),
+					nodeDownMessage(node.Url, cc.ChainId),
 					td.NodeDownSeverity,
 					false,
 					&node.Url,
@@ -789,7 +865,7 @@ func (cc *ChainConfig) watch() {
 				node.clearRecovery()
 				td.alert(
 					cc.name,
-					fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId),
+					nodeDownMessage(node.Url, cc.ChainId),
 					"info",
 					true,
 					&node.Url,
@@ -834,8 +910,31 @@ func (cc *ChainConfig) watch() {
 	}
 }
 
+// jailSoonAfter is how many blocks in a row have to be missed before the time left until jailing is estimated.
+const jailSoonAfter = 3
+
+// plural writes a count with its noun, "1 minute" or "5 minutes".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+func nodeDownMessage(url, chainId string) string {
+	return fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %s on %s", td.NodeDownSeverity, url, plural(td.NodeDownMin, "minute"), chainId)
+}
+
 func (cc *ChainConfig) proposalMessage(moniker string) string {
-	return fmt.Sprintf("%s missed %d block proposals in %d minutes on %s", moniker, cc.Alerts.ProposalMissed, cc.Alerts.ProposalMinutes, cc.ChainId)
+	return fmt.Sprintf("%s missed %s in %s on %s", moniker, plural(cc.Alerts.ProposalMissed, "block proposal"), plural(cc.Alerts.ProposalMinutes, "minute"), cc.ChainId)
+}
+
+func (cc *ChainConfig) jailRiskMessage(moniker string) string {
+	return fmt.Sprintf("%s has used %d%% of the misses allowed before jailing on %s", moniker, cc.Alerts.JailRiskPercent, cc.ChainId)
+}
+
+func (cc *ChainConfig) jailSoonMessage(moniker string) string {
+	return fmt.Sprintf("%s will be jailed in under %s on %s if it keeps missing blocks", moniker, plural(cc.Alerts.JailRiskMinutes, "minute"), cc.ChainId)
 }
 
 // clearOrphanedAlarms resolves alarms restored from the state file that would never clear on their own, because the
@@ -851,6 +950,10 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	if cc.Alerts.ProposalAlerts {
 		expected[cc.proposalMessage(valInfo.Moniker)] = true
 	}
+	if cc.Alerts.JailRiskAlerts {
+		expected[cc.jailRiskMessage(valInfo.Moniker)] = true
+		expected[cc.jailSoonMessage(valInfo.Moniker)] = true
+	}
 	if cc.Alerts.StalledAlerts {
 		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled)] = true
 	}
@@ -859,7 +962,7 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	}
 	for _, node := range cc.Nodes {
 		if node.AlertIfDown {
-			expected[fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)] = true
+			expected[nodeDownMessage(node.Url, cc.ChainId)] = true
 		}
 	}
 
@@ -882,8 +985,12 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			id = valInfo.Valcons + "jailed"
 		case strings.Contains(message, " of the slashing window's blocks on "):
 			id = valInfo.Valcons + "percent"
-		case strings.Contains(message, " block proposals in "):
+		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
+		case strings.Contains(message, " of the misses allowed before jailing on "):
+			id = valInfo.Valcons + "jail"
+		case strings.Contains(message, " if it keeps missing blocks"):
+			id = valInfo.Valcons + "jailsoon"
 		case strings.Contains(message, " has missed ") && strings.Contains(message, " blocks on "):
 			id = valInfo.Valcons + "consecutive"
 		case strings.HasPrefix(message, "stalled: have not seen a new block"):

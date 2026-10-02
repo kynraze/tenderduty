@@ -37,6 +37,8 @@ type ChainStatus struct {
 	TotalPower     int64  `json:"total_power"`
 	Rank           int    `json:"rank"`
 	ActiveSet      int    `json:"active_set"`
+	MaxValidators  int    `json:"max_validators"`
+	MaxMissed      int64  `json:"max_missed"`
 
 	Blocks []int `json:"blocks"`
 }

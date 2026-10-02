@@ -43,6 +43,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		LastBlockAt: lastBlockAt, LastError: message, Blocks: blocks,
 		Signed: signed, Proposed: proposed, MissedProps: missedProps,
 		VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
+		MaxValidators: info.MaxValidators, MaxMissed: info.MaxMissed,
 	}
 }
 
@@ -89,6 +90,12 @@ func (cc *ChainConfig) blockState() (time.Time, bool, float64) {
 	cc.stateMux.RLock()
 	defer cc.stateMux.RUnlock()
 	return cc.lastBlockTime, cc.observedBlock, cc.statConsecutiveMiss
+}
+
+func (cc *ChainConfig) averageBlockTime() time.Duration {
+	cc.stateMux.RLock()
+	defer cc.stateMux.RUnlock()
+	return cc.blockTime
 }
 
 // recentProposalMisses counts the missed proposals within the window and forgets older ones.

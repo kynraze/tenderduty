@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,15 +145,27 @@ func TestSlackRecoveryDoesNotChangeAlertIdentity(t *testing.T) {
 
 func TestExtraInfoIsAddedToAlerts(t *testing.T) {
 	msg := &alertMsg{chain: "Osmosis", message: "missed blocks", extra: "sent from monitor-eu"}
-	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\nsent from monitor-eu" {
+	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\n\nsent from monitor-eu" {
 		t.Fatalf("discord message is %q", got)
 	}
-	if got := buildSlackMessage(msg).Text; got != "missed blocks\nsent from monitor-eu" {
+	if got := buildSlackMessage(msg).Text; got != "missed blocks\n\nsent from monitor-eu" {
 		t.Fatalf("slack message is %q", got)
 	}
 
 	msg.extra = ""
 	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks" {
 		t.Fatalf("discord message without extra_info is %q", got)
+	}
+}
+
+func TestTelegramMessageIsReadable(t *testing.T) {
+	msg := &alertMsg{chain: "AtomOne", severity: "critical", message: "Severity: critical\nRPC node http://a<b> has been down", extra: "monitor-eu", tgMentions: "@ken"}
+	want := "🚨 <b>AtomOne</b> · Critical\n\nRPC node http://a&lt;b&gt; has been down\n\n<i>monitor-eu</i>\n\n@ken"
+	if got := buildTelegramMessage(msg); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	msg.resolved = true
+	if got := buildTelegramMessage(msg); !strings.HasPrefix(got, "✅ <b>AtomOne</b> · Resolved\n\n") {
+		t.Fatalf("resolved message is %q", got)
 	}
 }

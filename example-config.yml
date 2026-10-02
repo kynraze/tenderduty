@@ -74,6 +74,12 @@ alert_defaults:
   proposal_missed: 3
   proposal_minutes: 60
   proposal_priority: warning
+  # Alert when this much of the misses allowed before jailing (from the chain's slashing params) is used.
+  jail_risk_enabled: no
+  jail_risk_percent: 50
+  # Also alert when it is missing blocks and, at the chain's block time, would be jailed within this many minutes.
+  jail_risk_minutes: 60
+  jail_risk_priority: critical
   alert_if_inactive: yes
   alert_if_no_servers: yes
   pagerduty:

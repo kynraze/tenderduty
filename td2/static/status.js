@@ -70,12 +70,17 @@ function stateFor(chain) {
     return { label: 'Healthy', tone: 'good', rank: 4 }
 }
 
+function jailBudget(chain) {
+    if (!(chain.max_missed > 0)) return ''
+    return `${number(Math.max(0, chain.max_missed - chain.missed))} left before jail`
+}
+
 function votingPower(chain) {
     if (!chain.voting_power) {
         return { value: '—', share: '—', rank: chain.active_set ? 'Not in active set' : 'Unavailable', detail: chain.active_set ? 'not in active set' : 'not available' }
     }
     const share = chain.total_power > 0 ? `${(100 * chain.voting_power / chain.total_power).toFixed(2)}%` : '—'
-    const rank = `${chain.rank} / ${chain.active_set}`
+    const rank = chain.max_validators > chain.active_set ? `${chain.rank} / ${chain.active_set} (limit ${chain.max_validators})` : `${chain.rank} / ${chain.active_set}`
     return { value: number(chain.voting_power), share, rank, detail: `${share} · rank ${rank}` }
 }
 
@@ -185,7 +190,7 @@ function renderRow(chain) {
 
     const missed = element('td')
     missed.appendChild(element('span', 'mono', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : '—'))
-    missed.appendChild(element('small', 'cell-detail', chain.signing_stale ? 'last known signing window' : 'current signing window'))
+    missed.appendChild(element('small', 'cell-detail', chain.signing_stale ? 'last known signing window' : (jailBudget(chain) || 'current signing window')))
     if (chain.missed_proposals > 0) {
         missed.appendChild(element('small', 'cell-detail missed-proposals', `${number(chain.missed_proposals)} missed ${chain.missed_proposals === 1 ? 'proposal' : 'proposals'}`))
     }
@@ -240,7 +245,7 @@ function fillDetail(name) {
         ['Status', stateFor(chain).label],
         ['Height', chain.height > 0 ? number(chain.height) : 'Unavailable'],
         ['Last observed block', age(chain.last_block_at)],
-        [chain.signing_stale ? 'Missed / signing window (last known)' : 'Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}` : 'Unavailable'],
+        [chain.signing_stale ? 'Missed / signing window (last known)' : 'Missed / signing window', chain.window > 0 ? `${number(chain.missed)} / ${number(chain.window)}${jailBudget(chain) ? ` · ${jailBudget(chain)}` : ''}` : 'Unavailable'],
         ['Voting power', votingPower(chain).value],
         ['Share of voting power', votingPower(chain).share],
         ['Rank in active set', votingPower(chain).rank],

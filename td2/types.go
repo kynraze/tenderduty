@@ -121,7 +121,8 @@ type ChainConfig struct {
 	statPrecommitMiss   float64
 	statConsecutiveMiss float64
 	statProposalMiss    float64
-	proposalMisses      []time.Time // when proposals were missed, for the alert window
+	proposalMisses      []time.Time   // when proposals were missed, for the alert window
+	blockTime           time.Duration // running average of the time between blocks
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -196,6 +197,15 @@ type AlertConfig struct {
 	ProposalPriority string `yaml:"proposal_priority"`
 	// ProposalAlerts is whether to alert on missed proposals
 	ProposalAlerts bool `yaml:"proposal_enabled"`
+
+	// JailRiskPercent is how much of the misses allowed before jailing can be used before alerting
+	JailRiskPercent int `yaml:"jail_risk_percent"`
+	// JailRiskMinutes alerts when, missing every block, the validator would be jailed within this many minutes
+	JailRiskMinutes int `yaml:"jail_risk_minutes"`
+	// JailRiskPriority is a tag for pagerduty to route on priority
+	JailRiskPriority string `yaml:"jail_risk_priority"`
+	// JailRiskAlerts is whether to alert when the validator gets close to being jailed for downtime
+	JailRiskAlerts bool `yaml:"jail_risk_enabled"`
 
 	// AlertIfInactive decides if tenderduty send an alert if the validator is not in the active set?
 	AlertIfInactive bool `yaml:"alert_if_inactive"`
@@ -363,6 +373,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.ProposalMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s has no positive proposal_minutes, using 60", k))
 		}
+		if v.Alerts.JailRiskAlerts && (v.Alerts.JailRiskPercent < 1 || v.Alerts.JailRiskPercent > 100) {
+			v.Alerts.JailRiskPercent = 50
+			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 50", k))
+		}
+		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes < 1 {
+			v.Alerts.JailRiskMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive jail_risk_minutes, using 60", k))
+		}
 		if len(v.blocksResults) != showBLocks {
 			blocks := make([]int, showBLocks)
 			for i := range blocks {
@@ -430,6 +448,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.ProposalPriority == "" {
 			v.Alerts.ProposalPriority = "warning"
 		}
+		if v.Alerts.JailRiskPriority == "" {
+			v.Alerts.JailRiskPriority = "critical"
+		}
 
 		if v.Alerts.Slack.Enabled && !c.Slack.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for slack alerts, but it is not enabled", k))
@@ -443,7 +464,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {

@@ -276,6 +276,14 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 					cc.blocksResults = append([]int{-1}, cc.blocksResults[:len(cc.blocksResults)-1]...)
 				}
 			}
+			// average only back to back blocks, a gap would count the time we weren't watching
+			if update.HeadHeight == previousHeight+1 && !previousTime.IsZero() {
+				if elapsed := time.Since(previousTime); cc.blockTime == 0 {
+					cc.blockTime = elapsed
+				} else {
+					cc.blockTime = (cc.blockTime*9 + elapsed) / 10
+				}
+			}
 			cc.lastBlockNum, cc.lastBlockTime = update.HeadHeight, time.Now()
 			cc.observedBlock = true
 			cc.monitoring, cc.monitoringSince = true, time.Now()

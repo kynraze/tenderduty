@@ -48,6 +48,12 @@ Count of blocks missed where a prevote was seen since tenderduty was started
 
 `tenderduty_missed_blocks_prevote_present{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
 
+### tenderduty_misses_before_jail
+
+How many more blocks can be missed in the slashing window before the validator is jailed
+
+`tenderduty_misses_before_jail{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 5000`
+
 ### tenderduty_missed_proposals
 
 Count of blocks the validator was due to propose but another validator did, since tenderduty was started

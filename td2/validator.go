@@ -14,6 +14,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 	slashing "github.com/cosmos/cosmos-sdk/x/slashing/types"
 	staking "github.com/cosmos/cosmos-sdk/x/staking/types"
@@ -37,6 +38,8 @@ type ValInfo struct {
 	TotalPower       int64     `json:"total_power"`
 	Rank             int       `json:"rank"` // position in the active set, 0 when not in it
 	ActiveSet        int       `json:"active_set"`
+	MaxValidators    int       `json:"max_validators"` // the active set's size limit, 0 when unknown
+	MaxMissed        int64     `json:"max_missed"`     // misses in the window allowed before jailing, 0 when unknown
 }
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
@@ -57,7 +60,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 				if !signingRead {
 					info.Tombstoned, info.Missed = previous.Tombstoned, previous.Missed
 				}
-				info.Window = previous.Window
+				info.Window, info.MaxMissed, info.MaxValidators = previous.Window, previous.MaxMissed, previous.MaxValidators
 				info.SigningUpdatedAt = previous.SigningUpdatedAt
 			}
 			info.SigningStale = true
@@ -156,7 +159,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 
 	// finally get the signed blocks window, it rarely changes so only on (re)connect
 	if !first && previous.Valcons == info.Valcons {
-		info.Window = previous.Window
+		info.Window, info.MaxMissed, info.MaxValidators = previous.Window, previous.MaxMissed, previous.MaxValidators
 	}
 	if info.Window == 0 {
 		qParams := &slashing.QueryParamsRequest{}
@@ -178,6 +181,8 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 			return
 		}
 		info.Window = params.Params.SignedBlocksWindow
+		info.MaxMissed = maxMissed(info.Window, params.Params.MinSignedPerWindow)
+		info.MaxValidators = getMaxValidators(ctx, client)
 	}
 	if info.Window <= 0 {
 		return errors.New("invalid signed blocks window")
@@ -192,6 +197,9 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		td.sendStat(cc.mkUpdate(metricWindowSize, float64(info.Window), ""))
 		td.sendStat(cc.mkUpdate(metricVotingPower, float64(info.VotingPower), ""))
 		td.sendStat(cc.mkUpdate(metricVotingPowerRank, float64(info.Rank), ""))
+		if info.MaxMissed > 0 {
+			td.sendStat(cc.mkUpdate(metricMissesBeforeJail, float64(info.missesBeforeJail()), ""))
+		}
 		if first {
 			td.sendStat(cc.mkUpdate(metricTotalNodes, float64(len(cc.Nodes)), ""))
 		}
@@ -256,6 +264,36 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 	}
 
 	return pubBytes, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
+}
+
+// maxMissed is how many blocks can be missed in the window before jailing, same rounding as the slashing module.
+func maxMissed(window int64, minSigned sdk.Dec) int64 {
+	return window - minSigned.MulInt64(window).RoundInt64()
+}
+
+// missesBeforeJail is how many more blocks can be missed in the window before the validator is jailed.
+func (info *ValInfo) missesBeforeJail() int64 {
+	if left := info.MaxMissed - info.Missed; left > 0 {
+		return left
+	}
+	return 0
+}
+
+// getMaxValidators reads the active set's size limit from the staking params, 0 if the chain doesn't answer.
+func getMaxValidators(ctx context.Context, client *rpchttp.HTTP) int {
+	b, err := (&staking.QueryParamsRequest{}).Marshal()
+	if err != nil {
+		return 0
+	}
+	resp, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Params", b)
+	if err != nil || resp == nil || resp.Response.Code != 0 {
+		return 0
+	}
+	params := &staking.QueryParamsResponse{}
+	if params.Unmarshal(resp.Response.Value) != nil {
+		return 0
+	}
+	return int(params.Params.MaxValidators)
 }
 
 type votingPower struct {
