@@ -145,10 +145,10 @@ func TestSlackRecoveryDoesNotChangeAlertIdentity(t *testing.T) {
 
 func TestExtraInfoIsAddedToAlerts(t *testing.T) {
 	msg := &alertMsg{chain: "Osmosis", message: "missed blocks", extra: "sent from monitor-eu"}
-	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\n\nsent from monitor-eu" {
+	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\nsent from monitor-eu" {
 		t.Fatalf("discord message is %q", got)
 	}
-	if got := buildSlackMessage(msg).Text; got != "missed blocks\n\nsent from monitor-eu" {
+	if got := buildSlackMessage(msg).Text; got != "missed blocks\nsent from monitor-eu" {
 		t.Fatalf("slack message is %q", got)
 	}
 
@@ -159,8 +159,8 @@ func TestExtraInfoIsAddedToAlerts(t *testing.T) {
 }
 
 func TestTelegramMessageIsReadable(t *testing.T) {
-	msg := &alertMsg{chain: "AtomOne", severity: "critical", message: "Severity: critical\nRPC node http://a<b> has been down", extra: "monitor-eu", tgMentions: "@ken"}
-	want := "🚨 <b>AtomOne</b> · Critical\n\nRPC node http://a&lt;b&gt; has been down\n\n<i>monitor-eu</i>\n\n@ken"
+	msg := &alertMsg{chain: "AtomOne", severity: "critical", message: "Severity: critical\nRPC node http://a<b> has been down", extra: "monitor-eu", tgMentions: "@ops"}
+	want := "🚨 <b>AtomOne</b> · Critical\n\nRPC node http://a&lt;b&gt; has been down\n<i>monitor-eu</i>\n@ops"
 	if got := buildTelegramMessage(msg); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -190,5 +190,20 @@ func TestNotificationColorsFollowSeverity(t *testing.T) {
 		if got := buildSlackMessage(msg).Attachments[0].Color; got != tc.slack {
 			t.Fatalf("%+v slack color %q, want %q", tc, got, tc.slack)
 		}
+	}
+}
+
+func TestDiscordPlainStyle(t *testing.T) {
+	msg := &alertMsg{chain: "AtomOne", severity: "critical", message: "Validator is jailed on atomone-1",
+		extra: "monitor-eu", discMentions: "@here", discStyle: "plain"}
+	plain := buildDiscordMessage(msg)
+	want := "🚨 **AtomOne** · Jailed @here\n\nValidator is jailed on atomone-1\nmonitor-eu"
+	if plain.Content != want || len(plain.Embeds) != 0 {
+		t.Fatalf("plain is %q with %d embeds", plain.Content, len(plain.Embeds))
+	}
+	msg.discStyle = "embed"
+	embed := buildDiscordMessage(msg)
+	if len(embed.Embeds) != 1 || embed.Content != "🚨 **AtomOne** · Jailed @here" || embed.Embeds[0].Color != 0xf27c76 {
+		t.Fatalf("embed is %q / %+v", embed.Content, embed.Embeds)
 	}
 }

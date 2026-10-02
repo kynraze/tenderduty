@@ -35,10 +35,12 @@ discord:
   enabled: no
   # The webhook is set by right-clicking on a channel, editing the settings, and configuring a webhook in the intergrations section.
   webhook: https://discord.com/api/webhooks/999999999999999999/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
-  # Added to the first line of every alert. Only discord's own forms ping, plain text like @ken does not:
-  # a user is <@807168869361975357>, a role is <@&1130372261596303381>, or use @here and @everyone.
+  # Added to the first line of every alert. Only discord's own forms ping, plain text like @someone does not:
+  # a user is <@000000000000000000>, a role is <@&111111111111111111>, or use @here and @everyone.
   # Turn on developer mode in discord to copy an id: right click a name > Copy User ID.
   mentions: []
+  # How alerts look: embed is a block with a colour down the side, plain is one ordinary message.
+  style: embed
 
 # Telegram settings
 telegram:

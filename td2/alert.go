@@ -41,6 +41,7 @@ type alertMsg struct {
 
 	discHook     string
 	discMentions string
+	discStyle    string
 
 	slkHook     string
 	slkMentions string
@@ -69,7 +70,7 @@ func (msg *alertMsg) text() string {
 	if msg.extra == "" {
 		return msg.summary()
 	}
-	return msg.summary() + "\n\n" + msg.extra
+	return msg.summary() + "\n" + msg.extra
 }
 
 // header gives the first line of every notification: an icon and the severity, or Resolved.
@@ -466,15 +467,19 @@ type DiscordEmbed struct {
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 	icon, state := msg.header()
-	// the dashboard's colors, "plain" is 0 which discord draws without a bar
+	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions))
+	body := timeLeft.ReplaceAllString(msg.text(), "· **$1**")
+	// plain puts everything in one message, no embed and no colour bar down the side. The blank line stands in for
+	// the embed, otherwise the header and the alert read as one block.
+	if msg.discStyle == "plain" {
+		return &DiscordMessage{Username: "Tenderduty", Content: header + "\n\n" + body}
+	}
+	// the dashboard's colors, a tone with none is drawn without a bar
 	color := map[string]uint{"good": 0x63d6c4, "warning": 0xf1b663, "danger": 0xf27c76}[msg.tone()]
 	return &DiscordMessage{
 		Username: "Tenderduty",
-		Content:  strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions)),
-		Embeds: []DiscordEmbed{{
-			Description: timeLeft.ReplaceAllString(msg.text(), "· **$1**"),
-			Color:       color,
-		}},
+		Content:  header,
+		Embeds:   []DiscordEmbed{{Description: body, Color: color}},
 	}
 }
 
@@ -522,13 +527,14 @@ func buildTelegramMessage(msg *alertMsg) string {
 		body += "\n" + rest
 	}
 	body = timeLeft.ReplaceAllString(body, "· <b>$1</b>")
+	// telegram has no embed either, so the header gets the same blank line under it
 	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, body)
 	if msg.extra != "" {
-		text += "\n\n<i>" + html.EscapeString(msg.extra) + "</i>"
+		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
 	if msg.tgMentions != "" {
 		// already telegram HTML, telegramMentions escaped what came from the config
-		text += "\n\n" + msg.tgMentions
+		text += "\n" + msg.tgMentions
 	}
 	return text
 }
@@ -614,6 +620,7 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		tgMentions:   telegramMentions(c.Chains[chainName].Alerts.Telegram.Mentions),
 		discHook:     c.Chains[chainName].Alerts.Discord.Webhook,
 		discMentions: strings.Join(c.Chains[chainName].Alerts.Discord.Mentions, " "),
+		discStyle:    c.Chains[chainName].Alerts.Discord.Style,
 		slkHook:      c.Chains[chainName].Alerts.Slack.Webhook,
 	}
 	return a

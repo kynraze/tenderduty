@@ -39,10 +39,10 @@ func TestParseProposals(t *testing.T) {
 }
 
 func TestVoterAddress(t *testing.T) {
-	if got := voterAddress("atonevaloper12gpns3u5aguwl8n5n6j7x94tm98nfvljlxhq8l"); got[:6] != "atone1" {
+	if got := voterAddress("atonevaloper1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3dqqvw0"); got[:6] != "atone1" {
 		t.Fatalf("voter is %q", got)
 	}
-	if got := voterAddress("atonevalcons1ves84gqk3jwk2hnsxc66qj67pt2cj53jzkc0zt"); got != "" {
+	if got := voterAddress("atonevalcons1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3xq0ue9"); got != "" {
 		t.Fatalf("a consensus address gave a voter %q", got)
 	}
 }
@@ -57,8 +57,8 @@ func TestGovernanceMessages(t *testing.T) {
 	if got := buildTelegramMessage(open); !strings.Contains(got, "<b>#39 Community Pool</b>\nEnds ") || !strings.Contains(got, " · <b>6d 23h left</b>") {
 		t.Fatalf("open message %q", got)
 	}
-	remind := &alertMsg{chain: "MANTRA", severity: "critical", message: cc.govRemindMessage(p, "Kynraze")}
-	if icon, label := remind.header(); icon != "⏰" || label != "Vote reminder" || !strings.HasSuffix(remind.summary(), "\nKynraze has not voted") {
+	remind := &alertMsg{chain: "MANTRA", severity: "critical", message: cc.govRemindMessage(p, "Validator")}
+	if icon, label := remind.header(); icon != "⏰" || label != "Vote reminder" || !strings.HasSuffix(remind.summary(), "\nValidator has not voted") {
 		t.Fatalf("reminder %s %s %q", icon, label, remind.summary())
 	}
 

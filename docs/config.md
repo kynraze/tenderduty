@@ -121,7 +121,8 @@ chains:
 | `pagerduty.api_key`          | This is an API key, not oauth token, [see the pagerduty doc](pagerduty.md) for specific setup details.                                                                                                            |
 | `pagerduty.default_severity` | Not currently used, but will be soon. This allows setting escalation priorities etc.                                                                                                                              |
 | `*.min_severity`             | Every destination (pagerduty, discord, telegram, slack, also per chain under alerts): only send alerts of this severity and up, info, warning, error or critical. Empty sends everything. A recovery is always sent where its alert went. |
-| `*.mentions`                 | Who to ping, added to every alert (discord, telegram, slack). Discord only pings its own forms: `<@user-id>`, `<@&role-id>`, `@here`, `@everyone`. Plain text like `@ken` is not a ping.                                                  |
+| `*.mentions`                 | Who to ping, added to every alert (discord, telegram, slack). Discord only pings its own forms: `<@user-id>`, `<@&role-id>`, `@here`, `@everyone`. Plain text like `@someone` is not a ping.                                                  |
+| `discord.style`              | `embed` (default) draws each alert as a block with a colour down the side, `plain` sends one ordinary message instead.                                                                                                                    |
 
 ## Discord Settings
 

@@ -8,22 +8,22 @@ import (
 
 func TestJailMessages(t *testing.T) {
 	until := time.Now().UTC().Truncate(time.Minute).Add(10 * time.Minute)
-	jailed := &alertMsg{chain: "AtomOne", severity: "critical", message: jailMessage(&ValInfo{Moniker: "Kynraze", Jailed: true, JailedUntil: until}, "atomone-1")}
+	jailed := &alertMsg{chain: "AtomOne", severity: "critical", message: jailMessage(&ValInfo{Moniker: "Validator", Jailed: true, JailedUntil: until}, "atomone-1")}
 	if icon, label := jailed.header(); icon != "🚨" || label != "Jailed" {
 		t.Fatalf("jailed header %s %s", icon, label)
 	}
-	if got := buildTelegramMessage(jailed); !strings.Contains(got, "Kynraze is jailed on atomone-1\nCan unjail after ") || !strings.Contains(got, " · <b>9m left</b>") {
+	if got := buildTelegramMessage(jailed); !strings.Contains(got, "Validator is jailed on atomone-1\nCan unjail after ") || !strings.Contains(got, " · <b>9m left</b>") {
 		t.Fatalf("jailed message %q", got)
 	}
 	jailed.resolved = true
 	if _, label := jailed.header(); label != "Active again" {
 		t.Fatalf("jailed cleared is %q", label)
 	}
-	tomb := &alertMsg{chain: "AtomOne", severity: "critical", message: jailMessage(&ValInfo{Moniker: "Kynraze", Jailed: true, Tombstoned: true}, "atomone-1")}
+	tomb := &alertMsg{chain: "AtomOne", severity: "critical", message: jailMessage(&ValInfo{Moniker: "Validator", Jailed: true, Tombstoned: true}, "atomone-1")}
 	if icon, label := tomb.header(); icon != "☠️" || label != "Tombstoned" || !strings.Contains(tomb.summary(), "can't be unjailed") {
 		t.Fatalf("tombstoned %s %s %q", icon, label, tomb.summary())
 	}
-	if got := jailMessage(&ValInfo{Moniker: "Kynraze", JailedUntil: time.Unix(0, 0)}, "atomone-1"); got != "Kynraze is no longer in the active set on atomone-1" {
+	if got := jailMessage(&ValInfo{Moniker: "Validator", JailedUntil: time.Unix(0, 0)}, "atomone-1"); got != "Validator is no longer in the active set on atomone-1" {
 		t.Fatalf("inactive is %q", got)
 	}
 }

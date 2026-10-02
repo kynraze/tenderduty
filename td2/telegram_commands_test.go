@@ -33,9 +33,9 @@ func TestCommandAllowed(t *testing.T) {
 func TestStatusCommand(t *testing.T) {
 	c := auditConfig(t)
 	healthy := &ChainConfig{ChainId: "atomone-1", lastBlockNum: 10_622_456, lastBlockTime: time.Now().Add(-4 * time.Second), monitoring: true,
-		valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true, Missed: 12, Window: 10_000, MaxMissed: 5_000, VotingPower: 169_960, TotalPower: 61_441_660, Rank: 72, ActiveSet: 100}}
+		valInfo: &ValInfo{Moniker: "Validator", Bonded: true, Missed: 12, Window: 10_000, MaxMissed: 5_000, VotingPower: 169_960, TotalPower: 61_441_660, Rank: 72, ActiveSet: 100}}
 	healthy.Nodes = []*NodeConfig{{Url: "http://a"}}
-	jailed := &ChainConfig{ChainId: "realionetwork_3301-1", monitoring: true, valInfo: &ValInfo{Moniker: "Kynraze", Jailed: true}}
+	jailed := &ChainConfig{ChainId: "realionetwork_3301-1", monitoring: true, valInfo: &ValInfo{Moniker: "Validator", Jailed: true}}
 	c.Chains["AtomOne"], c.Chains["Realio"] = healthy, jailed
 	alarms.AllAlarms["AtomOne"] = map[string]time.Time{"Severity: critical\nRPC node http://b has been down for > 3 minutes on atomone-1": time.Now()}
 
@@ -74,20 +74,20 @@ func TestMentionMeRegistersAndPings(t *testing.T) {
 	chain.Alerts.Telegram.Enabled = true
 	chain.Alerts.Telegram.Mentions = []string{"@ops <team>"}
 	c.Chains["Chain"] = chain
-	ken := tgMention{ID: 807168869, Name: "Ken"}
+	someone := tgMention{ID: 123456789, Name: "Ops"}
 
-	if reply := c.telegramCommand("mentionme", "", time.Now(), ken); !strings.Contains(reply, `<a href="tg://user?id=807168869">Ken</a>`) {
+	if reply := c.telegramCommand("mentionme", "", time.Now(), someone); !strings.Contains(reply, `<a href="tg://user?id=123456789">Ops</a>`) {
 		t.Fatalf("mentionme reply %q", reply)
 	}
 	// the config name is escaped, the registered one stays a link
 	msg := c.makeAlert("Chain", "something happened", "critical", false, nil)
 	got := buildTelegramMessage(msg)
-	if !strings.HasSuffix(got, "\n\n@ops &lt;team&gt; <a href=\"tg://user?id=807168869\">Ken</a>") {
+	if !strings.HasSuffix(got, "\n@ops &lt;team&gt; <a href=\"tg://user?id=123456789\">Ops</a>") {
 		t.Fatalf("alert mentions %q", got)
 	}
 	// asking twice doesn't duplicate, and the name is kept up to date
-	c.telegramCommand("mentionme", "", time.Now(), tgMention{ID: ken.ID, Name: "Ken Kynraze"})
-	if list := mentionSnapshot(); len(list) != 1 || list[0].Name != "Ken Kynraze" {
+	c.telegramCommand("mentionme", "", time.Now(), tgMention{ID: someone.ID, Name: "Ops Team"})
+	if list := mentionSnapshot(); len(list) != 1 || list[0].Name != "Ops Team" {
 		t.Fatalf("ping list is %+v", list)
 	}
 	// it survives a restart
@@ -97,7 +97,7 @@ func TestMentionMeRegistersAndPings(t *testing.T) {
 	if len(mentionSnapshot()) != 1 {
 		t.Fatal("the ping list was lost")
 	}
-	if reply := c.telegramCommand("mentionme", "off", time.Now(), ken); !strings.Contains(reply, "won't be pinged") || len(mentionSnapshot()) != 0 {
+	if reply := c.telegramCommand("mentionme", "off", time.Now(), someone); !strings.Contains(reply, "won't be pinged") || len(mentionSnapshot()) != 0 {
 		t.Fatalf("off reply %q, list %+v", reply, mentionSnapshot())
 	}
 	if got := buildTelegramMessage(c.makeAlert("Chain", "something happened", "critical", false, nil)); strings.Contains(got, "tg://user") {

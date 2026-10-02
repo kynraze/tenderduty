@@ -283,6 +283,8 @@ type DiscordConfig struct {
 	Enabled  bool     `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
+	// Style is "embed", a block with a colour down the side, or "plain" for one plain message
+	Style string `yaml:"style"`
 	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
 	MinSeverity string `yaml:"min_severity"`
 }
@@ -497,6 +499,13 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		}
 		if v.Alerts.Pagerduty.MinSeverity == "" {
 			v.Alerts.Pagerduty.MinSeverity = c.Pagerduty.MinSeverity
+		}
+		if v.Alerts.Discord.Style == "" {
+			v.Alerts.Discord.Style = c.Discord.Style
+		}
+		if v.Alerts.Discord.Style != "" && v.Alerts.Discord.Style != "embed" && v.Alerts.Discord.Style != "plain" {
+			problems = append(problems, fmt.Sprintf("warning: %s discord style %q is not embed or plain, using embed", k, v.Alerts.Discord.Style))
+			v.Alerts.Discord.Style = "embed"
 		}
 		if v.Alerts.Discord.MinSeverity == "" {
 			v.Alerts.Discord.MinSeverity = c.Discord.MinSeverity
