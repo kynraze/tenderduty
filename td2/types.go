@@ -94,6 +94,7 @@ type savedState struct {
 	NodesDown   map[string]map[string]time.Time `json:"nodes_down"`
 	Consecutive map[string]float64              `json:"consecutive_missed,omitempty"`
 	Proposals   map[string][]time.Time          `json:"missed_proposals,omitempty"`
+	TgMentions  []tgMention                     `json:"telegram_mentions,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -768,6 +769,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 			c.Chains[k].statConsecutiveMiss = missed
 		}
 	}
+	restoreMentions(saved.TgMentions)
 	for k, misses := range saved.Proposals {
 		if c.Chains[k] != nil {
 			c.Chains[k].proposalMisses = misses

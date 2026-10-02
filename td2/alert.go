@@ -527,7 +527,8 @@ func buildTelegramMessage(msg *alertMsg) string {
 		text += "\n\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
 	if msg.tgMentions != "" {
-		text += "\n\n" + html.EscapeString(msg.tgMentions)
+		// already telegram HTML, telegramMentions escaped what came from the config
+		text += "\n\n" + msg.tgMentions
 	}
 	return text
 }
@@ -610,7 +611,7 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		key:          c.Chains[chainName].Alerts.Pagerduty.ApiKey,
 		tgChannel:    c.Chains[chainName].Alerts.Telegram.Channel,
 		tgKey:        c.Chains[chainName].Alerts.Telegram.ApiKey,
-		tgMentions:   strings.Join(c.Chains[chainName].Alerts.Telegram.Mentions, " "),
+		tgMentions:   telegramMentions(c.Chains[chainName].Alerts.Telegram.Mentions),
 		discHook:     c.Chains[chainName].Alerts.Discord.Webhook,
 		discMentions: strings.Join(c.Chains[chainName].Alerts.Discord.Mentions, " "),
 		slkHook:      c.Chains[chainName].Alerts.Slack.Webhook,

@@ -215,7 +215,7 @@ func saveState(stateFile string) error {
 
 	alarms.notifyMux.RLock()
 	sequence := alarms.NextNotification
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals, TgMentions: mentionSnapshot()})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

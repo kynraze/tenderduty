@@ -39,20 +39,20 @@ func TestStatusCommand(t *testing.T) {
 	c.Chains["AtomOne"], c.Chains["Realio"] = healthy, jailed
 	alarms.AllAlarms["AtomOne"] = map[string]time.Time{"Severity: critical\nRPC node http://b has been down for > 3 minutes on atomone-1": time.Now()}
 
-	summary := c.telegramCommand("status", "", time.Now())
+	summary := c.telegramCommand("status", "", time.Now(), tgMention{})
 	if !strings.HasPrefix(summary, "📊 <b>Status</b> · 0 of 2 chains healthy") || strings.Index(summary, "Realio") > strings.Index(summary, "AtomOne") && !strings.Contains(summary, "🔴 <b>Realio</b> · jailed") {
 		t.Fatalf("summary %q", summary)
 	}
-	detail := c.telegramCommand("status", "atomone-1", time.Now())
+	detail := c.telegramCommand("status", "atomone-1", time.Now(), tgMention{})
 	for _, want := range []string{"🔴 <b>AtomOne</b> · 1 active alert", "Height 10,622,456 · last block 4s ago", "Missed 12 / 10,000 · 4,988 left before jail", "rank 72/100", "RPC 1/1 healthy", "• RPC node http://b has been down"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail is missing %q:\n%s", want, detail)
 		}
 	}
-	if reply := c.telegramCommand("status", "nope", time.Now()); !strings.Contains(reply, "No chain named nope") {
+	if reply := c.telegramCommand("status", "nope", time.Now(), tgMention{}); !strings.Contains(reply, "No chain named nope") {
 		t.Fatalf("unknown chain %q", reply)
 	}
-	if reply := c.telegramCommand("mute", "AtomOne 2h", time.Now()); strings.Contains(reply, "muted") {
+	if reply := c.telegramCommand("mute", "AtomOne 2h", time.Now(), tgMention{}); strings.Contains(reply, "muted") {
 		t.Fatal("mute is still answered")
 	}
 }
@@ -62,5 +62,45 @@ func TestSplitMessage(t *testing.T) {
 	parts := splitMessage(strings.Join([]string{line, line, line, line, line}, "\n"))
 	if len(parts) != 2 || len(parts[0]) > telegramMessageLimit {
 		t.Fatalf("%d parts, first %d long", len(parts), len(parts[0]))
+	}
+}
+
+func TestMentionMeRegistersAndPings(t *testing.T) {
+	c := auditConfig(t)
+	restoreMentions(nil)
+	t.Cleanup(func() { restoreMentions(nil) })
+	c.Telegram.Enabled = true
+	chain := &ChainConfig{}
+	chain.Alerts.Telegram.Enabled = true
+	chain.Alerts.Telegram.Mentions = []string{"@ops <team>"}
+	c.Chains["Chain"] = chain
+	ken := tgMention{ID: 807168869, Name: "Ken"}
+
+	if reply := c.telegramCommand("mentionme", "", time.Now(), ken); !strings.Contains(reply, `<a href="tg://user?id=807168869">Ken</a>`) {
+		t.Fatalf("mentionme reply %q", reply)
+	}
+	// the config name is escaped, the registered one stays a link
+	msg := c.makeAlert("Chain", "something happened", "critical", false, nil)
+	got := buildTelegramMessage(msg)
+	if !strings.HasSuffix(got, "\n\n@ops &lt;team&gt; <a href=\"tg://user?id=807168869\">Ken</a>") {
+		t.Fatalf("alert mentions %q", got)
+	}
+	// asking twice doesn't duplicate, and the name is kept up to date
+	c.telegramCommand("mentionme", "", time.Now(), tgMention{ID: ken.ID, Name: "Ken Kynraze"})
+	if list := mentionSnapshot(); len(list) != 1 || list[0].Name != "Ken Kynraze" {
+		t.Fatalf("ping list is %+v", list)
+	}
+	// it survives a restart
+	restored := mentionSnapshot()
+	restoreMentions(nil)
+	restoreMentions(restored)
+	if len(mentionSnapshot()) != 1 {
+		t.Fatal("the ping list was lost")
+	}
+	if reply := c.telegramCommand("mentionme", "off", time.Now(), ken); !strings.Contains(reply, "won't be pinged") || len(mentionSnapshot()) != 0 {
+		t.Fatalf("off reply %q, list %+v", reply, mentionSnapshot())
+	}
+	if got := buildTelegramMessage(c.makeAlert("Chain", "something happened", "critical", false, nil)); strings.Contains(got, "tg://user") {
+		t.Fatalf("still pinging after off: %q", got)
 	}
 }

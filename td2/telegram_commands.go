@@ -44,10 +44,27 @@ func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 	return "", nil
 }
 
-// telegramCommand answers one command with telegram HTML. Commands only read, nothing can be changed from telegram.
-func (c *Config) telegramCommand(command, args string, now time.Time) string {
-	if command != "status" {
-		return "Commands: /status for every chain, /status &lt;chain&gt; for one"
+// telegramCommand answers one command with telegram HTML. The only thing it changes is who gets pinged, by the person
+// asking for themselves, so nothing about the monitoring can be touched from telegram.
+func (c *Config) telegramCommand(command, args string, now time.Time, from tgMention) string {
+	switch command {
+	case "mentionme":
+		if strings.EqualFold(strings.TrimSpace(args), "off") {
+			if !removeMention(from.ID) {
+				return "You were not on the ping list"
+			}
+			c.saveMentions()
+			return "🔕 You won't be pinged in alerts any more"
+		}
+		if from.ID == 0 {
+			return "Telegram didn't say who sent this, so there is nobody to ping"
+		}
+		addMention(from.ID, from.Name)
+		c.saveMentions()
+		return fmt.Sprintf("🔔 %s will be pinged in alerts. Send /mentionme off to stop.", from.link())
+	case "status":
+	default:
+		return "Commands: /status for every chain, /status &lt;chain&gt; for one, /mentionme to be pinged in alerts"
 	}
 	if name := strings.TrimSpace(args); name != "" {
 		chainName, cc := c.chainNamed(name)
@@ -226,14 +243,17 @@ func (c *Config) telegramCommands() {
 			if message == nil || !message.IsCommand() || message.Chat == nil {
 				continue
 			}
-			fromId := int64(0)
+			from := tgMention{}
 			if message.From != nil {
-				fromId = message.From.ID
+				from.ID, from.Name = message.From.ID, strings.TrimSpace(message.From.FirstName+" "+message.From.LastName)
+				if from.Name == "" {
+					from.Name = message.From.UserName
+				}
 			}
-			if !c.commandAllowed(message.Chat.ID, message.Chat.Type, fromId) {
+			if !c.commandAllowed(message.Chat.ID, message.Chat.Type, from.ID) {
 				continue
 			}
-			for _, part := range splitMessage(c.telegramCommand(message.Command(), message.CommandArguments(), time.Now())) {
+			for _, part := range splitMessage(c.telegramCommand(message.Command(), message.CommandArguments(), time.Now(), from)) {
 				reply := tgbotapi.NewMessage(message.Chat.ID, part)
 				reply.ParseMode = tgbotapi.ModeHTML
 				if _, err := bot.Send(reply); err != nil {
