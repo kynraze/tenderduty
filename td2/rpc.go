@@ -59,23 +59,33 @@ func (cc *ChainConfig) newRpc() error {
 		cc.setClient(client)
 		return
 	}
+	// try nodes in the configured order, but nodes known to be down go after the healthy ones, and the endpoint that
+	// just failed to deliver blocks goes last.
 	cc.stateMux.RLock()
-	next := cc.rpcNext
+	skip := cc.rpcSkip
 	cc.stateMux.RUnlock()
-	for i := range cc.Nodes {
+	ordered := make([]*NodeConfig, 0, len(cc.Nodes))
+	var down, last []*NodeConfig
+	for _, endpoint := range cc.Nodes {
+		switch {
+		case endpoint.Url == skip:
+			last = append(last, endpoint)
+		case endpoint.snapshot().down:
+			down = append(down, endpoint)
+		default:
+			ordered = append(ordered, endpoint)
+		}
+	}
+	ordered = append(append(ordered, down...), last...)
+	for _, endpoint := range ordered {
 		if td.context().Err() != nil {
 			return td.context().Err()
 		}
-		index := (next + i) % len(cc.Nodes)
-		endpoint := cc.Nodes[index]
 		if msg, failed, syncing := tryUrl(endpoint.Url); failed {
 			endpoint.markDown(msg, syncing)
 			continue
 		}
 		endpoint.markHealthy()
-		cc.stateMux.Lock()
-		cc.rpcNext = (index + 1) % len(cc.Nodes)
-		cc.stateMux.Unlock()
 		return nil
 	}
 	if cc.PublicFallback {
@@ -95,6 +105,17 @@ func (cc *ChainConfig) newRpc() error {
 		td.sendUpdate(cc.dashboardStatus())
 	}
 	return errors.New("no usable endpoints available for " + cc.ChainId)
+}
+
+// setRpcSkip marks an endpoint that failed so newRpc tries it last, once one works we go back to the configured order.
+func (cc *ChainConfig) setRpcSkip(endpoint string, failed bool) {
+	cc.stateMux.Lock()
+	defer cc.stateMux.Unlock()
+	if failed {
+		cc.rpcSkip = endpoint
+	} else {
+		cc.rpcSkip = ""
+	}
 }
 
 func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {

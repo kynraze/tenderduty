@@ -723,3 +723,149 @@ func TestRestoredBlockTimeDoesNotRaiseStallAlarm(t *testing.T) {
 	case <-time.After(3 * time.Second):
 	}
 }
+
+// watchFor runs watch on the chain and returns the alerts it raised in that time.
+func watchFor(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration) []*alertMsg {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.Chains[chain.name] = chain
+	done := make(chan struct{})
+	go func() { chain.watch(); close(done) }()
+	var raised []*alertMsg
+	deadline := time.After(wait)
+	for {
+		select {
+		case alert := <-c.alertChan:
+			raised = append(raised, alert)
+		case <-deadline:
+			cancel()
+			<-done
+			return raised
+		}
+	}
+}
+
+func TestNoRpcAlarmHasItsOwnDedupKey(t *testing.T) {
+	c := auditConfig(t)
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", noNodes: true}
+	chain.Alerts.AlertIfNoServers = true
+	raised := watchFor(t, c, chain, 2*time.Second)
+	if len(raised) != 1 || raised[0].uniqueId != "junovaloper1examplenorpc" {
+		t.Fatalf("no RPC alarm used the wrong dedup key: %+v", raised)
+	}
+}
+
+func TestRestoredDownNodeIsCheckedBeforeAlerting(t *testing.T) {
+	c := auditConfig(t)
+	c.NodeDownMin = 1
+	node := &NodeConfig{Url: "http://node:26657", AlertIfDown: true, down: true, downSince: time.Now().Add(-time.Hour)}
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", Nodes: []*NodeConfig{node},
+		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 0 {
+		t.Fatalf("node restored as down alerted before it was checked: %+v", raised)
+	}
+	node.markDown("still down", false)
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || raised[0].resolved {
+		t.Fatalf("node that is still down did not alert: %+v", raised)
+	}
+}
+
+func TestChainResetToLowerHeightIsTracked(t *testing.T) {
+	tracker := signingTracker{finalized: 1_000_000}
+	if _, ok := tracker.consume(StatusUpdate{Height: 999_990, Final: true, Status: StatusSigned}); ok {
+		t.Fatal("block from an endpoint a few blocks behind was counted")
+	}
+	if status, ok := tracker.consume(StatusUpdate{Height: 5, Final: true, Status: StatusSigned}); !ok || status != StatusSigned {
+		t.Fatal("blocks after a chain reset were ignored")
+	}
+}
+
+func TestRestoredAlarmsNoLongerMonitoredAreCleared(t *testing.T) {
+	c := auditConfig(t)
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
+		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
+	chain.Alerts.ConsecutiveAlerts, chain.Alerts.ConsecutiveMissed = true, 10
+	orphaned := map[string]string{
+		"validator has missed 5 blocks on juno-1":                                               "junovalcons1exampleconsecutive", // threshold changed
+		"stalled: have not seen a new block on juno-1 in 10 minutes":                            "junovalcons1example",            // alert disabled
+		"Severity: critical\nRPC node http://old:26657 has been down for > 3 minutes on juno-1": "http://old:26657",
+	}
+	alarms.AllAlarms["Juno"] = make(map[string]time.Time)
+	for message := range orphaned {
+		alarms.AllAlarms["Juno"][message] = time.Now()
+	}
+	raised := watchFor(t, c, chain, time.Second)
+	for _, alert := range raised {
+		if id, ok := orphaned[alert.message]; ok && alert.resolved && alert.uniqueId == id {
+			delete(orphaned, alert.message)
+		}
+	}
+	if len(orphaned) != 0 || alarms.getCount("Juno") != 0 {
+		t.Fatalf("restored alarms were not cleared: %v", orphaned)
+	}
+}
+
+func TestRefiredAlarmDropsItsPendingRecovery(t *testing.T) {
+	c := notificationConfig(t, "http://127.0.0.1:1")
+	key := "Chain\x00missed blocks"
+	c.alert("Chain", "missed blocks", "critical", false, nil)
+	alarms.SentDiAlarms[key] = time.Now()
+	c.alert("Chain", "missed blocks", "info", true, nil)
+	if alarms.PendingRecoveries[key] == nil {
+		t.Fatal("recovery was not recorded")
+	}
+	c.alert("Chain", "missed blocks", "critical", false, nil)
+	if alarms.PendingRecoveries[key] != nil {
+		t.Fatal("alarm fired again but kept its old recovery")
+	}
+}
+
+func TestRPCPrefersConfiguredOrder(t *testing.T) {
+	c := auditConfig(t)
+	first := httptest.NewServer(http.HandlerFunc(rpcStatus))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(rpcStatus))
+	defer second.Close()
+	chain := &ChainConfig{ChainId: "test-chain", Nodes: []*NodeConfig{{Url: first.URL}, {Url: second.URL}}}
+	c.Chains["Chain"] = chain
+	for i := 0; i < 3; i++ {
+		if err := chain.newRpc(); err != nil {
+			t.Fatal(err)
+		}
+		if chain.clientSnapshot().Remote() != first.URL {
+			t.Fatal("reconnect moved away from the preferred node")
+		}
+		chain.setRpcSkip(first.URL, false)
+	}
+	chain.Nodes[0].markDown("down", false)
+	if err := chain.newRpc(); err != nil {
+		t.Fatal(err)
+	}
+	if chain.clientSnapshot().Remote() != second.URL {
+		t.Fatal("known down node was tried before a healthy one")
+	}
+	chain.Nodes[1].markDown("down", false)
+	if err := chain.newRpc(); err != nil {
+		t.Fatal(err)
+	}
+	if chain.clientSnapshot().Remote() != first.URL || chain.Nodes[0].snapshot().down {
+		t.Fatal("down nodes were not retried in order")
+	}
+}
+
+func TestInactiveAtStartupOnlyAlertsWhenJailed(t *testing.T) {
+	c := auditConfig(t)
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
+		valInfo: &ValInfo{Moniker: "validator", Valcons: "junovalcons1example"}}
+	chain.Alerts.AlertIfInactive = true
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 0 {
+		t.Fatalf("validator outside the active set alerted at startup: %+v", raised)
+	}
+	chain.validatorMux.Lock()
+	chain.valInfo.Jailed = true
+	chain.validatorMux.Unlock()
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || !strings.Contains(raised[0].message, "jailed") {
+		t.Fatalf("jailed validator did not alert: %+v", raised)
+	}
+}

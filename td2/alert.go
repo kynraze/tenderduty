@@ -497,6 +497,10 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	}
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
 		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq}
+	} else if !resolved {
+		// the alarm fired again, recoveries already in the outbox still go out from there. Keeping this around
+		// would send a resolve for the new alarm after a restart.
+		delete(alarms.PendingRecoveries, key)
 	}
 	alarms.enqueue(a)
 	alarms.notifyMux.Unlock()
@@ -514,8 +518,10 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 // FIXME: not watching for nodes that are lagging the head block!
 func (cc *ChainConfig) watch() {
 	started := time.Now()
+	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
+	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
-	var missedAlarm, pctAlarm, noNodes bool
+	var missedAlarm, pctAlarm, noNodes, wasActive bool
 	nodeAlarms := make(map[string]bool)
 
 	// wait until we have a moniker:
@@ -538,7 +544,7 @@ func (cc *ChainConfig) watch() {
 					fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId),
 					"critical",
 					false,
-					&valInfo.Valcons,
+					&noRpcId,
 				)
 			}
 			noNodesSec += 1
@@ -556,6 +562,7 @@ func (cc *ChainConfig) watch() {
 		message := fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)
 		nodeAlarms[node.Url] = alarmIsActive(cc.name, message)
 	}
+	cc.clearOrphanedAlarms(valInfo, noRpcId)
 	reconcile := true
 	// initial stat creation for nodes, we only update again if the node is positive
 	if td.Prom {
@@ -579,7 +586,7 @@ func (cc *ChainConfig) watch() {
 
 		// alert if we can't monitor
 		if reconcile && noNodes && unavailable {
-			td.alert(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId), "critical", false, &valInfo.Valcons)
+			td.alert(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId), "critical", false, &noRpcId)
 		}
 		switch {
 		case cc.Alerts.AlertIfNoServers && !noNodes && unavailable:
@@ -597,7 +604,7 @@ func (cc *ChainConfig) watch() {
 					fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId),
 					"critical",
 					false,
-					&valInfo.Valcons,
+					&noRpcId,
 				)
 			}
 		case cc.Alerts.AlertIfNoServers && noNodes && !unavailable:
@@ -607,7 +614,7 @@ func (cc *ChainConfig) watch() {
 				fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId),
 				"critical",
 				true,
-				&valInfo.Valcons,
+				&noRpcId,
 			)
 		default:
 			noNodesSec = 0
@@ -653,18 +660,25 @@ func (cc *ChainConfig) watch() {
 				} else if valInfo.Jailed {
 					reason = "jailed"
 				}
-				message := fmt.Sprintf("%s is no longer active: validator is %s", valInfo.Moniker, reason)
-				if inactiveMessage != "" {
-					message = inactiveMessage
+				// a validator that was already outside the active set when we started isn't news, only alert if it
+				// drops out while we are watching. Jailing and tombstoning always alert.
+				if reason != "inactive" || wasActive || inactiveMessage != "" {
+					message := fmt.Sprintf("%s is no longer active: validator is %s", valInfo.Moniker, reason)
+					if inactiveMessage != "" {
+						message = inactiveMessage
+					}
+					if inactiveMessage == "" || reconcile {
+						td.alert(cc.name, message, "critical", false, &id)
+					}
+					inactiveMessage = message
 				}
-				if inactiveMessage == "" || reconcile {
-					td.alert(cc.name, message, "critical", false, &id)
-				}
-				inactiveMessage = message
 			} else if inactiveMessage != "" && (!strings.Contains(inactiveMessage, "tombstoned") || !valInfo.SigningStale) {
 				td.alert(cc.name, inactiveMessage, "info", true, &id)
 				inactiveMessage = ""
 			}
+		}
+		if valInfo.Bonded && !valInfo.Jailed && !valInfo.Tombstoned && !valInfo.ValidatorStale {
+			wasActive = true
 		}
 
 		// consecutive missed block alarms:
@@ -723,7 +737,8 @@ func (cc *ChainConfig) watch() {
 		for _, node := range cc.Nodes {
 			status := node.snapshot()
 			// window percentage missed block alarms
-			if node.AlertIfDown && status.down && !status.downSince.IsZero() &&
+			// a node restored as down from the state file has to be checked again before it can raise an alarm
+			if node.AlertIfDown && status.down && status.checked && !status.downSince.IsZero() &&
 				time.Since(status.downSince) > time.Duration(td.NodeDownMin)*time.Minute {
 				// alert on dead node
 				if nodeAlarms[node.Url] && !reconcile {
@@ -780,5 +795,62 @@ func (cc *ChainConfig) watch() {
 			}
 		}
 		reconcile = false
+	}
+}
+
+// clearOrphanedAlarms resolves alarms restored from the state file that would never clear on their own, because the
+// alert was disabled or a config change (thresholds, moniker etc.) changed the message.
+func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
+	expected := make(map[string]bool)
+	if cc.Alerts.ConsecutiveAlerts {
+		expected[fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId)] = true
+	}
+	if cc.Alerts.PercentageAlerts {
+		expected[fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId)] = true
+	}
+	if cc.Alerts.StalledAlerts {
+		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled)] = true
+	}
+	if cc.Alerts.AlertIfNoServers {
+		expected[fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId)] = true
+	}
+	for _, node := range cc.Nodes {
+		if node.AlertIfDown {
+			expected[fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)] = true
+		}
+	}
+
+	alarms.notifyMux.RLock()
+	restored := make([]string, 0, len(alarms.AllAlarms[cc.name]))
+	for message := range alarms.AllAlarms[cc.name] {
+		restored = append(restored, message)
+	}
+	alarms.notifyMux.RUnlock()
+
+	for _, message := range restored {
+		var id string
+		switch {
+		case expected[message]:
+			continue
+		case strings.Contains(message, " is no longer active: validator is "):
+			if cc.Alerts.AlertIfInactive {
+				continue // the inactive check picks these up, whatever the moniker was
+			}
+			id = valInfo.Valcons + "jailed"
+		case strings.Contains(message, " of the slashing window's blocks on "):
+			id = valInfo.Valcons + "percent"
+		case strings.Contains(message, " has missed ") && strings.Contains(message, " blocks on "):
+			id = valInfo.Valcons + "consecutive"
+		case strings.HasPrefix(message, "stalled: have not seen a new block"):
+			id = valInfo.Valcons
+		case strings.HasPrefix(message, "no RPC endpoints are working"):
+			id = noRpcId
+		case strings.Contains(message, "RPC node ") && strings.Contains(message, " has been down for "):
+			id = strings.SplitN(strings.SplitN(message, "RPC node ", 2)[1], " has been down for ", 2)[0]
+		default:
+			continue // no idea where this came from, it gets purged once it's stale
+		}
+		l("📂 clearing restored alarm that is no longer monitored -", message)
+		td.alert(cc.name, message, "info", true, &id)
 	}
 }

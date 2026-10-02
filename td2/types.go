@@ -101,7 +101,7 @@ type ChainConfig struct {
 	name            string
 	client          *rpchttp.HTTP // legit tendermint client
 	noNodes         bool          // tracks if all nodes are down
-	rpcNext         int
+	rpcSkip         string
 	monitoring      bool
 	monitoringSince time.Time
 	valInfo         *ValInfo // recent validator state, only refreshed every few minutes
@@ -217,6 +217,7 @@ type NodeConfig struct {
 	down      bool
 	wasDown   bool
 	syncing   bool
+	checked   bool
 	lastMsg   string
 	downSince time.Time
 }

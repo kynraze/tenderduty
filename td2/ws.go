@@ -80,14 +80,28 @@ func (cc *ChainConfig) WsRun() {
 		cancel()
 		return
 	}
+	cc.stateMux.RLock()
+	startHeight := cc.lastBlockNum
+	cc.stateMux.RUnlock()
 	conn, err := newClientContext(ctx, client.Remote(), true)
 	if err != nil {
 		cancel()
 		l(cc.ChainId, err)
+		cc.setRpcSkip(client.Remote(), true)
 		return
 	}
 	var workers sync.WaitGroup
-	defer func() { cancel(); _ = conn.Close(); workers.Wait(); cc.setMonitoring(false) }()
+	defer func() {
+		cancel()
+		_ = conn.Close()
+		workers.Wait()
+		cc.setMonitoring(false)
+		// skip this endpoint on the next connection if it never gave us a block, otherwise go back to the preferred one
+		cc.stateMux.RLock()
+		gotBlocks := cc.lastBlockNum != startHeight
+		cc.stateMux.RUnlock()
+		cc.setRpcSkip(client.Remote(), !gotBlocks)
+	}()
 	conn.SetReadLimit(16 << 20)
 	_ = conn.SetCompressionLevel(3)
 	results := make(chan StatusUpdate)
@@ -149,12 +163,20 @@ func (cc *ChainConfig) WsRun() {
 	<-ctx.Done()
 }
 
+// heightReset is how far a finalized block can be below the last one before we assume the chain was restarted at a
+// lower height (testnet reset, genesis restart) instead of an endpoint that is a few blocks behind.
+const heightReset = 1000
+
 type signingTracker struct {
 	votes     map[int64]StatusType
 	finalized int64
 }
 
 func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
+	if update.Final && update.Height > 0 && update.Height+heightReset < tracker.finalized {
+		l("⚠️ block height went from", tracker.finalized, "to", update.Height, "- assuming the chain was reset")
+		tracker.finalized, tracker.votes = 0, nil
+	}
 	if update.Height <= tracker.finalized {
 		return -1, false
 	}

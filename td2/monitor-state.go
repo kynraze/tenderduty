@@ -8,6 +8,7 @@ import (
 
 type nodeStatus struct {
 	down, wasDown, syncing bool
+	checked                bool // false until the node is checked during this run, a restored down state may be stale
 	lastMsg                string
 	downSince              time.Time
 }
@@ -45,7 +46,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 func (node *NodeConfig) snapshot() nodeStatus {
 	node.stateMux.RLock()
 	defer node.stateMux.RUnlock()
-	return nodeStatus{node.down, node.wasDown, node.syncing, node.lastMsg, node.downSince}
+	return nodeStatus{node.down, node.wasDown, node.syncing, node.checked, node.lastMsg, node.downSince}
 }
 
 func (node *NodeConfig) markDown(message string, syncing bool) nodeStatus {
@@ -55,8 +56,9 @@ func (node *NodeConfig) markDown(message string, syncing bool) nodeStatus {
 	}
 	node.down = true
 	node.syncing = syncing
+	node.checked = true
 	node.lastMsg = message
-	status := nodeStatus{node.down, node.wasDown, node.syncing, node.lastMsg, node.downSince}
+	status := nodeStatus{node.down, node.wasDown, node.syncing, node.checked, node.lastMsg, node.downSince}
 	node.stateMux.Unlock()
 	return status
 }
@@ -69,6 +71,7 @@ func (node *NodeConfig) markHealthy() {
 	}
 	node.down = false
 	node.syncing = false
+	node.checked = true
 	node.lastMsg = ""
 	node.downSince = time.Time{}
 }
