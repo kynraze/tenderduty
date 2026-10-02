@@ -88,6 +88,21 @@ func (cc *ChainConfig) blockState() (time.Time, bool, float64) {
 	return cc.lastBlockTime, cc.observedBlock, cc.statConsecutiveMiss
 }
 
+// recentProposalMisses counts the missed proposals within the window and forgets older ones.
+func (cc *ChainConfig) recentProposalMisses(window time.Duration) int {
+	cc.stateMux.Lock()
+	defer cc.stateMux.Unlock()
+	since := time.Now().Add(-window)
+	recent := cc.proposalMisses[:0]
+	for _, missed := range cc.proposalMisses {
+		if missed.After(since) {
+			recent = append(recent, missed)
+		}
+	}
+	cc.proposalMisses = recent
+	return len(recent)
+}
+
 func (cc *ChainConfig) blocksSnapshot() []int {
 	cc.stateMux.RLock()
 	defer cc.stateMux.RUnlock()

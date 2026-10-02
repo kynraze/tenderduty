@@ -4,6 +4,7 @@ const statusOrder = []
 const statusTable = document.getElementById('status-table')
 const chainDialog = document.getElementById('chain-dialog')
 const statusNames = {
+    5: 'missed-proposal',
     4: 'proposed',
     3: 'signed',
     2: 'precommit',
@@ -63,14 +64,14 @@ function stateFor(chain) {
 function blockTrace(values, limit, label) {
     const trace = element('div', 'block-tape')
     const recent = (Array.isArray(values) ? values : []).slice(0, limit)
-    const counts = { proposed: 0, signed: 0, precommit: 0, prevote: 0, missed: 0, unobserved: 0 }
+    const counts = { 'missed-proposal': 0, proposed: 0, signed: 0, precommit: 0, prevote: 0, missed: 0, unobserved: 0 }
     for (const value of recent) {
         const name = statusNames[value] || 'unobserved'
         counts[name]++
         trace.appendChild(element('i', name))
     }
     trace.setAttribute('role', 'img')
-    trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts.missed} missed, ${counts.precommit} precommit seen, ${counts.prevote} prevote seen, ${counts.unobserved} without data`)
+    trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts['missed-proposal']} missed proposals, ${counts.missed} missed, ${counts.precommit} precommit seen, ${counts.prevote} prevote seen, ${counts.unobserved} without data`)
     return trace
 }
 

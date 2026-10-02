@@ -173,6 +173,7 @@ func saveState(stateFile string) error {
 	lastBlocks := make(map[string]time.Time)
 	heights := make(map[string]int64)
 	consecutive := make(map[string]float64)
+	proposals := make(map[string][]time.Time)
 	nodesDown := make(map[string]map[string]time.Time)
 	for name, chain := range td.Chains {
 		chain.stateMux.RLock()
@@ -180,6 +181,9 @@ func saveState(stateFile string) error {
 		lastBlocks[name] = chain.lastBlockTime
 		heights[name] = chain.lastBlockNum
 		consecutive[name] = chain.statConsecutiveMiss
+		if len(chain.proposalMisses) > 0 {
+			proposals[name] = append([]time.Time(nil), chain.proposalMisses...)
+		}
 		chain.stateMux.RUnlock()
 		for _, node := range chain.Nodes {
 			status := node.snapshot()
@@ -195,7 +199,7 @@ func saveState(stateFile string) error {
 
 	alarms.notifyMux.RLock()
 	sequence := alarms.NextNotification
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

@@ -68,6 +68,12 @@ alert_defaults:
   percentage_enabled: no
   percentage_missed: 10
   percentage_priority: warning
+  # Missed proposals: the validator was due to propose a block but another validator did. No slashing, usually a slow
+  # node or network. Alerts when proposal_missed happen within proposal_minutes.
+  proposal_enabled: no
+  proposal_missed: 3
+  proposal_minutes: 60
+  proposal_priority: warning
   alert_if_inactive: yes
   alert_if_no_servers: yes
   pagerduty:

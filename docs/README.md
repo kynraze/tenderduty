@@ -21,6 +21,7 @@ Monitors a validator's performance across multiple chains
 
 - The main purpose of tenderduty is to monitor consensus state, and alert if the validator is missing blocks. This can be based on consecutive misses or on a percentage missed within the slashing window.
 - Alerting if jailed, tombstoned, or inactive.
+- Optional alerting on missed proposals: blocks the validator was due to propose but another validator did.
 - Alert destinations can be customized for each chain.
 - Monitors node health:
     * Optional alerting if syncing or not responding.
@@ -107,7 +108,7 @@ Dashboard:
   * Missed blocks are bright orange.
   * Not all missed blocks are the same. It is useful to know if a validator sent a pre-commit or even a pre-vote and was not included in the block. This might indicate peering issues, or even that another validator is having problems and missing pre-commits from others.
   * Bright green/yellow is used to indicate a block the validator proposed.
-  * *todo: There is one additional state that could be added. It would be useful to have an indicator when the validator was intended to be the proposer and timed out.*
+  * Amber marks a missed proposal: the validator was the proposer for the block's first round, but another validator proposed it. There is no slashing for this, it is usually a slow node or network.
 
 Notifications:
 

@@ -91,6 +91,7 @@ type savedState struct {
 	LastBlocks  map[string]time.Time            `json:"last_blocks"`
 	NodesDown   map[string]map[string]time.Time `json:"nodes_down"`
 	Consecutive map[string]float64              `json:"consecutive_missed,omitempty"`
+	Proposals   map[string][]time.Time          `json:"missed_proposals,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -119,6 +120,8 @@ type ChainConfig struct {
 	statPrevoteMiss     float64
 	statPrecommitMiss   float64
 	statConsecutiveMiss float64
+	statProposalMiss    float64
+	proposalMisses      []time.Time // when proposals were missed, for the alert window
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -184,6 +187,15 @@ type AlertConfig struct {
 	PercentagePriority string `yaml:"percentage_priority"`
 	// PercentageAlerts is whether to alert on percentage based misses
 	PercentageAlerts bool `yaml:"percentage_enabled"`
+
+	// ProposalMissed is how many missed proposals within ProposalMinutes trigger an alert
+	ProposalMissed int `yaml:"proposal_missed"`
+	// ProposalMinutes is the window missed proposals are counted over
+	ProposalMinutes int `yaml:"proposal_minutes"`
+	// ProposalPriority is a tag for pagerduty to route on priority
+	ProposalPriority string `yaml:"proposal_priority"`
+	// ProposalAlerts is whether to alert on missed proposals
+	ProposalAlerts bool `yaml:"proposal_enabled"`
 
 	// AlertIfInactive decides if tenderduty send an alert if the validator is not in the active set?
 	AlertIfInactive bool `yaml:"alert_if_inactive"`
@@ -343,6 +355,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Window = 10
 			problems = append(problems, fmt.Sprintf("warning: %s percentage_missed is not between 1 and 100, using 10", k))
 		}
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed < 1 {
+			v.Alerts.ProposalMissed = 3
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive proposal_missed, using 3", k))
+		}
+		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes < 1 {
+			v.Alerts.ProposalMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s has no positive proposal_minutes, using 60", k))
+		}
 		if len(v.blocksResults) != showBLocks {
 			blocks := make([]int, showBLocks)
 			for i := range blocks {
@@ -407,6 +427,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.PercentagePriority == "" {
 			v.Alerts.PercentagePriority = "warning"
 		}
+		if v.Alerts.ProposalPriority == "" {
+			v.Alerts.ProposalPriority = "warning"
+		}
 
 		if v.Alerts.Slack.Enabled && !c.Slack.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for slack alerts, but it is not enabled", k))
@@ -420,7 +443,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Telegram.Enabled && !c.Telegram.Enabled {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !v.Alerts.Pagerduty.Enabled && !v.Alerts.Discord.Enabled && !v.Alerts.Telegram.Enabled && !v.Alerts.Slack.Enabled {
@@ -637,6 +660,11 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	for k, missed := range saved.Consecutive {
 		if c.Chains[k] != nil {
 			c.Chains[k].statConsecutiveMiss = missed
+		}
+	}
+	for k, misses := range saved.Proposals {
+		if c.Chains[k] != nil {
+			c.Chains[k].proposalMisses = misses
 		}
 	}
 	for k, observed := range saved.LastBlocks {

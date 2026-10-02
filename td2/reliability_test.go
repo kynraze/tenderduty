@@ -116,17 +116,17 @@ func TestCommitFlagsAndVoteHeights(t *testing.T) {
 	}
 	tracker := signingTracker{}
 	tracker.consume(StatusUpdate{Height: 101, Status: StatusPrecommit})
-	if status, ok := tracker.consume(StatusUpdate{Height: 100, Final: true, Status: Statusmissed}); !ok || status != Statusmissed {
+	if status, _, ok := tracker.consume(StatusUpdate{Height: 100, Final: true, Status: Statusmissed}); !ok || status != Statusmissed {
 		t.Fatal("future vote contaminated the previous block")
 	}
-	if status, ok := tracker.consume(StatusUpdate{Height: 101, Final: true, Status: Statusmissed}); !ok || status != StatusPrecommit {
+	if status, _, ok := tracker.consume(StatusUpdate{Height: 101, Final: true, Status: Statusmissed}); !ok || status != StatusPrecommit {
 		t.Fatal("matching vote was discarded")
 	}
-	if _, ok := tracker.consume(StatusUpdate{Height: 101, Final: true, Status: StatusSigned}); ok {
+	if _, _, ok := tracker.consume(StatusUpdate{Height: 101, Final: true, Status: StatusSigned}); ok {
 		t.Fatal("duplicate block was counted twice")
 	}
 	tracker.consume(StatusUpdate{Height: 102, Status: StatusProposed})
-	if status, _ := tracker.consume(StatusUpdate{Height: 102, Final: true, Status: Statusmissed}); status != Statusmissed {
+	if status, _, _ := tracker.consume(StatusUpdate{Height: 102, Final: true, Status: Statusmissed}); status != Statusmissed {
 		t.Fatal("proposal alone was counted as signed")
 	}
 }
@@ -136,7 +136,7 @@ func TestBlockCommitHeightAndCanceledWorkers(t *testing.T) {
 	blocks := make(chan *WsReply)
 	results := make(chan StatusUpdate)
 	done := make(chan error, 1)
-	go func() { done <- handleBlocks(ctx, blocks, results, "ABCD") }()
+	go func() { done <- handleBlocks(ctx, blocks, make(chan *WsReply), results, "ABCD") }()
 	reply := &WsReply{}
 	reply.Result.Data.Value = json.RawMessage(`{"block":{"header":{"height":"101","proposer_address":"OTHER"},"last_commit":{"height":"100","signatures":[{"block_id_flag":1,"validator_address":"ABCD"}]}}}`)
 	blocks <- reply
@@ -775,10 +775,10 @@ func TestRestoredDownNodeIsCheckedBeforeAlerting(t *testing.T) {
 
 func TestChainResetToLowerHeightIsTracked(t *testing.T) {
 	tracker := signingTracker{finalized: 1_000_000}
-	if _, ok := tracker.consume(StatusUpdate{Height: 999_990, Final: true, Status: StatusSigned}); ok {
+	if _, _, ok := tracker.consume(StatusUpdate{Height: 999_990, Final: true, Status: StatusSigned}); ok {
 		t.Fatal("block from an endpoint a few blocks behind was counted")
 	}
-	if status, ok := tracker.consume(StatusUpdate{Height: 5, Final: true, Status: StatusSigned}); !ok || status != StatusSigned {
+	if status, _, ok := tracker.consume(StatusUpdate{Height: 5, Final: true, Status: StatusSigned}); !ok || status != StatusSigned {
 		t.Fatal("blocks after a chain reset were ignored")
 	}
 }

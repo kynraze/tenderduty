@@ -98,6 +98,7 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .block-tape i.precommit { background: var(--precommit); height: 19px; }
 .block-tape i.prevote { background: var(--prevote); height: 19px; }
 .block-tape i.missed { background: var(--critical); height: 20px; }
+.block-tape i.missed-proposal { background: var(--warning); height: 20px; }
 .block-tape i.unobserved { background: var(--line); }
 .block-tape.fill { overflow: hidden; gap: 1px; }
 .block-tape.fill i { flex: 0 0 3px; min-width: 3px; max-width: 3px; }
@@ -115,6 +116,7 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .trace-mark.precommit { background: var(--precommit); }
 .trace-mark.prevote { background: var(--prevote); }
 .trace-mark.missed { background: var(--critical); }
+.trace-mark.missed-proposal { background: var(--warning); }
 .footnote { max-width: 55ch; color: var(--subtle); font-size: 11px; line-height: 1.5; }
 
 dialog { width: min(860px, calc(100% - 32px)); max-height: calc(100vh - 32px); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); overflow: auto; }

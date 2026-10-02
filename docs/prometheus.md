@@ -48,6 +48,12 @@ Count of blocks missed where a prevote was seen since tenderduty was started
 
 `tenderduty_missed_blocks_prevote_present{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
 
+### tenderduty_missed_proposals
+
+Count of blocks the validator was due to propose but another validator did, since tenderduty was started
+
+`tenderduty_missed_proposals{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
+
 ### tenderduty_proposed_blocks
 
 Count of blocks proposed since tenderduty was started

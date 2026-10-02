@@ -18,7 +18,14 @@ import (
 const (
 	QueryNewBlock string = `tm.event='NewBlock'`
 	QueryVote     string = `tm.event='Vote'`
+	QueryNewRound string = `tm.event='NewRound'`
 )
+
+// subscriptions in the order they are requested, the request id is the index + 1.
+var subscriptions = []string{QueryNewBlock, QueryVote, QueryNewRound}
+
+// roundsId is the subscription id for NewRound, only needed for missed proposals so a node refusing it isn't fatal.
+const roundsId = 3
 
 // StatusType represents the various possible end states. Prevote and Precommit are special cases, where the node
 // monitoring for misses did see them, but the proposer did not include in the block.
@@ -30,6 +37,8 @@ const (
 	StatusPrecommit
 	StatusSigned
 	StatusProposed
+	// StatusMissedProposal is a signed block the validator was supposed to propose, but another validator did.
+	StatusMissedProposal
 )
 
 // StatusUpdate is passed over a channel from the websocket client indicating the current state, it is immediate in the
@@ -105,7 +114,7 @@ func (cc *ChainConfig) WsRun() {
 	conn.SetReadLimit(16 << 20)
 	_ = conn.SetCompressionLevel(3)
 	results := make(chan StatusUpdate)
-	votes, blocks := make(chan *WsReply), make(chan *WsReply)
+	votes, blocks, rounds := make(chan *WsReply), make(chan *WsReply), make(chan *WsReply)
 	address := strings.ToUpper(hex.EncodeToString(info.Conspub))
 	start := func(work func()) {
 		workers.Add(1)
@@ -114,7 +123,7 @@ func (cc *ChainConfig) WsRun() {
 	start(func() { cc.processResults(ctx, results) })
 	start(func() { handleVotes(ctx, votes, results, address) })
 	start(func() {
-		if err := handleBlocks(ctx, blocks, results, address); err != nil {
+		if err := handleBlocks(ctx, blocks, rounds, results, address); err != nil {
 			l(cc.ChainId, err)
 		}
 		cancel()
@@ -131,6 +140,10 @@ func (cc *ChainConfig) WsRun() {
 				continue
 			}
 			if reply.Error != nil {
+				if reply.Id == roundsId {
+					l(cc.ChainId, "NewRound subscription rejected, missed proposals are not tracked:", reply.Error.Message)
+					continue
+				}
 				l(cc.ChainId, "websocket subscription rejected:", reply.Error.Message)
 				cancel()
 				return
@@ -141,6 +154,8 @@ func (cc *ChainConfig) WsRun() {
 				target = blocks
 			case "tendermint/event/Vote":
 				target = votes
+			case "tendermint/event/NewRound":
+				target = rounds
 			default:
 				continue
 			}
@@ -151,7 +166,7 @@ func (cc *ChainConfig) WsRun() {
 			}
 		}
 	})
-	for id, query := range []string{QueryNewBlock, QueryVote} {
+	for id, query := range subscriptions {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		request := fmt.Sprintf(`{"jsonrpc":"2.0","method":"subscribe","id":%d,"params":{"query":"%s"}}`, id+1, query)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
@@ -159,7 +174,7 @@ func (cc *ChainConfig) WsRun() {
 			return
 		}
 	}
-	l(cc.ChainId, "watching for NewBlock and Vote events via", client.Remote())
+	l(cc.ChainId, "watching for NewBlock, Vote and NewRound events via", client.Remote())
 	<-ctx.Done()
 }
 
@@ -167,21 +182,35 @@ func (cc *ChainConfig) WsRun() {
 // lower height (testnet reset, genesis restart) instead of an endpoint that is a few blocks behind.
 const heightReset = 1000
 
+// maxProposalMisses bounds the missed proposal times kept for the alert window.
+const maxProposalMisses = 1000
+
 type signingTracker struct {
 	votes     map[int64]StatusType
+	proposals map[int64]bool // heights where another validator proposed in our place
 	finalized int64
 }
 
-func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
+// consume returns the final status for a height, if the validator missed proposing it, and whether it is final.
+func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool, bool) {
 	if update.Final && update.Height > 0 && update.Height+heightReset < tracker.finalized {
 		l("⚠️ block height went from", tracker.finalized, "to", update.Height, "- assuming the chain was reset")
-		tracker.finalized, tracker.votes = 0, nil
+		tracker.finalized, tracker.votes, tracker.proposals = 0, nil, nil
 	}
 	if update.Height <= tracker.finalized {
-		return -1, false
+		return -1, false, false
 	}
 	if tracker.votes == nil {
 		tracker.votes = make(map[int64]StatusType)
+	}
+	if tracker.proposals == nil {
+		tracker.proposals = make(map[int64]bool)
+	}
+	if !update.Final && update.Status == StatusMissedProposal {
+		if len(tracker.proposals) < 64 {
+			tracker.proposals[update.Height] = true
+		}
+		return -1, false, false
 	}
 	if !update.Final {
 		// Bound vote history when an endpoint sends votes without finalized blocks.
@@ -190,14 +219,18 @@ func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
 				tracker.votes[update.Height] = update.Status
 			}
 		}
-		return -1, false
+		return -1, false, false
 	}
-	status, vote := update.Status, tracker.votes[update.Height]
+	status, vote, missedProposal := update.Status, tracker.votes[update.Height], tracker.proposals[update.Height]
 	if status == StatusSigned && vote == StatusProposed {
 		status = StatusProposed
 	}
 	if status == Statusmissed && vote <= StatusPrecommit && vote > status {
 		status = vote
+	}
+	// a missed signature is worse, keep showing that
+	if status == StatusSigned && missedProposal {
+		status = StatusMissedProposal
 	}
 	tracker.finalized = update.Height
 	for height := range tracker.votes {
@@ -205,7 +238,12 @@ func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
 			delete(tracker.votes, height)
 		}
 	}
-	return status, true
+	for height := range tracker.proposals {
+		if height <= tracker.finalized {
+			delete(tracker.proposals, height)
+		}
+	}
+	return status, missedProposal, true
 }
 
 func (cc *ChainConfig) processResults(ctx context.Context, results <-chan StatusUpdate) {
@@ -217,13 +255,13 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 		case <-ctx.Done():
 			return
 		case update := <-results:
-			status, final := tracker.consume(update)
+			status, missedProposal, final := tracker.consume(update)
 			if !final {
 				continue
 			}
 			info, _ := cc.validatorState()
 			if !info.Bonded {
-				status = -1
+				status, missedProposal = -1, false
 			}
 			cc.stateMux.Lock()
 			previousTime, previousHeight := cc.lastBlockTime, cc.lastBlockNum
@@ -251,7 +289,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 				if status == StatusPrecommit {
 					cc.statPrecommitMiss++
 				}
-			case StatusSigned, StatusProposed:
+			case StatusSigned, StatusProposed, StatusMissedProposal:
 				cc.statTotalSigns++
 				cc.statConsecutiveMiss = 0
 				if status == StatusProposed {
@@ -260,10 +298,20 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			default:
 				cc.statConsecutiveMiss = 0
 			}
-			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss}
+			if missedProposal {
+				cc.statProposalMiss++
+				cc.proposalMisses = append(cc.proposalMisses, time.Now())
+				if len(cc.proposalMisses) > maxProposalMisses {
+					cc.proposalMisses = cc.proposalMisses[len(cc.proposalMisses)-maxProposalMisses:]
+				}
+			}
+			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss, metricMissedProposals: cc.statProposalMiss}
 			cc.stateMux.Unlock()
 			if status >= 0 && status < StatusSigned {
 				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId)
+			}
+			if missedProposal {
+				l(info.Moniker, "missed proposing block", update.Height, "on", cc.ChainId)
 			}
 			if td.EnableDash {
 				td.sendUpdate(cc.dashboardStatus())
@@ -324,18 +372,41 @@ func (rb rawBlock) find(val string) bool {
 	return false
 }
 
+// rawRound is a trimmed down version of the NewRound event.
+type rawRound struct {
+	Height   stringInt64     `json:"height"`
+	Round    json.RawMessage `json:"round"` // a number, but some versions send a string
+	Proposer struct {
+		Address string `json:"address"`
+	} `json:"proposer"`
+}
+
+func (r rawRound) first() bool {
+	return strings.Trim(string(r.Round), `"`) == "0"
+}
+
 // handleBlocks consumes the channel for new blocks and when it sees one sends a status update. It's also
 // responsible for stalled chain detection and will shutdown the client if there are no blocks for a minute.
-func handleBlocks(ctx context.Context, blocks chan *WsReply, results chan StatusUpdate, address string) error {
+// Rounds are watched here too, a block we were the round 0 proposer for but someone else made is a missed proposal.
+func handleBlocks(ctx context.Context, blocks, rounds chan *WsReply, results chan StatusUpdate, address string) error {
 	live := time.NewTicker(time.Minute)
 	defer live.Stop()
 	lastBlock := time.Now()
+	ourTurn := make(map[int64]bool)
 	for {
 		select {
 		case <-live.C:
 			// no block for a full minute likely means we have either a dead chain, or a dead client.
 			if lastBlock.Before(time.Now().Add(-time.Minute)) {
 				return errors.New("websocket idle for 1 minute, exiting")
+			}
+		case reply := <-rounds:
+			r := &rawRound{}
+			if json.Unmarshal(reply.Value(), r) != nil {
+				continue
+			}
+			if r.first() && r.Proposer.Address == address && r.Height.val() > 0 && len(ourTurn) < 64 {
+				ourTurn[r.Height.val()] = true
 			}
 		case block := <-blocks:
 			b := &rawBlock{}
@@ -359,6 +430,17 @@ func handleBlocks(ctx context.Context, blocks chan *WsReply, results chan Status
 				case results <- StatusUpdate{Height: upd.HeadHeight, Status: StatusProposed}:
 				case <-ctx.Done():
 					return nil
+				}
+			} else if ourTurn[upd.HeadHeight] {
+				select {
+				case results <- StatusUpdate{Height: upd.HeadHeight, Status: StatusMissedProposal}:
+				case <-ctx.Done():
+					return nil
+				}
+			}
+			for height := range ourTurn {
+				if height <= upd.HeadHeight {
+					delete(ourTurn, height)
 				}
 			}
 			if b.find(address) {

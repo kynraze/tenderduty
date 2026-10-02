@@ -537,7 +537,7 @@ func (cc *ChainConfig) watch() {
 	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
 	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
-	var missedAlarm, pctAlarm, noNodes, wasActive bool
+	var missedAlarm, pctAlarm, proposalAlarm, noNodes, wasActive bool
 	var lastStatus *dash.ChainStatus
 	nodeAlarms := make(map[string]bool)
 
@@ -572,6 +572,7 @@ func (cc *ChainConfig) watch() {
 	}
 	missedAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId))
 	pctAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId))
+	proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(valInfo.Moniker))
 	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
 	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
@@ -750,6 +751,19 @@ func (cc *ChainConfig) watch() {
 			)
 		}
 
+		// missed proposal alarms, counted over a time window since proposals are rare
+		if cc.Alerts.ProposalAlerts {
+			misses := cc.recentProposalMisses(time.Duration(cc.Alerts.ProposalMinutes) * time.Minute)
+			id := valInfo.Valcons + "proposal"
+			if (!proposalAlarm || reconcile) && misses >= cc.Alerts.ProposalMissed {
+				proposalAlarm = true
+				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), cc.Alerts.ProposalPriority, false, &id)
+			} else if proposalAlarm && misses < cc.Alerts.ProposalMissed {
+				proposalAlarm = false
+				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), "info", true, &id)
+			}
+		}
+
 		// node down alarms
 		for _, node := range cc.Nodes {
 			status := node.snapshot()
@@ -820,6 +834,10 @@ func (cc *ChainConfig) watch() {
 	}
 }
 
+func (cc *ChainConfig) proposalMessage(moniker string) string {
+	return fmt.Sprintf("%s missed %d block proposals in %d minutes on %s", moniker, cc.Alerts.ProposalMissed, cc.Alerts.ProposalMinutes, cc.ChainId)
+}
+
 // clearOrphanedAlarms resolves alarms restored from the state file that would never clear on their own, because the
 // alert was disabled or a config change (thresholds, moniker etc.) changed the message.
 func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
@@ -829,6 +847,9 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	}
 	if cc.Alerts.PercentageAlerts {
 		expected[fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId)] = true
+	}
+	if cc.Alerts.ProposalAlerts {
+		expected[cc.proposalMessage(valInfo.Moniker)] = true
 	}
 	if cc.Alerts.StalledAlerts {
 		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled)] = true
@@ -861,6 +882,8 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			id = valInfo.Valcons + "jailed"
 		case strings.Contains(message, " of the slashing window's blocks on "):
 			id = valInfo.Valcons + "percent"
+		case strings.Contains(message, " block proposals in "):
+			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " has missed ") && strings.Contains(message, " blocks on "):
 			id = valInfo.Valcons + "consecutive"
 		case strings.HasPrefix(message, "stalled: have not seen a new block"):

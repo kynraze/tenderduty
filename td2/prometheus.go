@@ -29,6 +29,7 @@ const (
 	metricWindowSize
 	metricLastBlockSeconds
 	metricLastBlockSecondsNotFinal
+	metricMissedProposals
 
 	metricTotalNodes
 	metricUnealthyNodes
@@ -89,6 +90,10 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		Name: "tenderduty_missed_blocks_precommit_present",
 		Help: "count of blocks missed where a precommit was seen since tenderduty was started",
 	}, chainLabels)
+	missedProposals := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_missed_proposals",
+		Help: "count of blocks the validator was due to propose but another validator did, since tenderduty was started",
+	}, chainLabels)
 	missedConsecutive := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_consecutive_missed_blocks",
 		Help: "the current count of consecutively missed blocks regardless of precommit or prevote status",
@@ -141,6 +146,7 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		metricWindowSize:               windowSize,
 		metricLastBlockSeconds:         lastBlockSec,
 		metricLastBlockSecondsNotFinal: lastBlockSecUnfinalized,
+		metricMissedProposals:          missedProposals,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
 		metricNodeLagSeconds:           nodeLagSec,  // todo
