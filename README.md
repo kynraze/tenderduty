@@ -1,8 +1,16 @@
 # TenderDuty v2
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/blockpane/tenderduty.svg)](https://pkg.go.dev/github.com/blockpane/tenderduty)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kynraze/tenderduty/v2.svg)](https://pkg.go.dev/github.com/kynraze/tenderduty/v2)
 [![Gosec](https://github.com/kynraze/tenderduty/workflows/Gosec/badge.svg)](https://github.com/kynraze/tenderduty/actions?query=workflow%3AGosec)
 [![CodeQL](https://github.com/kynraze/tenderduty/workflows/CodeQL/badge.svg)](https://github.com/kynraze/tenderduty/actions?query=workflow%3ACodeQL)
+
+Fork of [blockpane/tenderduty](https://github.com/blockpane/tenderduty) maintained by [Kynraze](https://github.com/kynraze). What's different:
+
+- New dashboard with filters, chain details and themes
+- Alerting fixes: no false alerts after restarts, PagerDuty incidents resolve, alerts survive state file problems
+- Realio multistaking: several validators on one chain, each with its own nodes
+- Go 1.27 and updated dependencies, configs from the original still load
+- Docker image at `ghcr.io/kynraze/tenderduty`
 
 Tenderduty is a comprehensive monitoring tool for Tendermint chains. Its primary function is to alert a validator if they are missing blocks, and has many other features.
 

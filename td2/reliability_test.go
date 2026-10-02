@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 	slashing "github.com/cosmos/cosmos-sdk/x/slashing/types"
 	"github.com/gorilla/websocket"
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 

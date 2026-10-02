@@ -1,7 +1,7 @@
 package tenderduty
 
 import (
-	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 	"time"
 )

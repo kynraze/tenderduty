@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/PagerDuty/go-pagerduty"
-	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 )
 
 type alertMsg struct {
