@@ -99,6 +99,7 @@ var (
 	cardTombstoned      = regexp.MustCompile(`^(.+) is tombstoned on (\S+)$`)
 	cardJailed          = regexp.MustCompile(`^(.+) is jailed on (\S+)$`)
 	cardInactive        = regexp.MustCompile(`^(.+) is no longer in the active set on (\S+)$`)
+	cardLegacyInactive  = regexp.MustCompile(`^(.+) is no longer active: validator is (.+)$`)
 	cardJailSoon        = regexp.MustCompile(`^(.+) will be jailed in under (.+) on (\S+) if it keeps missing blocks$`)
 	cardSignalStart     = regexp.MustCompile(`^Version (\d+) signalling has started$`)
 	cardSignalMissing   = regexp.MustCompile(`^Validator has not signalled version (\d+)$`)
@@ -194,6 +195,10 @@ var raisedRules = []cardRule{
 			}
 		}
 		return p
+	}},
+	// the old message, still in state files saved by earlier versions, has no chain id
+	{cardLegacyInactive, func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{validatorField(m[1])}, state: []alertField{row("🔒", "Status", dotRed+" "+m[2])}}
 	}},
 	{cardInactive, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[2]), state: []alertField{row("🔒", "Status", dotRed+" not in the active set")}}

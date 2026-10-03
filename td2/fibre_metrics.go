@@ -33,7 +33,7 @@ const (
 const (
 	fibreWindow = 10 * time.Minute // what the count rules look at, and where the ratio rules start
 	fibreKeep   = 24 * time.Hour   // how far back a ratio rule may reach for samples on a quiet network
-	// per sender, so one that exports fast can't grow the history without bound
+	// per sender, so one that exports fast can't grow the history without bound: past it the older half is merged
 	fibreMaxDeltas = 5000
 	// a storage alarm clears after this long with no rejection, and after falling this many percent under its threshold
 	fibreStorageQuiet = 30 * time.Minute
@@ -142,6 +142,7 @@ type fibreSeries struct {
 	start uint64
 	value uint64
 	sum   float64 // of a histogram, the seconds that went with the count
+	seen  time.Time
 }
 
 type fibreSender struct {
@@ -151,7 +152,6 @@ type fibreSender struct {
 	lastReceived  time.Time
 	series        map[string]fibreSeries
 	window        []fibreDelta
-	trimmed       bool // the history was cut at fibreMaxDeltas before it was 24 hours old
 	occupancy     int64
 	budget        int64
 	lastSuccess   int64
@@ -251,12 +251,9 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 		}
 	}
 	snap.Ten.Sum = snap.Window
-	// a history cut short by the cap starts at its oldest delta
-	seen := best.since
-	if best.trimmed && len(best.window) > 0 && best.window[0].at.After(seen) {
-		seen = best.window[0].at
-	}
-	snap.Ten.Covers, snap.Day.Covers = min(fibreWindow, max(now.Sub(seen), 0)), min(fibreKeep, max(now.Sub(seen), 0))
+	// the history is merged rather than cut at the cap, so it covers everything since the first export
+	seen := max(now.Sub(best.since), 0)
+	snap.Ten.Covers, snap.Day.Covers = min(fibreWindow, seen), min(fibreKeep, seen)
 	snap.Sign = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.signTotal })
 	snap.SignOK = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.signOK })
 	snap.Backend = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.backendTotal })
@@ -406,7 +403,7 @@ func (s *fibreSender) advance(key string, start, value uint64, sum float64, cumu
 		return clampInt64(value), sum
 	}
 	prev, seen := s.series[key]
-	s.series[key] = fibreSeries{start, value, sum}
+	s.series[key] = fibreSeries{start, value, sum, now}
 	switch {
 	case seen && prev.start == start && value >= prev.value:
 		return clampInt64(value - prev.value), math.Max(sum-prev.sum, 0)
@@ -597,10 +594,31 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 	if !d.empty() {
 		s.window = append(s.window, d)
 	}
-	if over := len(s.window) - fibreMaxDeltas; over > 0 {
-		s.window = s.window[:copy(s.window, s.window[over:])]
-		s.trimmed = true
+	if len(s.window) > fibreMaxDeltas {
+		s.window = compactDeltas(s.window)
 	}
+	// a series is a set of labels, the upload size among them, so ones that stopped coming are dropped
+	for key, series := range s.series {
+		if now.Sub(series.seen) >= fibreKeep {
+			delete(s.series, key)
+		}
+	}
+}
+
+// compactDeltas merges the older half of the history two by two, so it still covers the day, only coarser. A merged
+// delta takes the later time, and the older half is far older than the 10 minutes the count rules look at.
+func compactDeltas(window []fibreDelta) []fibreDelta {
+	half := len(window) / 2
+	out := make([]fibreDelta, 0, (half+1)/2+len(window)-half)
+	for i := 0; i < half; i += 2 {
+		d := window[i]
+		if i+1 < half {
+			d.add(window[i+1])
+			d.at = window[i+1].at
+		}
+		out = append(out, d)
+	}
+	return append(out, window[half:]...)
 }
 
 // ingestFibreMetrics takes what a Fibre server exported. A collector forwards other apps' metrics too, those are

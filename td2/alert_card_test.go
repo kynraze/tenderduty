@@ -294,6 +294,19 @@ func TestCardDetailLinesAreUnderstood(t *testing.T) {
 	}
 }
 
+// alarms saved by earlier versions carry the old message, raised and cleared after an upgrade
+func TestTheOldInactiveMessageIsACard(t *testing.T) {
+	cardChain(t)
+	for _, resolved := range []bool{false, true} {
+		msg := &alertMsg{chain: "Devnet1", severity: "critical", message: "Kynraze is no longer active: validator is jailed", resolved: resolved}
+		card := msg.card()
+		checkCard(t, "old inactive message", card)
+		if card.Fields[0].Value != "Kynraze" {
+			t.Fatalf("resolved %v: %+v", resolved, card.Fields)
+		}
+	}
+}
+
 func TestUnknownMessageStaysAsNote(t *testing.T) {
 	cardChain(t)
 	msg := &alertMsg{chain: "Devnet1", severity: "critical", message: "something new <&> happened", extra: "monitor-eu", tgMentions: "@ops"}

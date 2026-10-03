@@ -1181,7 +1181,7 @@ func TestFibreAdaptiveWindow(t *testing.T) {
 			t.Fatalf("history is %+v", window)
 		}
 	})
-	t.Run("the history is capped", func(t *testing.T) {
+	t.Run("the history is capped by merging the older half", func(t *testing.T) {
 		r, f := quietFeed(t)
 		for i := 0; i < fibreMaxDeltas+100; i++ {
 			r.advance(time.Second)
@@ -1189,9 +1189,15 @@ func TestFibreAdaptiveWindow(t *testing.T) {
 			f.send()
 		}
 		window := r.st.senders["fibre-host-1"].window
-		if len(window) != fibreMaxDeltas || !window[len(window)-1].at.Equal(r.clock.now) ||
-			!window[0].at.Equal(r.clock.now.Add(-(fibreMaxDeltas-1)*time.Second)) {
-			t.Fatalf("%d deltas, from %v to %v, now %v", len(window), window[0].at, window[len(window)-1].at, r.clock.now)
+		total := int64(0)
+		for i, d := range window {
+			total += d.signTotal
+			if i > 0 && !d.at.After(window[i-1].at) {
+				t.Fatalf("delta %d at %v is not after %v", i, d.at, window[i-1].at)
+			}
+		}
+		if len(window) > fibreMaxDeltas || !window[len(window)-1].at.Equal(r.clock.now) || total != fibreMaxDeltas+100 {
+			t.Fatalf("%d deltas holding %d signatures, the newest at %v, now %v", len(window), total, window[len(window)-1].at, r.clock.now)
 		}
 		if span := r.st.snapshot("Chain").Sign; span.Sum.signTotal != 600 {
 			t.Fatalf("the newest 10 minutes hold %d signatures, want 600", span.Sum.signTotal)

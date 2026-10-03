@@ -1,6 +1,7 @@
 package tenderduty
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -115,6 +116,44 @@ func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
 	}
 	if !alarmIsActive("Celestia", signalUpgradeMessage(10, 1500)) {
 		t.Fatal("the upgrade alarm was not raised")
+	}
+}
+
+// unjailed and back in the active set in one check: "back in the active set" says it, "can unjail" clears quietly
+func TestAnUnjailIsOneMessage(t *testing.T) {
+	oldConfig, oldAlarms := td, alarms
+	ctx, cancel := context.WithCancel(context.Background())
+	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
+		valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true, Window: 100, Valcons: "junovalcons1example"}}
+	chain.Alerts.AlertIfInactive = true
+	jailed, unjail := "Kynraze is jailed on juno-1", "Kynraze can unjail on juno-1"
+	alarms = newAlarmCache()
+	alarms.AllAlarms["Juno"] = map[string]time.Time{jailed: time.Now(), unjail: time.Now()}
+	td = &Config{ctx: ctx, alertChan: make(chan *alertMsg, 8), Chains: map[string]*ChainConfig{"Juno": chain}}
+	done := make(chan struct{})
+	go func() { chain.watch(); close(done) }()
+	defer func() {
+		cancel()
+		<-done
+		td, alarms = oldConfig, oldAlarms
+	}()
+	got := make(map[string]bool) // message to quiet
+	deadline := time.After(5 * time.Second)
+	for len(got) < 2 {
+		select {
+		case a := <-td.alertChan:
+			if a.resolved {
+				got[a.message] = a.quiet
+			}
+		case <-deadline:
+			t.Fatalf("recoveries %v", got)
+		}
+	}
+	if quiet, ok := got[jailed]; !ok || quiet {
+		t.Errorf("back in the active set: sent %v, quiet %v", ok, quiet)
+	}
+	if quiet, ok := got[unjail]; !ok || !quiet {
+		t.Errorf("can unjail: sent %v, quiet %v", ok, quiet)
 	}
 }
 

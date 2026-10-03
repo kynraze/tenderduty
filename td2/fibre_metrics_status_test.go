@@ -2,6 +2,7 @@ package tenderduty
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,20 +213,62 @@ func TestFibreMetricsStatusWindows(t *testing.T) {
 	}
 }
 
-// the history is cut at fibreMaxDeltas, then the day starts where what is kept does
+// past fibreMaxDeltas the older history is merged, not cut: the day still covers every export and loses no count
 func TestFibreMetricsStatusCoversWhatIsKept(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	f := r.feed(time.Second)
+	f.send()
+	before := r.st.snapshot("Chain").Day.Sum.rejected
 	for i := 0; i < fibreMaxDeltas+10; i++ {
 		r.advance(time.Second)
 		f.rejected++
 		f.send()
 	}
 	snap := r.st.snapshot("Chain")
-	oldest := r.st.senders["fibre-host-1"].window[0].at
-	if want := r.clock.now.Sub(oldest); snap.Day.Covers != want || want >= time.Duration(fibreMaxDeltas+10)*time.Second {
-		t.Fatalf("the day covers %v, what is kept is %v", snap.Day.Covers, want)
+	sender := r.st.senders["fibre-host-1"]
+	if len(sender.window) > fibreMaxDeltas {
+		t.Fatalf("%d deltas kept", len(sender.window))
+	}
+	if want := r.clock.now.Sub(sender.since); snap.Day.Covers != want {
+		t.Fatalf("the day covers %v, want %v since the first export", snap.Day.Covers, want)
+	}
+	if got := snap.Day.Sum.rejected - before; got != fibreMaxDeltas+10 {
+		t.Fatalf("the day counts %d rejections, want %d", got, fibreMaxDeltas+10)
+	}
+}
+
+// a series is a set of labels, the upload size among them: one that stops coming is forgotten after a day, so a
+// long run doesn't keep every size it ever saw
+func TestFibreMetricsSeriesThatStopAreForgotten(t *testing.T) {
+	r := newFibreRig(t)
+	r.cc.Alerts.FibreInstance = "fibre-host-1"
+	f := r.feed(time.Minute)
+	f.r.c.ingestFibreMetrics(f.statusData(statusTotals{uploadsA: 1, uploadsB: 1, uploadSecA: 0.01, uploadSecB: 0.01}))
+	uploads := func() int {
+		n := 0
+		for key := range r.st.senders["fibre-host-1"].series {
+			if strings.Contains(key, "upload_shard.duration") {
+				n++
+			}
+		}
+		return n
+	}
+	if uploads() == 0 {
+		t.Fatal("no upload series were kept")
+	}
+	r.advance(23 * time.Hour)
+	f.r.c.ingestFibreMetrics(f.statusData(statusTotals{}))
+	if uploads() == 0 {
+		t.Fatal("upload series were dropped before a day")
+	}
+	r.advance(2 * time.Hour)
+	f.r.c.ingestFibreMetrics(f.statusData(statusTotals{}))
+	if n := uploads(); n != 0 {
+		t.Fatalf("%d upload series are still kept a day after they stopped", n)
+	}
+	if len(r.st.senders["fibre-host-1"].series) == 0 {
+		t.Fatal("series that still come were dropped too")
 	}
 }
 
