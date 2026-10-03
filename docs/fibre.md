@@ -48,6 +48,35 @@ Fibre's storage budget comes from the chain: `full_stake_storage_budget` (2 TiB)
 
 That is why `fibre_storage_percent` is off by default. Set it (1 to 100) and the alert is raised when use reaches that share of the budget, or any upload was turned away in the last 10 minutes. It clears when use is 15 points under the threshold (under 75% for 90%) and no upload was turned away for 30 minutes that tenderduty watched, so a network hovering around the limit doesn't send a message each time it crosses the line. With a threshold of 15 or less there is no room for the gap and it clears under the threshold itself.
 
+## Reading the Fibre status
+
+`/status <chain>` in Telegram and the chain detail on the dashboard show a Fibre section for every chain with `fibre_enabled` (and x/valaddr). It looks like this in Telegram:
+
+```
+🧵 Fibre v10.4.0-mocha
+🌐 Host: fibre.example.com:7980
+📡 Reachable: 🟢 yes
+🔐 Identity: 🟢 verified
+📊 Share: 148/4096 rows · 3.61% min
+💾 Budget: 74 GiB
+🗃 Used: 12 MiB (0.02%)
+⬆️ Uploads 10m: ✅ 42 · ❌ 0 · 🚫 0
+🕒 Last upload: 18s ago
+✍️ Signing: 🟢 98% under 10 ms
+🗄 Storage: 🟢 ok
+📨 Metrics: 34s ago
+```
+
+Uploads are ok, failed, and turned away by the storage limiter. Signing is yellow when most signatures take over 10 ms and red when one failed. The host, share and budget come from the chain, the rest from Fibre's metrics. Without [`fibre_metrics`](config.md#fibre-metrics), or until Fibre has sent something, the metrics lines are replaced by one line saying so. The dashboard shows the same, with the last 10 minutes next to the last 24 hours. The metrics live in memory, so after tenderduty restarts the 24 hours cover only the time since it started, and the dashboard says how long that is.
+
+**Rows.** Each blob is split into 4096 rows that are spread over the active set. A validator gets 3 times its stake share of them (a third of the stake is every row), at least 148 and at most 4096. The data Fibre sends a validator follows its rows. A validator outside the active set gets none. These numbers are Fibre's protocol constants (celestia-app v10, protocol version 0), not chain parameters. Tenderduty works the share out from the validator set the same way Fibre does.
+
+**Budget.** The chain parameter `full_stake_storage_budget` (2 TiB on Mocha) times the share of rows, `budget = full_stake_storage_budget * rows / 4096`. With 148 rows that is 74 GiB. It is the most data Fibre keeps, and it rolls: data is pruned 4 hours after it arrives, so use goes up and down and stays under the budget. When the chain's budget and the one Fibre reports differ, both are shown. Fibre works its budget out again every minute, so a short difference after a stake change is normal. A reported budget of 0 is `--unlimited-budget`, there is no cap.
+
+**Disk.** Keep at least the budget free on the disk with Fibre's data, and more if governance may raise the parameter. Fibre itself logs a warning when the free disk is below its budget. With `--unlimited-budget` the disk is the only limit.
+
+**Fees.** There is no reward for running Fibre. Fibre fees go to the fee collector and are paid out by stake like other fees, not by how much data a validator stores, so a small validator carries more of the data than it earns of the fees. As of celestia-app v10 there is no Fibre slashing. A validator that stores nothing loses no stake, but its Fibre doesn't do what clients rely on.
+
 ## Setup
 
 4318 is the standard OTLP/HTTP port. Use another one if a collector already uses it on the machine tenderduty runs on.

@@ -143,7 +143,9 @@ type ChainConfig struct {
 	signalUnsupported   bool // the chain has no x/signal, it isn't asked again
 	fibre               fibreState
 	fibreLoaded         bool
-	fibreUnsupported    bool // the chain has no x/valaddr, it isn't asked again
+	fibreUnsupported    bool  // the chain has no x/valaddr, it isn't asked again
+	fibreFullStake      int64 // x/fibre's full_stake_storage_budget, 0 until it has been read
+	fibreParamsFailing  bool  // the last read failed and was logged, so a streak is logged once
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.

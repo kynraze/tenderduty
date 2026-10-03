@@ -233,6 +233,126 @@ function render() {
     }
 }
 
+function bytesText(value) {
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+    let size = Number(value)
+    let unit = 0
+    while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024
+        unit++
+    }
+    return `${Number(size.toFixed(1))} ${units[unit]}`
+}
+
+function durationText(seconds) {
+    const total = Math.max(0, Math.floor(seconds))
+    if (total < 60) return `${total}s`
+    if (total < 3600) return `${Math.floor(total / 60)}m`
+    if (total < 86400) return `${Math.floor(total / 3600)}h ${Math.floor(total % 3600 / 60)}m`
+    return `${Math.floor(total / 86400)}d ${Math.floor(total % 86400 / 3600)}h`
+}
+
+function msText(value) {
+    if (value === null || value === undefined) return '—'
+    return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
+}
+
+// what Fibre did in a window, one entry for each fact: its label and the text for that window
+const fibreWindowFacts = [
+    ['Uploads ok / failed / rejected', w => `${number(w.uploads_ok)} / ${number(w.uploads_failed)} / ${number(w.uploads_rejected)}`],
+    ['Data received', w => bytesText(w.bytes_received)],
+    ['Average upload time', w => msText(w.avg_upload_ms)],
+    ['Downloads ok / failed', w => `${number(w.downloads_ok)} / ${number(w.downloads_failed)}`],
+    ['Data served', w => bytesText(w.bytes_served)],
+    ['Average download time', w => msText(w.avg_download_ms)],
+    ['Signatures / failed', w => `${number(w.signatures)} / ${number(w.signatures_failed)}`],
+    ['Signed within 10 ms', w => w.sign_fast_percent === null || w.sign_fast_percent === undefined ? '—' : `${Math.floor(w.sign_fast_percent)}%`],
+    ['Average signing time', w => msText(w.avg_sign_ms)],
+    ['Store put / get errors', w => `${number(w.store_put_errors)} / ${number(w.store_get_errors)}`],
+    ['Average store put / get', w => `${msText(w.avg_put_ms)} / ${msText(w.avg_get_ms)}`],
+    ['Prune errors / entries pruned', w => `${number(w.prune_errors)} / ${number(w.entries_pruned)}`],
+    ['Average prune time', w => msText(w.avg_prune_ms)],
+    ['Object storage errors', w => `${number(w.object_storage_errors)} of ${number(w.object_storage_requests)} requests`]
+]
+
+function fibreProviderFacts(chain) {
+    const fibre = chain.fibre
+    const rows = [['Provider', fibre.registered ? fibre.host : 'Not registered']]
+    if (fibre.registered) {
+        let reach = 'Reachable'
+        if (!fibre.reachable) {
+            reach = 'Unreachable'
+            if (fibre.down_since) reach += ` for ${durationText(Date.now() / 1000 - fibre.down_since)}`
+            if (fibre.down_reason) reach += ` · ${fibre.down_reason}`
+        }
+        rows.push(['Reachability', reach])
+        const identity = { verified: 'Verified', failed: `Not verified${fibre.identity_error ? ` · ${fibre.identity_error}` : ''}` }
+        rows.push(['Identity', identity[fibre.identity] || 'Not checked'])
+    }
+    if (fibre.version) rows.push(['Fibre version', fibre.version])
+    let share = 'Unavailable'
+    if (chain.total_power > 0) {
+        share = 'Not in the active set, no rows'
+        if (fibre.in_active_set) {
+            const note = fibre.minimum_applies ? ' · minimum' : (fibre.rows === fibre.total_rows ? ' · maximum' : '')
+            share = `${number(fibre.rows)} / ${number(fibre.total_rows)} rows · ${fibre.row_percent.toFixed(2)}%${note}`
+        }
+    }
+    rows.push(['Share of rows', share])
+    let budget = fibre.in_active_set ? 'Unavailable' : 'None'
+    if (fibre.unlimited) {
+        budget = 'Unlimited (--unlimited-budget)'
+    } else if (fibre.chain_budget > 0) {
+        budget = bytesText(fibre.chain_budget)
+        if (fibre.budget_reported && fibre.fibre_budget !== fibre.chain_budget) budget += ` · Fibre reports ${bytesText(fibre.fibre_budget)}`
+    } else if (fibre.budget_reported) {
+        budget = `Fibre reports ${bytesText(fibre.fibre_budget)}`
+    }
+    rows.push(['Storage budget', budget])
+    return rows
+}
+
+function appendFact(container, label, values) {
+    const item = element('div', 'detail-fact')
+    item.appendChild(element('small', '', label))
+    for (const value of Array.isArray(values) ? values : [values]) {
+        item.appendChild(element('strong', Array.isArray(values) ? 'pair' : '', value))
+    }
+    container.appendChild(item)
+}
+
+// fillFibre draws the Fibre section of the chain dialog, it is there only for a chain whose Fibre is watched
+function fillFibre(chain) {
+    const section = document.getElementById('detail-fibre')
+    section.hidden = !chain.fibre
+    if (!chain.fibre) return
+    const fibre = chain.fibre
+    const facts = document.getElementById('detail-fibre-facts')
+    const note = document.getElementById('detail-fibre-note')
+    facts.replaceChildren()
+    for (const [label, value] of fibreProviderFacts(chain)) appendFact(facts, label, value)
+    if (!fibre.metrics_received) {
+        appendFact(facts, 'Fibre metrics', 'Not received, see docs/fibre.md')
+        note.textContent = 'Share and budget come from the chain. Fibre reports what it did and how full its storage is once it sends metrics to tenderduty.'
+        return
+    }
+    if (fibre.occupancy_known) {
+        const used = fibre.budget_reported && fibre.fibre_budget > 0 ? ` · ${(100 * fibre.occupancy / fibre.fibre_budget).toFixed(2)}% of the budget` : ''
+        appendFact(facts, 'Storage used', `${bytesText(fibre.occupancy)}${used}`)
+    }
+    appendFact(facts, 'Metrics received', age(fibre.metrics_at))
+    appendFact(facts, 'Last successful upload', fibre.last_upload_at ? age(fibre.last_upload_at) : '—')
+    const noun = (count, one) => `${number(count)} ${count === 1 ? one : `${one}s`}`
+    appendFact(facts, 'In flight now', `${noun(fibre.uploads_in_flight, 'upload')} · ${noun(fibre.downloads_in_flight, 'download')}`)
+    const short = fibre.last_24h.seconds < 86400
+    for (const [label, text] of fibreWindowFacts) {
+        appendFact(facts, label, [`10 min · ${text(fibre.last_10m)}`, `24 h · ${text(fibre.last_24h)}`])
+    }
+    note.textContent = short
+        ? `The 24 h figures cover ${durationText(fibre.last_24h.seconds)} so far, since tenderduty started: Fibre's history is kept in memory.`
+        : 'Figures are what Fibre reported to tenderduty.'
+}
+
 // fillDetail draws the chain dialog, render() calls it again while the dialog is open so it stays live
 function fillDetail(name) {
     const chain = chains.get(name)
@@ -261,6 +381,7 @@ function fillDetail(name) {
         item.appendChild(element('strong', '', value))
         facts.appendChild(item)
     }
+    fillFibre(chain)
     const history = document.getElementById('detail-blocks')
     history.replaceChildren()
     history.appendChild(blockTrace(chain.blocks, 512, `${name} block history`, newBlockAge(name)))

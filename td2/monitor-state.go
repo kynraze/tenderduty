@@ -34,7 +34,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 			message += "\n - " + status.lastMsg
 		}
 	}
-	return &dash.ChainStatus{
+	status := &dash.ChainStatus{
 		MsgType: "status", Name: cc.name, ChainId: cc.ChainId, Moniker: info.Moniker,
 		Bonded: info.Bonded, Jailed: info.Jailed, Tombstoned: info.Tombstoned,
 		Missed: info.Missed, Window: info.Window, Nodes: len(cc.Nodes), HealthyNodes: healthy,
@@ -45,6 +45,10 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
 		MaxValidators: info.MaxValidators, MaxMissed: info.MaxMissed,
 	}
+	if fibre := cc.fibreReport(time.Now()); fibre != nil {
+		status.Fibre = fibre.dashboard()
+	}
+	return status
 }
 
 func (node *NodeConfig) snapshot() nodeStatus {

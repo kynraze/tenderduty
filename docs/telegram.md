@@ -34,7 +34,7 @@ https://imgur.com/1JHs581
 With `commands: yes` in the telegram settings, tenderduty answers commands sent to the bot in the configured chat:
 
 * `/status` gives a line per chain, problems first: active alerts, jailed, misses in the signing window.
-* `/status <chain>` gives one chain in full: height, misses and how many are left before jailing, voting power and rank, RPC nodes and the active alerts. The chain is its name or chain id.
+* `/status <chain>` gives one chain in full: height, misses and how many are left before jailing, voting power and rank, RPC nodes and the active alerts. The chain is its name or chain id. For a chain with `fibre_enabled` it also shows the Fibre provider, share and storage budget, see [fibre.md](fibre.md#reading-the-fibre-status).
 * `/mentionme` asks to be pinged in every alert sent to this chat, `/mentionme off` stops. It records the telegram user id, so it works without a username and keeps working if you change it. The list is saved with the rest of the state, a restart keeps it.
 
 Commands only read, nothing can be changed from telegram. Only the chat in `channel` is listened to, in a group only the telegram user ids in `admins`. Telegram lets only one program read a bot's messages, so use a bot dedicated to tenderduty.

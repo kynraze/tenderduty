@@ -137,7 +137,12 @@ func (c *Config) statusSummary() string {
 	return strings.Join(lines, "\n")
 }
 
-// statusDetail is everything about one chain.
+// statusField is a labelled line of /status <chain>: an icon, the label in bold, and the value.
+func statusField(icon, label, value string) string {
+	return icon + " <b>" + label + ":</b> " + value
+}
+
+// statusDetail is everything about one chain, in sections: the validator, its Fibre when watched, the active alerts.
 func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	info, _ := cc.validatorState()
 	cc.stateMux.RLock()
@@ -146,29 +151,30 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	dot, label := cc.chainState(name, info)
 	lines := []string{
 		fmt.Sprintf("%s <b>%s</b> · %s", dot, html.EscapeString(name), label),
+		fmt.Sprintf("%s on <code>%s</code>", html.EscapeString(info.Moniker), html.EscapeString(cc.ChainId)),
 		"",
-		fmt.Sprintf("%s on %s", html.EscapeString(info.Moniker), html.EscapeString(cc.ChainId)),
+		"⛓ <b>Validator</b>",
 	}
 	if height > 0 {
-		block := "Height " + thousands(height)
+		block := thousands(height)
 		if !lastBlock.IsZero() {
 			block += " · last block " + shortDuration(now.Sub(lastBlock)) + " ago"
 		}
-		lines = append(lines, block)
+		lines = append(lines, statusField("📦", "Height", block))
 	}
 	if info.Window > 0 {
-		missed := fmt.Sprintf("Missed %s / %s", thousands(info.Missed), thousands(info.Window))
+		missed := fmt.Sprintf("%s / %s", thousands(info.Missed), thousands(info.Window))
 		if info.MaxMissed > 0 {
-			missed += " · " + thousands(info.missesBeforeJail()) + " left before jail"
+			missed += " (" + thousands(info.missesBeforeJail()) + " to jail)"
 		}
-		lines = append(lines, missed)
+		lines = append(lines, statusField("🎯", "Missed", missed))
 	}
 	if info.VotingPower > 0 {
-		power := "Voting power " + thousands(info.VotingPower)
+		power := thousands(info.VotingPower)
 		if info.TotalPower > 0 {
-			power += fmt.Sprintf(" · %.2f%%", 100*float64(info.VotingPower)/float64(info.TotalPower))
+			power += " (" + html.EscapeString(percent(info.VotingPower, info.TotalPower)) + ")"
 		}
-		lines = append(lines, power+fmt.Sprintf(" · rank %d/%d", info.Rank, info.ActiveSet))
+		lines = append(lines, statusField("⚖️", "Voting power", power+fmt.Sprintf(" · #%d/%d", info.Rank, info.ActiveSet)))
 	}
 	healthyNodes := 0
 	for _, node := range cc.Nodes {
@@ -176,7 +182,17 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 			healthyNodes++
 		}
 	}
-	lines = append(lines, fmt.Sprintf("RPC %d/%d healthy", healthyNodes, len(cc.Nodes)))
+	rpc := "🟢"
+	switch {
+	case healthyNodes == 0:
+		rpc = "🔴"
+	case healthyNodes < len(cc.Nodes):
+		rpc = "🟡"
+	}
+	lines = append(lines, statusField("🔌", "RPC", fmt.Sprintf("%s %d/%d healthy", rpc, healthyNodes, len(cc.Nodes))))
+	if fibre := cc.fibreReport(now); fibre != nil {
+		lines = append(append(lines, ""), fibre.telegramLines()...)
+	}
 
 	alarms.notifyMux.RLock()
 	active := make([]string, 0, len(alarms.AllAlarms[name]))
@@ -187,7 +203,7 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	alarms.notifyMux.RUnlock()
 	if len(active) > 0 {
 		sort.Strings(active)
-		lines = append(lines, "", "<b>Active alerts</b>")
+		lines = append(lines, "", "🚨 <b>Active alerts</b>")
 		lines = append(lines, active...)
 	}
 	return strings.Join(lines, "\n")

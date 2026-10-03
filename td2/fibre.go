@@ -8,6 +8,8 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"math"
+	"math/bits"
 	"net"
 	"strings"
 	"syscall"
@@ -74,6 +76,94 @@ func parseFibreProvider(b []byte) (host string, found bool, err error) {
 		return nil
 	})
 	return
+}
+
+// What Fibre assigns, from celestia-app fibre/protocol_params.go DefaultProtocolParams (protocol v0, these are not chain
+// params). The minimum of 148 rows is derived there from MaxValidatorCount 100 and 100 bits of unique decoding security.
+const (
+	fibreOriginalRows = 4096
+	fibreMinRows      = 148
+	// the liveness threshold 1/3, a validator with a third of the stake gets every row
+	fibreLivenessNum = 1
+	fibreLivenessDen = 3
+)
+
+// fibreRows is how many of the 4096 rows Fibre assigns a validator, the way celestia-app's Set.AssignedRows does:
+// ceil(4096 * power * 3 / total), at least 148 and at most 4096. minimum is that the 148 raised it. A validator with no
+// power, or outside the active set, is assigned nothing.
+func fibreRows(power, total int64) (rows int, minimum bool) {
+	if power <= 0 || total <= 0 {
+		return 0, false
+	}
+	// a share over 100% can't be, and would not fit the quotient below
+	power = min(power, total)
+	hi, lo := bits.Mul64(uint64(power), fibreOriginalRows*fibreLivenessDen)
+	quo, rem := bits.Div64(hi, lo, uint64(total)*fibreLivenessNum)
+	if rem != 0 {
+		quo++
+	}
+	rows = int(quo)
+	if rows < fibreMinRows {
+		rows, minimum = fibreMinRows, true
+	}
+	return min(rows, fibreOriginalRows), minimum
+}
+
+// fibreBudget is the most data Fibre keeps for rows of the 4096, fullStake * rows / 4096 as Fibre's deriveBudget works it
+// out. The product can pass 64 bits, so it is done in 128.
+func fibreBudget(fullStake int64, rows int) int64 {
+	if fullStake <= 0 || rows <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(uint64(fullStake), uint64(rows))
+	quo, _ := bits.Div64(hi, lo, fibreOriginalRows)
+	return int64(quo)
+}
+
+// parseFibreFullStake reads QueryParamsResponse{params: {full_stake_storage_budget: 5}}, 0 when it isn't in the bytes.
+func parseFibreFullStake(b []byte) (int64, error) {
+	var stake uint64
+	err := eachField(b, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+		if num != 1 || typ != protowire.BytesType {
+			return nil
+		}
+		return eachField(value, func(num protowire.Number, typ protowire.Type, _ []byte, varint uint64) error {
+			if num == 5 && typ == protowire.VarintType {
+				stake = varint
+			}
+			return nil
+		})
+	})
+	if err == nil && stake > math.MaxInt64 {
+		err = fmt.Errorf("full_stake_storage_budget %d is out of range", stake)
+	}
+	return int64(stake), err
+}
+
+// refreshFibreParams reads the budget Fibre derives from. A failure keeps the last value and is logged once, until a
+// read works again: it says nothing about Fibre itself, so it never touches an alarm.
+func (cc *ChainConfig) refreshFibreParams(ctx context.Context, client *rpchttp.HTTP) {
+	value, err := abciQuery(ctx, client, "/celestia.fibre.v1.Query/Params", nil)
+	var stake int64
+	if err == nil {
+		if stake, err = parseFibreFullStake(value); err == nil && stake <= 0 {
+			err = errors.New("full_stake_storage_budget is not set")
+		}
+	}
+	cc.stateMux.Lock()
+	logged := cc.fibreParamsFailing
+	cc.fibreParamsFailing = err != nil
+	if err == nil {
+		cc.fibreFullStake = stake
+	}
+	cc.stateMux.Unlock()
+	switch {
+	case err == nil || logged:
+	case moduleMissing(err):
+		l(cc.ChainId, "has no x/fibre, not showing the storage budget the chain gives the validator")
+	default:
+		l(cc.ChainId, "could not read the Fibre params, keeping the last storage budget:", err)
+	}
 }
 
 func getFibreProvider(ctx context.Context, client *rpchttp.HTTP, valcons string) (host string, found bool, err error) {
@@ -186,6 +276,7 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 		l(cc.ChainId, "could not read the Fibre provider:", err)
 		return
 	}
+	cc.refreshFibreParams(ctx, client)
 	state := fibreState{}
 	cc.stateMux.RLock()
 	previous := cc.fibre

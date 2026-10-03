@@ -46,9 +46,21 @@ type fibreDelta struct {
 	rejected                                       int64
 	signTotal, signFailed                          int64 // every signature, and the ones that failed
 	signOK, signFast                               int64 // the successful ones, and those at or under 10ms
-	storePut, storeGet, prune                      int64
+	storePut, storeGet, prune                      int64 // the ones that failed
 	backendTotal                                   int64 // every outcome
 	backendTimeout, backendThrottled, backendError int64
+
+	// what the status shows. The seconds are the time the successful operations took, for an average over their count.
+	uploadOK, uploadFailed     int64
+	uploadSec                  float64
+	uploadBytes                int64
+	downloadOK, downloadFailed int64
+	downloadSec                float64
+	downloadBytes              int64
+	putOK, getOK, pruneOK      int64
+	putSec, getSec, pruneSec   float64
+	pruneEntries               int64
+	signSec                    float64 // of the signatures in signOK
 }
 
 func (d *fibreDelta) add(o fibreDelta) {
@@ -64,6 +76,22 @@ func (d *fibreDelta) add(o fibreDelta) {
 	d.backendTimeout += o.backendTimeout
 	d.backendThrottled += o.backendThrottled
 	d.backendError += o.backendError
+	d.uploadOK += o.uploadOK
+	d.uploadFailed += o.uploadFailed
+	d.uploadSec += o.uploadSec
+	d.uploadBytes += o.uploadBytes
+	d.downloadOK += o.downloadOK
+	d.downloadFailed += o.downloadFailed
+	d.downloadSec += o.downloadSec
+	d.downloadBytes += o.downloadBytes
+	d.putOK += o.putOK
+	d.getOK += o.getOK
+	d.pruneOK += o.pruneOK
+	d.putSec += o.putSec
+	d.getSec += o.getSec
+	d.pruneSec += o.pruneSec
+	d.pruneEntries += o.pruneEntries
+	d.signSec += o.signSec
 }
 
 // fibreSpan is the stretch of history a ratio rule is judged on: everything from the last 10 minutes, and if that holds
@@ -113,6 +141,7 @@ func (d fibreDelta) empty() bool {
 type fibreSeries struct {
 	start uint64
 	value uint64
+	sum   float64 // of a histogram, the seconds that went with the count
 }
 
 type fibreSender struct {
@@ -122,12 +151,17 @@ type fibreSender struct {
 	lastReceived  time.Time
 	series        map[string]fibreSeries
 	window        []fibreDelta
+	trimmed       bool // the history was cut at fibreMaxDeltas before it was 24 hours old
 	occupancy     int64
 	budget        int64
 	lastSuccess   int64
+	uploadsNow    int64 // in flight now, the last value exported
+	downloadsNow  int64
 	haveSuccess   bool
 	haveOccupancy bool
 	haveBudget    bool
+	haveUploads   bool
+	haveDownloads bool
 }
 
 // fibreStore holds what Fibre exported, in memory only: the receiver writes and the alarm loop reads.
@@ -169,6 +203,18 @@ type fibreSnapshot struct {
 	Sign         fibreSpan  // every signature
 	SignOK       fibreSpan  // the successful ones
 	Backend      fibreSpan  // every object storage request
+
+	HaveOccupancy, HaveBudget bool // a budget of 0 is the limiter being off, so HaveBudget says it was reported
+	Ten, Day                  fibreSummary
+	UploadsNow, DownloadsNow  int64 // requests being handled at the last export
+	HaveInFlight              bool
+}
+
+// fibreSummary is what Fibre did over a window, and how much of the window this process has seen of it: the history is
+// in memory, so after a restart the day is shorter.
+type fibreSummary struct {
+	Sum    fibreDelta
+	Covers time.Duration
 }
 
 // snapshot is the chain's sender, the one that exported last if several hostnames map to the chain.
@@ -186,7 +232,9 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 	}
 	now := st.now()
 	snap := fibreSnapshot{Found: true, LastReceived: best.lastReceived, Since: best.since, Version: best.version,
-		Occupancy: best.occupancy, Budget: best.budget, HaveStorage: best.haveOccupancy && best.haveBudget, HaveSuccess: best.haveSuccess}
+		Occupancy: best.occupancy, Budget: best.budget, HaveStorage: best.haveOccupancy && best.haveBudget, HaveSuccess: best.haveSuccess,
+		HaveOccupancy: best.haveOccupancy, HaveBudget: best.haveBudget, UploadsNow: best.uploadsNow, DownloadsNow: best.downloadsNow,
+		HaveInFlight: best.haveUploads || best.haveDownloads}
 	if best.haveSuccess {
 		snap.LastSuccess = time.Unix(best.lastSuccess, 0)
 	}
@@ -198,7 +246,17 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 		if age < fibreStorageQuiet {
 			snap.Rejected30 += d.rejected
 		}
+		if age < fibreKeep {
+			snap.Day.Sum.add(d)
+		}
 	}
+	snap.Ten.Sum = snap.Window
+	// a history cut short by the cap starts at its oldest delta
+	seen := best.since
+	if best.trimmed && len(best.window) > 0 && best.window[0].at.After(seen) {
+		seen = best.window[0].at
+	}
+	snap.Ten.Covers, snap.Day.Covers = min(fibreWindow, max(now.Sub(seen), 0)), min(fibreKeep, max(now.Sub(seen), 0))
 	snap.Sign = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.signTotal })
 	snap.SignOK = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.signOK })
 	snap.Backend = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.backendTotal })
@@ -334,20 +392,81 @@ func clampInt64(v uint64) int64 {
 // went down is a Fibre restart, everything counted is new. A series first seen on a sender already known is new too,
 // but on the first export this process ever gets the history isn't news unless Fibre started within the window.
 func (s *fibreSender) step(key string, start, value uint64, cumulative, known bool, now time.Time) int64 {
+	n, _ := s.advance(key, start, value, 0, cumulative, known, now)
+	return n
+}
+
+// advance is step for a histogram series: the seconds it took are worked out the same way as its count, so a restart
+// that resets one resets the other.
+func (s *fibreSender) advance(key string, start, value uint64, sum float64, cumulative, known bool, now time.Time) (int64, float64) {
+	if math.IsNaN(sum) || sum < 0 {
+		sum = 0
+	}
 	if !cumulative {
-		return clampInt64(value)
+		return clampInt64(value), sum
 	}
 	prev, seen := s.series[key]
-	s.series[key] = fibreSeries{start, value}
+	s.series[key] = fibreSeries{start, value, sum}
 	switch {
 	case seen && prev.start == start && value >= prev.value:
-		return clampInt64(value - prev.value)
+		return clampInt64(value - prev.value), math.Max(sum-prev.sum, 0)
 	case seen, known:
-		return clampInt64(value)
+		return clampInt64(value), sum
 	case start != 0 && now.Sub(time.Unix(0, clampInt64(start))) <= fibreWindow:
-		return clampInt64(value)
+		return clampInt64(value), sum
 	}
-	return 0
+	return 0, 0
+}
+
+// fibreCounter is what a counter grew by, summed over its series.
+func (s *fibreSender) counter(name string, m *metricsv1.Metric, known bool, now time.Time) int64 {
+	sum := m.GetSum()
+	var n int64
+	for _, dp := range sum.GetDataPoints() {
+		n += s.step(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), fibreCount(dp), temporalityCumulative(sum.GetAggregationTemporality()), known, now)
+	}
+	return n
+}
+
+// fibreDurations is what a duration histogram grew by, split on its success attribute. The attributes besides it (the
+// upload size) make a series each, they are all summed. A series without it, the SDK's overflow one, can't be told.
+type fibreDurations struct {
+	ok, failed int64
+	okSec      float64
+}
+
+func (s *fibreSender) durations(name string, m *metricsv1.Metric, known bool, now time.Time) fibreDurations {
+	hist := m.GetHistogram()
+	cumulative := temporalityCumulative(hist.GetAggregationTemporality())
+	var out fibreDurations
+	for _, dp := range hist.GetDataPoints() {
+		success, ok := fibreAttr(dp.GetAttributes(), "success")
+		if !ok {
+			continue
+		}
+		n, sec := s.advance(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), dp.GetCount(), dp.GetSum(), cumulative, known, now)
+		if success == "false" {
+			out.failed += n
+		} else {
+			out.ok += n
+			out.okSec += sec
+		}
+	}
+	return out
+}
+
+// inFlight is the current value of an up-down counter: its cumulative sum is the number now, not growth. A sender that
+// reports changes instead is added up.
+func (s *fibreSender) inFlight(m *metricsv1.Metric, current int64) int64 {
+	sum := m.GetSum()
+	var total int64
+	for _, dp := range sum.GetDataPoints() {
+		total += int64(math.Round(fibreNumber(dp)))
+	}
+	if !temporalityCumulative(sum.GetAggregationTemporality()) {
+		total += current
+	}
+	return max(total, 0)
 }
 
 func temporalityCumulative(t metricsv1.AggregationTemporality) bool {
@@ -389,10 +508,31 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 				s.lastSuccess, s.haveSuccess = v, true
 			}
 		case "upload_shard.rejected":
-			sum := m.GetSum()
-			for _, dp := range sum.GetDataPoints() {
-				d.rejected += s.step(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), fibreCount(dp), temporalityCumulative(sum.GetAggregationTemporality()), known, now)
+			d.rejected += s.counter(name, m, known, now)
+		case "upload_shard.bytes":
+			d.uploadBytes += s.counter(name, m, known, now)
+		case "download_shard.bytes":
+			d.downloadBytes += s.counter(name, m, known, now)
+		case "prune.entries":
+			d.pruneEntries += s.counter(name, m, known, now)
+		case "upload_shard.in_flight":
+			if len(m.GetSum().GetDataPoints()) > 0 {
+				s.uploadsNow, s.haveUploads = s.inFlight(m, s.uploadsNow), true
 			}
+		case "download_shard.in_flight":
+			if len(m.GetSum().GetDataPoints()) > 0 {
+				s.downloadsNow, s.haveDownloads = s.inFlight(m, s.downloadsNow), true
+			}
+		case "upload_shard.duration":
+			u := s.durations(name, m, known, now)
+			d.uploadOK += u.ok
+			d.uploadFailed += u.failed
+			d.uploadSec += u.okSec
+		case "download_shard.duration":
+			u := s.durations(name, m, known, now)
+			d.downloadOK += u.ok
+			d.downloadFailed += u.failed
+			d.downloadSec += u.okSec
 		case "sign.duration":
 			hist := m.GetHistogram()
 			for _, dp := range hist.GetDataPoints() {
@@ -409,27 +549,27 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 				if !ok {
 					continue
 				}
-				n := s.step(key+"#total", dp.GetStartTimeUnixNano(), dp.GetCount(), cumulative, known, now)
+				n, sec := s.advance(key+"#total", dp.GetStartTimeUnixNano(), dp.GetCount(), dp.GetSum(), cumulative, known, now)
 				d.signTotal += n
 				d.signOK += n
+				d.signSec += sec
 				d.signFast += s.step(key+"#fast", dp.GetStartTimeUnixNano(), fast, cumulative, known, now)
 			}
-		case "store.put.duration", "store.get.duration", "prune.duration":
-			hist := m.GetHistogram()
-			for _, dp := range hist.GetDataPoints() {
-				if success, ok := fibreAttr(dp.GetAttributes(), "success"); !ok || success != "false" {
-					continue
-				}
-				n := s.step(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), dp.GetCount(), temporalityCumulative(hist.GetAggregationTemporality()), known, now)
-				switch name {
-				case "store.put.duration":
-					d.storePut += n
-				case "store.get.duration":
-					d.storeGet += n
-				default:
-					d.prune += n
-				}
-			}
+		case "store.put.duration":
+			u := s.durations(name, m, known, now)
+			d.storePut += u.failed
+			d.putOK += u.ok
+			d.putSec += u.okSec
+		case "store.get.duration":
+			u := s.durations(name, m, known, now)
+			d.storeGet += u.failed
+			d.getOK += u.ok
+			d.getSec += u.okSec
+		case "prune.duration":
+			u := s.durations(name, m, known, now)
+			d.prune += u.failed
+			d.pruneOK += u.ok
+			d.pruneSec += u.okSec
 		case "backend.get.duration":
 			hist := m.GetHistogram()
 			for _, dp := range hist.GetDataPoints() {
@@ -459,6 +599,7 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 	}
 	if over := len(s.window) - fibreMaxDeltas; over > 0 {
 		s.window = s.window[:copy(s.window, s.window[over:])]
+		s.trimmed = true
 	}
 }
 

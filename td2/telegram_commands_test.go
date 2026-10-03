@@ -44,11 +44,14 @@ func TestStatusCommand(t *testing.T) {
 		t.Fatalf("summary %q", summary)
 	}
 	detail := c.telegramCommand("status", "atomone-1", time.Now(), tgMention{})
-	for _, want := range []string{"🔴 <b>AtomOne</b> · 1 active alert", "Height 10,622,456 · last block 4s ago", "Missed 12 / 10,000 · 4,988 left before jail", "rank 72/100", "RPC 1/1 healthy", "• RPC node http://b has been down"} {
+	for _, want := range []string{"🔴 <b>AtomOne</b> · 1 active alert", "⛓ <b>Validator</b>", "📦 <b>Height:</b> 10,622,456 · last block 4s ago",
+		"🎯 <b>Missed:</b> 12 / 10,000 (4,988 to jail)", "#72/100", "🔌 <b>RPC:</b> 🟢 1/1 healthy", "🚨 <b>Active alerts</b>",
+		"• RPC node http://b has been down"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail is missing %q:\n%s", want, detail)
 		}
 	}
+	telegramHTML(t, detail)
 	if reply := c.telegramCommand("status", "nope", time.Now(), tgMention{}); !strings.Contains(reply, "No chain named nope") {
 		t.Fatalf("unknown chain %q", reply)
 	}
