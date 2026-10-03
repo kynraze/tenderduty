@@ -134,6 +134,14 @@ alert_defaults:
   upgrade_remind_minutes: 60
   upgrade_priority: warning
 
+  # Celestia's x/signal: a message once signal_percent of the voting power signalled the next version, one while this
+  # validator has not, one when the upgrade threshold is reached, and one with the height once it is scheduled.
+  # Chains without x/signal are logged once and left alone, so it is safe to turn on here for every chain.
+  signal_enabled: no
+  signal_percent: 10
+  signal_remind_minutes: 60
+  signal_priority: warning
+
   # Should an alert be sent if the validator is not in the active set ie, jailed,
   # tombstoned, unbonding?
   alert_if_inactive: yes

@@ -133,6 +133,9 @@ type ChainConfig struct {
 	publicNode          string       // the public fallback node that worked last
 	upgrade             *upgradePlan // the scheduled upgrade, nil when there is none
 	upgradeLoaded       bool
+	signal              signalState // x/signal's tally for the next app version
+	signalLoaded        bool
+	signalUnsupported   bool // the chain has no x/signal, it isn't asked again
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -216,6 +219,15 @@ type AlertConfig struct {
 	UpgradePriority string `yaml:"upgrade_priority"`
 	// UpgradeAlerts is whether to alert on upgrades scheduled in x/upgrade
 	UpgradeAlerts bool `yaml:"upgrade_enabled"`
+
+	// SignalPercent is how much of the voting power must have signalled before alerting, the threshold is separate
+	SignalPercent int `yaml:"signal_percent"`
+	// SignalRemindMinutes is how long before a signalled upgrade's estimated time to remind
+	SignalRemindMinutes int `yaml:"signal_remind_minutes"`
+	// SignalPriority is a tag for pagerduty to route signalling and unsignalled alerts on priority, the rest are critical
+	SignalPriority string `yaml:"signal_priority"`
+	// SignalAlerts is whether to alert on version signalling in Celestia's x/signal
+	SignalAlerts bool `yaml:"signal_enabled"`
 
 	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
@@ -454,6 +466,20 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.UpgradeRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s upgrade_remind_minutes can't be negative, using 60", k))
 		}
+		if v.Alerts.SignalAlerts && v.Alerts.SignalPercent == 0 {
+			v.Alerts.SignalPercent = 10
+		}
+		if v.Alerts.SignalAlerts && (v.Alerts.SignalPercent < 0 || v.Alerts.SignalPercent > 100) {
+			v.Alerts.SignalPercent = 10
+			problems = append(problems, fmt.Sprintf("warning: %s signal_percent is not between 0 and 100, using 10", k))
+		}
+		if v.Alerts.SignalAlerts && v.Alerts.SignalRemindMinutes == 0 {
+			v.Alerts.SignalRemindMinutes = 60
+		}
+		if v.Alerts.SignalAlerts && v.Alerts.SignalRemindMinutes < 0 {
+			v.Alerts.SignalRemindMinutes = 60
+			problems = append(problems, fmt.Sprintf("warning: %s signal_remind_minutes can't be negative, using 60", k))
+		}
 		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes == 0 {
 			v.Alerts.GovRemindMinutes = 60
 		}
@@ -566,6 +592,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.UpgradePriority == "" {
 			v.Alerts.UpgradePriority = "warning"
 		}
+		if v.Alerts.SignalPriority == "" {
+			v.Alerts.SignalPriority = "warning"
+		}
 		if v.Alerts.GovPriority == "" {
 			v.Alerts.GovPriority = "info"
 		}
@@ -585,7 +614,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if on(v.Alerts.Telegram.Enabled) && !on(c.Telegram.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.SignalAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !pdOn && !discOn && !tgOn && !slackOn {

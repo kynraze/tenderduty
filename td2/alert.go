@@ -57,7 +57,7 @@ func (msg *alertMsg) summary() string {
 	if (strings.HasPrefix(msg.message, "Proposal #") || strings.Contains(msg.message, "\nCan unjail after ")) && !msg.resolved {
 		return govTimeLeft(msg.message)
 	}
-	if strings.HasPrefix(msg.message, "Upgrade ") && !msg.resolved {
+	if (strings.HasPrefix(msg.message, "Upgrade ") || isSignalUpgrade(msg.message)) && !msg.resolved {
 		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
 			return msg.message + "\n" + line
 		}
@@ -106,6 +106,9 @@ func (msg *alertMsg) header() (icon, state string) {
 			return "✅", "Unjailed"
 		}
 		return "🔓", "Can unjail"
+	}
+	if isSignalMessage(msg.message) {
+		return signalLabel(msg)
 	}
 	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
 		if msg.resolved {
@@ -984,6 +987,9 @@ func (cc *ChainConfig) watch() {
 		if cc.Alerts.UpgradeAlerts && valInfo.Valcons != "" {
 			cc.upgradeAlarms(valInfo, reconcile)
 		}
+		if cc.Alerts.SignalAlerts && valInfo.Valcons != "" {
+			cc.signalAlarms(valInfo, reconcile)
+		}
 
 		// node down alarms
 		for _, node := range cc.Nodes {
@@ -1166,6 +1172,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 				continue
 			}
 			id = upgradeAlarmId(valInfo, message)
+		case isSignalMessage(message):
+			if cc.Alerts.SignalAlerts {
+				continue
+			}
+			id = signalAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " of the misses allowed before jailing on "):
