@@ -87,6 +87,18 @@ healthcheck:
   # Rate in which pings are sent in seconds.
   ping_rate: 60
 
+# Celestia Fibre metrics: tenderduty receives the OTLP/HTTP metrics a Fibre server exports and alerts on them, see
+# docs/fibre.md. Point Fibre at it with: fibre start --otel-endpoint http://127.0.0.1:4318
+# fibre_metrics:
+#   # host:port, empty is off. 4318 is the standard OTLP/HTTP port, use another if a collector already has it.
+#   listen: 127.0.0.1:4318
+#   # Fibre has to send "Authorization: Bearer <token>". Required unless listen is a loopback address: a sender
+#   # that isn't Fibre could report healthy numbers and hide a Fibre that is down.
+#   token: ""
+#   # HTTPS, set both or neither.
+#   tls_cert: ""
+#   tls_key: ""
+
 # Which alerts to send. These apply to every chain unless a chain's own file overrides them.
 alert_defaults:
   # If the chain stops seeing new blocks, should an alert be sent?
@@ -145,9 +157,21 @@ alert_defaults:
   # Celestia Fibre, checked from outside: a message while this validator is not registered as a Fibre provider, while
   # its Fibre host is unreachable for node_down_alert_minutes, and while the host's certificate is not signed by this
   # validator's consensus key. Chains without x/valaddr are logged once and left alone.
+  # With fibre_metrics above also on, it alerts on what Fibre reports: no metrics, signatures that failed or are slow,
+  # storage and object storage errors. All of these are things the operator can fix. Run tenderduty on a different
+  # machine from Fibre, see docs/fibre.md.
   fibre_enabled: no
   # Quiet hours hold warnings back by default, use critical to hear about a dead Fibre at night.
   fibre_priority: warning
+  # The hostname Fibre reports as service.instance.id, only needed when several chains have fibre_enabled. Set it
+  # in each chain's own file, not here.
+  # fibre_instance: fibre-host-1
+  # Alert when Fibre's storage is at this percent of its budget or more, or an upload was turned away. 1 to 100, 0 is
+  # off. Off by default: the chain sets the budget from your stake and the whole network fills together, so there is
+  # nothing to fix on your side. It clears 15 points lower, after 30 minutes without a rejected upload.
+  # fibre_storage_percent: 90
+  # Alert when Fibre has stored no upload for this many minutes, 0 is off. Only useful if uploads are steady.
+  # fibre_idle_minutes: 0
 
   # Should an alert be sent if the validator is not in the active set ie, jailed,
   # tombstoned, unbonding?

@@ -25,6 +25,7 @@ $ mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-c
 * [Slack Settings](#slack-settings)
 * [Quiet Hours](#quiet-hours)
 * [Health Check Settings](#health-check-settings)
+* [Fibre Metrics](#fibre-metrics)
 * [Settings for a chain](chains.md)
 
 A few notes on how Go handles YAML:
@@ -150,3 +151,16 @@ Worth knowing: `percentage_priority` is `warning` by default, so with `percentag
 | `healthcheck.enabled`   | Send pings to determine if the monitor is running?                                  |
 | `healthcheck.ping_url`  | URL to send pings to.                                                               |
 | `healthcheck.ping_rate` | Rate in which pings are sent in seconds.                                            |
+
+## Fibre Metrics
+
+Receives the OTLP/HTTP metrics a Celestia Fibre server exports, for the alerts that need them. Off unless `listen` is set. How to point Fibre at it, and what it alerts on, is in [fibre.md](fibre.md).
+
+| Config Setting          | Description                                                                         |
+|-------------------------|-------------------------------------------------------------------------------------|
+| `fibre_metrics.listen`  | `host:port` to listen on, empty is off. `127.0.0.1:4318` takes metrics from Fibre on the same machine. |
+| `fibre_metrics.token`   | When set, the sender must send `Authorization: Bearer <token>`. Required unless `listen` is a loopback address (`127.0.0.0/8`, `::1`, `localhost`): a sender that isn't Fibre could report healthy numbers and hide a Fibre that is down, so tenderduty refuses to start without one. |
+| `fibre_metrics.tls_cert`| Certificate file, serves HTTPS with `tls_key`. Both or neither.                      |
+| `fibre_metrics.tls_key` | Private key file for `tls_cert`.                                                    |
+
+The alerts themselves are settings of a chain, see `fibre_enabled`, `fibre_instance`, `fibre_storage_percent` and `fibre_idle_minutes` in [chains.md](chains.md).

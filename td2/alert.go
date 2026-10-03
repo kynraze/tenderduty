@@ -75,6 +75,11 @@ func (msg *alertMsg) summary() string {
 			return msg.message + "\n" + line
 		}
 	}
+	if isFibreMetricsMessage(msg.message) && !msg.resolved {
+		if line := fibreMetricsDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
 	return msg.message
 }
 
@@ -130,6 +135,9 @@ func (msg *alertMsg) header() (icon, state string) {
 	}
 	if isFibreMessage(msg.message) {
 		return fibreLabel(msg)
+	}
+	if isFibreMetricsMessage(msg.message) {
+		return fibreMetricsLabel(msg)
 	}
 	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
 		if msg.resolved {
@@ -1018,6 +1026,9 @@ func (cc *ChainConfig) watch() {
 		if cc.Alerts.FibreAlerts && valInfo.Valcons != "" {
 			cc.fibreAlarms(valInfo, reconcile)
 		}
+		if cc.Alerts.FibreAlerts && valInfo.Valcons != "" && td.FibreMetrics.Listen != "" {
+			cc.fibreMetricsAlarms(valInfo, reconcile)
+		}
 
 		// node down alarms
 		for _, node := range cc.Nodes {
@@ -1159,6 +1170,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			expected[nodeDownMessage(node.Url, cc.ChainId)] = true
 		}
 	}
+	if cc.Alerts.FibreAlerts && td.FibreMetrics.Listen != "" {
+		for _, kind := range cc.fibreMetricsKindsOn() {
+			expected[cc.fibreMetricsMessage(kind)] = true
+		}
+	}
 
 	alarms.notifyMux.RLock()
 	restored := make([]string, 0, len(alarms.AllAlarms[cc.name]))
@@ -1210,6 +1226,9 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 				continue
 			}
 			id = fibreAlarmId(valInfo, message)
+		case isFibreMetricsMessage(message):
+			// one the current settings still expect was skipped above, this is off or its threshold changed
+			id = fibreMetricsAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " of the misses allowed before jailing on "):

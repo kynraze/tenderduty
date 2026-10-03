@@ -40,7 +40,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
-	failures := make(chan error, 2)
+	failures := make(chan error, 3)
 	td.startWorker(func() {
 		select {
 		case <-ctx.Done():
@@ -97,6 +97,14 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 				case <-td.ctx.Done():
 					return
 				}
+			}
+		})
+	}
+	if td.FibreMetrics.Listen != "" {
+		td.fibreData() // silence is counted from here
+		td.startWorker(func() {
+			if err := td.serveFibreMetrics(td.ctx); err != nil {
+				failures <- err
 			}
 		})
 	}

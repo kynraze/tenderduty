@@ -78,6 +78,11 @@ type Config struct {
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
+	// FibreMetrics is the receiver for the OTLP metrics a Celestia Fibre server exports
+	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
+
+	fibreOnce  sync.Once
+	fibreStore *fibreStore // what Fibre exported, memory only
 
 	chainsMux sync.RWMutex // prevents concurrent map access for Chains
 	// configWarnings is what loading found before the config could be validated
@@ -235,6 +240,13 @@ type AlertConfig struct {
 	FibrePriority string `yaml:"fibre_priority"`
 	// FibreAlerts is whether to alert on the validator's Celestia Fibre provider registration and host
 	FibreAlerts bool `yaml:"fibre_enabled"`
+	// FibreInstance is the hostname Fibre reports as service.instance.id, it picks this chain's metrics when several
+	// chains have Fibre alerts
+	FibreInstance string `yaml:"fibre_instance"`
+	// FibreStoragePercent is how much of Fibre's storage budget can be used before alerting, 0 is off
+	FibreStoragePercent int `yaml:"fibre_storage_percent"`
+	// FibreIdleMinutes alerts when Fibre has stored no upload for this long, 0 is off
+	FibreIdleMinutes int `yaml:"fibre_idle_minutes"`
 
 	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
@@ -274,6 +286,17 @@ type AlertConfig struct {
 	Telegram TeleConfig `yaml:"telegram"`
 	// Slack webhook information
 	Slack SlackConfig `yaml:"slack"`
+}
+
+// FibreMetricsConfig is where tenderduty listens for the OTLP/HTTP metrics Fibre exports.
+type FibreMetricsConfig struct {
+	// Listen is host:port, empty is off
+	Listen string `yaml:"listen"`
+	// Token, when set, has to be sent as Authorization: Bearer <token>
+	Token string `yaml:"token"`
+	// TLSCert and TLSKey serve HTTPS, both or neither
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
 }
 
 // NodeConfig holds the basic information for a node to connect to.
@@ -374,6 +397,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		fatal = true
 		problems = append(problems, "error: The prometheus listen port is invalid")
 	}
+	fibreFatal, fibreProblems := validateFibreMetrics(c)
+	fatal = fatal || fibreFatal
+	problems = append(problems, fibreProblems...)
 	if err := c.QuietHours.parse(); err != nil {
 		c.QuietHours.Enabled = false
 		problems = append(problems, "warning: "+err.Error()+", quiet hours are off")
@@ -486,6 +512,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.SignalAlerts && v.Alerts.SignalRemindMinutes < 0 {
 			v.Alerts.SignalRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s signal_remind_minutes can't be negative, using 60", k))
+		}
+		if v.Alerts.FibreAlerts && (v.Alerts.FibreStoragePercent < 0 || v.Alerts.FibreStoragePercent > 100) {
+			v.Alerts.FibreStoragePercent = 0
+			problems = append(problems, fmt.Sprintf("warning: %s fibre_storage_percent is not between 0 and 100, the storage full alert is off", k))
+		}
+		if v.Alerts.FibreAlerts && v.Alerts.FibreIdleMinutes < 0 {
+			v.Alerts.FibreIdleMinutes = 0
+			problems = append(problems, fmt.Sprintf("warning: %s fibre_idle_minutes can't be negative, using 0", k))
 		}
 		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes == 0 {
 			v.Alerts.GovRemindMinutes = 60
