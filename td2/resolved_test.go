@@ -136,3 +136,21 @@ func TestOrphanedAlarmIsNotCalledFixed(t *testing.T) {
 		t.Fatalf("orphan resolution %+v", r)
 	}
 }
+
+// what cleared goes out before what is new: "registered" reads before the problem found on the new host
+func TestFibreSendsWhatClearedFirst(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Mocha", ChainId: "mocha-5", fibreLoaded: true,
+		fibre: fibreState{Registered: true, Host: "1.2.3.4:7980", Reachable: true, KeyKnown: true, IdentityError: "x"}}
+	cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+	c.Chains["Mocha"] = cc
+	alarms.AllAlarms["Mocha"] = map[string]time.Time{fibreNotRegisteredMessage("mocha-5"): time.Now()}
+	cc.fibreAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	first, second := <-c.alertChan, <-c.alertChan
+	if !first.resolved || second.resolved {
+		t.Fatalf("sent %q (resolved %v) before %q (resolved %v)", first.message, first.resolved, second.message, second.resolved)
+	}
+	if got := first.summary(); got != "Kynraze is a registered Fibre provider on mocha-5 at 1.2.3.4:7980" {
+		t.Errorf("registered reads %q", got)
+	}
+}

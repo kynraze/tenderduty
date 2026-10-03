@@ -136,6 +136,9 @@ type ChainConfig struct {
 	signal              signalState // x/signal's tally for the next app version
 	signalLoaded        bool
 	signalUnsupported   bool // the chain has no x/signal, it isn't asked again
+	fibre               fibreState
+	fibreLoaded         bool
+	fibreUnsupported    bool // the chain has no x/valaddr, it isn't asked again
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -228,6 +231,10 @@ type AlertConfig struct {
 	SignalPriority string `yaml:"signal_priority"`
 	// SignalAlerts is whether to alert on version signalling in Celestia's x/signal
 	SignalAlerts bool `yaml:"signal_enabled"`
+	// FibrePriority is a tag for pagerduty to route the Fibre provider alerts on priority
+	FibrePriority string `yaml:"fibre_priority"`
+	// FibreAlerts is whether to alert on the validator's Celestia Fibre provider registration and host
+	FibreAlerts bool `yaml:"fibre_enabled"`
 
 	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
@@ -595,6 +602,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.SignalPriority == "" {
 			v.Alerts.SignalPriority = "warning"
 		}
+		if v.Alerts.FibrePriority == "" {
+			v.Alerts.FibrePriority = "warning"
+		}
 		if v.Alerts.GovPriority == "" {
 			v.Alerts.GovPriority = "info"
 		}
@@ -614,7 +624,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if on(v.Alerts.Telegram.Enabled) && !on(c.Telegram.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.SignalAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.SignalAlerts && !v.Alerts.FibreAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !pdOn && !discOn && !tgOn && !slackOn {

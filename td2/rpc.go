@@ -174,7 +174,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 			if err != nil {
 				l("❓ refreshing signing info for", cc.ValAddress, err)
 			}
-			if client := cc.clientSnapshot(); client != nil && (cc.Alerts.GovAlerts || cc.Alerts.UpgradeAlerts || cc.Alerts.SignalAlerts) {
+			if client := cc.clientSnapshot(); client != nil && (cc.Alerts.GovAlerts || cc.Alerts.UpgradeAlerts || cc.Alerts.SignalAlerts || cc.Alerts.FibreAlerts) {
 				ctx, cancel := context.WithTimeout(td.context(), 30*time.Second)
 				cc.refreshProposals(ctx, client)
 				if cc.Alerts.UpgradeAlerts {
@@ -182,6 +182,9 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 				}
 				if cc.Alerts.SignalAlerts {
 					cc.refreshSignal(ctx, client)
+				}
+				if cc.Alerts.FibreAlerts {
+					cc.refreshFibre(ctx, client)
 				}
 				cancel()
 			}

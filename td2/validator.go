@@ -30,7 +30,8 @@ type ValInfo struct {
 	JailedUntil      time.Time `json:"jailed_until"` // when a jailed validator can unjail, from the signing info
 	Missed           int64     `json:"missed"`
 	Window           int64     `json:"window"`
-	Conspub          []byte    `json:"conspub"`
+	Conspub          []byte    `json:"conspub"`           // the 20-byte consensus address, not the key
+	ConsKey          []byte    `json:"conskey,omitempty"` // the raw ed25519 consensus public key, nil for other key types
 	Valcons          string    `json:"valcons"`
 	SigningUpdatedAt time.Time `json:"signing_updated_at"`
 	SigningStale     bool      `json:"signing_stale"`
@@ -80,7 +81,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
 	// it's easier to ask people to provide valoper since it's readily available on
 	// explorers, so make it easy and lookup the consensus key for them.
-	info.Conspub, info.Moniker, info.Jailed, info.Bonded, err = getVal(ctx, client, cc.ValAddress)
+	info.Conspub, info.ConsKey, info.Moniker, info.Jailed, info.Bonded, err = getVal(ctx, client, cc.ValAddress)
 	if err != nil {
 		return
 	}
@@ -209,16 +210,16 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	return
 }
 
-// getVal returns the public key, moniker, and if the validator is jailed.
-func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []byte, moniker string, jailed, bonded bool, err error) {
+// getVal returns the consensus address, the ed25519 public key when there is one, the moniker, and if the validator is jailed.
+func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
 	if strings.Contains(valoper, "valcons") {
 		_, bz, err := bech32.DecodeAndConvert(valoper)
 		if err != nil {
-			return nil, "", false, false, errors.New("could not decode and convert your address" + valoper)
+			return nil, nil, "", false, false, errors.New("could not decode and convert your address" + valoper)
 		}
 
 		hexAddress := fmt.Sprintf("%X", bz)
-		return ToBytes(hexAddress), valoper, false, true, nil
+		return ToBytes(hexAddress), nil, valoper, false, true, nil
 	}
 
 	q := staking.QueryValidatorRequest{
@@ -233,7 +234,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 		return
 	}
 	if resp == nil || resp.Response.Code != 0 || len(resp.Response.Value) == 0 {
-		return nil, "", false, false, errors.New("could not find validator " + valoper)
+		return nil, nil, "", false, false, errors.New("could not find validator " + valoper)
 	}
 	val := &staking.QueryValidatorResponse{}
 	err = val.Unmarshal(resp.Response.Value)
@@ -241,7 +242,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 		return
 	}
 	if val.Validator.ConsensusPubkey == nil {
-		return nil, "", false, false, errors.New("got invalid consensus pubkey for " + valoper)
+		return nil, nil, "", false, false, errors.New("got invalid consensus pubkey for " + valoper)
 	}
 
 	pubBytes := make([]byte, 0)
@@ -252,7 +253,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 		if err != nil {
 			return
 		}
-		pubBytes = pk.Address().Bytes()
+		pubBytes, consKey = pk.Address().Bytes(), pk.Bytes()
 	case "/cosmos.crypto.secp256k1.PubKey":
 		pk := secp256k1.PubKey{}
 		err = pk.Unmarshal(val.Validator.ConsensusPubkey.Value)
@@ -262,10 +263,10 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 		pubBytes = pk.Address().Bytes()
 	}
 	if len(pubBytes) == 0 {
-		return nil, "", false, false, errors.New("could not get pubkey for" + valoper)
+		return nil, nil, "", false, false, errors.New("could not get pubkey for" + valoper)
 	}
 
-	return pubBytes, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
+	return pubBytes, consKey, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
 }
 
 // maxMissed is how many blocks can be missed in the window before jailing, same rounding as the slashing module.

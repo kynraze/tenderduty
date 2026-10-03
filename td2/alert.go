@@ -70,6 +70,11 @@ func (msg *alertMsg) summary() string {
 			return msg.message + "\n" + line
 		}
 	}
+	if isFibreMessage(msg.message) && !msg.resolved {
+		if line := fibreDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
 	return msg.message
 }
 
@@ -122,6 +127,9 @@ func (msg *alertMsg) header() (icon, state string) {
 	}
 	if isSignalMessage(msg.message) {
 		return signalLabel(msg)
+	}
+	if isFibreMessage(msg.message) {
+		return fibreLabel(msg)
 	}
 	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
 		if msg.resolved {
@@ -1007,6 +1015,9 @@ func (cc *ChainConfig) watch() {
 		if cc.Alerts.SignalAlerts && valInfo.Valcons != "" {
 			cc.signalAlarms(valInfo, reconcile)
 		}
+		if cc.Alerts.FibreAlerts && valInfo.Valcons != "" {
+			cc.fibreAlarms(valInfo, reconcile)
+		}
 
 		// node down alarms
 		for _, node := range cc.Nodes {
@@ -1194,6 +1205,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 				continue
 			}
 			id = signalAlarmId(valInfo, message)
+		case isFibreMessage(message):
+			if cc.Alerts.FibreAlerts {
+				continue
+			}
+			id = fibreAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"
 		case strings.Contains(message, " of the misses allowed before jailing on "):

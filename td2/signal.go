@@ -116,6 +116,12 @@ func abciQuery(ctx context.Context, client *rpchttp.HTTP, path string, data []by
 	return resp.Response.Value, nil
 }
 
+// moduleMissing is a query the chain has no module for. The sdk's query router answers 6, unknown request.
+func moduleMissing(err error) bool {
+	var answer *abciError
+	return errors.As(err, &answer) && answer.codespace == "sdk" && answer.code == 6
+}
+
 // getSignalState reads the tally, the scheduled upgrade, and what the validator with this operator address signalled.
 func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (*signalState, error) {
 	info, err := client.ABCIInfo(ctx)
@@ -125,9 +131,7 @@ func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (
 	state := &signalState{Version: info.Response.AppVersion + 1}
 
 	value, err := abciQuery(ctx, client, "/celestia.signal.v1.Query/VersionTally", protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), state.Version))
-	// the sdk's query router answers 6, unknown request, for a module the chain doesn't have
-	var answer *abciError
-	if errors.As(err, &answer) && answer.codespace == "sdk" && answer.code == 6 {
+	if moduleMissing(err) {
 		return nil, errNoSignal
 	}
 	if err != nil {

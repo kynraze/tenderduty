@@ -142,6 +142,13 @@ alert_defaults:
   signal_remind_minutes: 60
   signal_priority: warning
 
+  # Celestia Fibre, checked from outside: a message while this validator is not registered as a Fibre provider, while
+  # its Fibre host is unreachable for node_down_alert_minutes, and while the host's certificate is not signed by this
+  # validator's consensus key. Chains without x/valaddr are logged once and left alone.
+  fibre_enabled: no
+  # Quiet hours hold warnings back by default, use critical to hear about a dead Fibre at night.
+  fibre_priority: warning
+
   # Should an alert be sent if the validator is not in the active set ie, jailed,
   # tombstoned, unbonding?
   alert_if_inactive: yes
