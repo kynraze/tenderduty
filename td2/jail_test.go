@@ -12,7 +12,7 @@ func TestJailMessages(t *testing.T) {
 	if icon, label := jailed.header(); icon != "🚨" || label != "Jailed" {
 		t.Fatalf("jailed header %s %s", icon, label)
 	}
-	if got := buildTelegramMessage(jailed); !strings.Contains(got, "Validator is jailed on atomone-1\nCan unjail after ") || !strings.Contains(got, " · <b>9m left</b>") {
+	if got := buildTelegramMessage(jailed); !strings.Contains(got, "🔒 <b>Status:</b> 🔴 jailed\n🔓 <b>Unjail after:</b> ") || !strings.Contains(got, " · <b>9m left</b>") {
 		t.Fatalf("jailed message %q", got)
 	}
 	jailed.resolved = true

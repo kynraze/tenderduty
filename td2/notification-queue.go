@@ -26,7 +26,7 @@ func (a *alarmCache) enqueue(msg *alertMsg) {
 		if !enabled {
 			continue
 		}
-		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId}, Resolved: msg.resolved}
+		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved}
 		var last *queuedNotification
 		for i := range a.Outbox {
 			if a.Outbox[i].workerKey() == item.workerKey() {
@@ -82,6 +82,7 @@ func (c *Config) restoreRecoveries() {
 		if msg == nil {
 			continue
 		}
+		msg.lasted, msg.quiet = recovery.Lasted, recovery.Quiet
 		alarms.notifyMux.Lock()
 		for _, item := range alarms.Outbox {
 			if item.Chain != recovery.Chain || item.Message != recovery.Message {
@@ -195,6 +196,8 @@ func (c *Config) deliverQueue(key string) {
 		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
 		if msg == nil {
 			skip = true
+		} else {
+			msg.lasted, msg.quiet = item.Lasted, item.Quiet && item.Resolved
 		}
 		var err error
 		if !skip {

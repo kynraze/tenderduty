@@ -30,7 +30,7 @@ func TestUpgradeMessages(t *testing.T) {
 		t.Fatalf("scheduled header %s %s", icon, label)
 	}
 	got := buildTelegramMessage(scheduled)
-	if !strings.Contains(got, "<b>v4.0.0</b> at height 12,345,678\nAround ") || !strings.Contains(got, " · <b>2d 4h left</b>") {
+	if !strings.Contains(got, "<b>v4.0.0</b>\n📏 <b>Height:</b> 12,345,678\n🕒 <b>Expected:</b> ") || !strings.Contains(got, " · <b>2d 4h left</b>") {
 		t.Fatalf("scheduled message %q", got)
 	}
 	soon := &alertMsg{chain: "AtomOne", severity: "critical", message: upgradeSoonMessage(plan)}

@@ -34,6 +34,10 @@ type alertMsg struct {
 	extra    string
 	uniqueId string
 	key      string
+	// lasted is how long a resolved alarm was active, worked out when it cleared. Zero when that isn't known.
+	lasted time.Duration
+	// quiet is a recovery another one of the same event announces: chats don't get it, pagerduty still resolves it.
+	quiet bool
 
 	tgChannel  string
 	tgKey      string
@@ -193,6 +197,9 @@ type pendingRecovery struct {
 	Message  string `json:"message"`
 	Severity string `json:"severity"`
 	ID       string `json:"id"`
+	// Lasted is how long the alarm was active, for the recovery's card. It is gone with the alarm, so it is kept here.
+	Lasted time.Duration `json:"lasted,omitempty"`
+	Quiet  bool          `json:"quiet,omitempty"`
 }
 
 var errNotificationBusy = errors.New("notification delivery is in progress")
@@ -375,6 +382,10 @@ func notifySlack(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, slk, err) }()
+	// another recovery of the same event says it, this one only clears what was sent
+	if msg.quiet {
+		return nil
+	}
 	data, err := json.Marshal(buildSlackMessage(msg))
 	if err != nil {
 		return
@@ -406,10 +417,12 @@ type SlackMessage struct {
 }
 
 type Attachment struct {
-	Text      string `json:"text"`
-	Color     string `json:"color"`
-	Title     string `json:"title"`
-	TitleLink string `json:"title_link"`
+	Text      string       `json:"text"`
+	Color     string       `json:"color"`
+	Title     string       `json:"title"`
+	TitleLink string       `json:"title_link"`
+	Fields    []SlackField `json:"fields,omitempty"`
+	MrkdwnIn  []string     `json:"mrkdwn_in,omitempty"`
 }
 
 // tone is how serious a notification looks, the colors discord and slack show are picked from it. Only the three
@@ -427,9 +440,18 @@ func (msg *alertMsg) tone() string {
 	}
 }
 
+// buildSlackMessage is the card as attachment fields. The text stays the whole message in plain words, it is what
+// shows in a notification preview.
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
-	icon, state := msg.header()
-	message := msg.text()
+	card := msg.card()
+	icon, state := card.Icon, card.State
+	// the first line is the preview a notification shows, the fields hold the rest. A card with no fields carries it all.
+	message, _, _ := strings.Cut(msg.summary(), "\n")
+	if card.Note != "" {
+		message = msg.text()
+	} else if msg.extra != "" {
+		message += "\n" + msg.extra
+	}
 	if msg.resolved {
 		message = "OK: " + message
 	}
@@ -439,8 +461,11 @@ func buildSlackMessage(msg *alertMsg) *SlackMessage {
 		Text: message,
 		Attachments: []Attachment{
 			{
-				Title: strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.chain, state, msg.slkMentions)),
-				Color: color,
+				Title:    strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.chain, state, msg.slkMentions)),
+				Color:    color,
+				Text:     slackTitle(card),
+				Fields:   card.slackFields(),
+				MrkdwnIn: []string{"text", "fields"},
 			},
 		},
 	}
@@ -454,6 +479,10 @@ func notifyDiscord(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, di, err) }()
+	// another recovery of the same event says it, this one only clears what was sent
+	if msg.quiet {
+		return nil
+	}
 	discPost := buildDiscordMessage(msg)
 	client := &http.Client{Timeout: 10 * time.Second}
 	data, err := json.MarshalIndent(discPost, "", "  ")
@@ -491,27 +520,32 @@ type DiscordMessage struct {
 }
 
 type DiscordEmbed struct {
-	Title       string `json:"title,omitempty"`
-	Url         string `json:"url,omitempty"`
-	Description string `json:"description"`
-	Color       uint   `json:"color"`
+	Title       string         `json:"title,omitempty"`
+	Url         string         `json:"url,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Color       uint           `json:"color"`
+	Fields      []DiscordField `json:"fields,omitempty"`
+	Footer      *DiscordFooter `json:"footer,omitempty"`
 }
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
-	icon, state := msg.header()
-	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", icon, msg.chain, state, msg.discMentions))
-	body := timeLeft.ReplaceAllString(msg.text(), "· **$1**")
+	card := msg.card()
+	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", card.Icon, msg.chain, card.State, msg.discMentions))
 	// plain puts everything in one message, no embed and no colour bar down the side. The blank line stands in for
 	// the embed, otherwise the header and the alert read as one block.
 	if msg.discStyle == "plain" {
-		return &DiscordMessage{Username: "Tenderduty", Content: header + "\n\n" + body}
+		lines := card.markdownLines()
+		if card.Extra != "" {
+			lines = append(lines, card.Extra)
+		}
+		return &DiscordMessage{Username: "Tenderduty", Content: clipRunes(header+"\n\n"+strings.Join(lines, "\n"), discordContentLimit)}
 	}
 	// the dashboard's colors, a tone with none is drawn without a bar
 	color := map[string]uint{"good": 0x63d6c4, "warning": 0xf1b663, "danger": 0xf27c76}[msg.tone()]
 	return &DiscordMessage{
 		Username: "Tenderduty",
 		Content:  header,
-		Embeds:   []DiscordEmbed{{Description: body, Color: color}},
+		Embeds:   []DiscordEmbed{card.discordEmbed(color)},
 	}
 }
 
@@ -523,6 +557,10 @@ func notifyTg(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, tg, err) }()
+	// another recovery of the same event says it, this one only clears what was sent
+	if msg.quiet {
+		return nil
+	}
 	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, notificationClient{ctx: msg.context(), client: &http.Client{Timeout: 10 * time.Second}})
 	if err != nil {
 		l("notify telegram:", err)
@@ -542,25 +580,12 @@ func notifyTg(msg *alertMsg) (err error) {
 // timeLeft finds the time left that governance and upgrade messages show, to make it stand out.
 var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 
-// buildTelegramMessage formats an alert as telegram HTML: a bold header, the message, then extra_info in italics.
+// buildTelegramMessage formats an alert as telegram HTML: a bold header, the card's fields, then extra_info in italics.
+// Everything that comes from a message or the config is escaped, telegram refuses a whole message over a stray <.
 func buildTelegramMessage(msg *alertMsg) string {
-	icon, state := msg.header()
-	body := html.EscapeString(msg.summary())
-	first, rest, _ := strings.Cut(body, "\n")
-	switch {
-	case strings.HasPrefix(msg.message, "Proposal #"):
-		// the proposal's number and title read as its heading
-		first = "<b>" + strings.TrimPrefix(first, "Proposal ") + "</b>"
-	case strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height "):
-		name, height, _ := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(first, "Upgrade "), " is close"), " at height ")
-		first = "<b>" + name + "</b> at height " + height
-	}
-	if body = first; rest != "" {
-		body += "\n" + rest
-	}
-	body = timeLeft.ReplaceAllString(body, "· <b>$1</b>")
+	card := msg.card()
 	// telegram has no embed either, so the header gets the same blank line under it
-	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", icon, html.EscapeString(msg.chain), state, body)
+	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.chain), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
 	if msg.extra != "" {
 		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
@@ -676,6 +701,16 @@ func severityRank(severity string) int {
 
 // alert records the incident and its ordered notification queue before waking delivery workers.
 func (c *Config) alert(chainName, message, severity string, resolved bool, id *string) {
+	c.record(chainName, message, severity, resolved, false, id)
+}
+
+// resolveQuietly clears an alarm whose recovery another alarm of the same event announces, so chats get one message
+// for it. Pagerduty still resolves its incident.
+func (c *Config) resolveQuietly(chainName, message string, id *string) {
+	c.record(chainName, message, "info", true, true, id)
+}
+
+func (c *Config) record(chainName, message, severity string, resolved, quiet bool, id *string) {
 	a := c.makeAlert(chainName, message, severity, resolved, id)
 	if a == nil {
 		return
@@ -690,13 +725,15 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	if alarms.AllAlarms[chainName] == nil {
 		alarms.AllAlarms[chainName] = make(map[string]time.Time)
 	}
+	var lasted time.Duration
 	if resolved && !alarms.AllAlarms[chainName][message].IsZero() {
+		lasted = time.Since(alarms.AllAlarms[chainName][message])
 		delete(alarms.AllAlarms[chainName], message)
 	} else if !resolved && alarms.AllAlarms[chainName][message].IsZero() {
 		alarms.AllAlarms[chainName][message] = time.Now()
 	}
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
-		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq}
+		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq, Lasted: lasted, Quiet: quiet}
 	} else if !resolved {
 		// the alarm fired again, recoveries already in the outbox still go out from there. Keeping this around
 		// would send a resolve for the new alarm after a restart.
@@ -712,6 +749,7 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 		wasHeld = true
 	}
 	heldMux.Unlock()
+	a.lasted, a.quiet = lasted, quiet && resolved
 	if !wasHeld || resolved {
 		alarms.enqueue(a)
 	}
@@ -883,6 +921,7 @@ func (cc *ChainConfig) watch() {
 			waitForSigning := valInfo.Jailed && !valInfo.Tombstoned && valInfo.SigningStale &&
 				!valInfo.SigningUpdatedAt.IsZero() && time.Since(valInfo.SigningUpdatedAt) < 3*time.Minute
 			out := !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned
+			backInSet := false
 			switch {
 			case waitForSigning:
 			case valInfo.Tombstoned:
@@ -902,10 +941,12 @@ func (cc *ChainConfig) watch() {
 				}
 			case inactiveMessage != "" && !valInfo.SigningStale:
 				td.alert(cc.name, inactiveMessage, "info", true, &id)
-				inactiveMessage = ""
+				inactiveMessage, backInSet = "", true
 			}
+			// tombstoning is permanent, the first alert is all there is to say. It clears only when what the chain
+			// reports changed (a reset, another validator in the config), quietly so pagerduty's incident closes.
 			if tombstoneMessage != "" && !valInfo.Tombstoned && !valInfo.SigningStale {
-				td.alert(cc.name, tombstoneMessage, "info", true, &tombId)
+				td.resolveQuietly(cc.name, tombstoneMessage, &tombId)
 				tombstoneMessage = ""
 			}
 
@@ -915,7 +956,12 @@ func (cc *ChainConfig) watch() {
 				unjailMessage = fmt.Sprintf("%s can unjail on %s", valInfo.Moniker, cc.ChainId)
 				td.alert(cc.name, unjailMessage, "info", false, &unjailId)
 			} else if unjailMessage != "" && !valInfo.Jailed {
-				td.alert(cc.name, unjailMessage, "info", true, &unjailId)
+				// back in the active set already says it was unjailed
+				if backInSet {
+					td.resolveQuietly(cc.name, unjailMessage, &unjailId)
+				} else {
+					td.alert(cc.name, unjailMessage, "info", true, &unjailId)
+				}
 				unjailMessage = ""
 			}
 		}

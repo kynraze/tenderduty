@@ -309,9 +309,22 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
+	// a proposal's alarm and its reminder clear together when the vote is cast or voting ends, the reminder says it
+	reminded := make(map[string]bool)
+	for message := range active {
+		if _, ok := wanted[message]; !ok && strings.Contains(message, " has not voted") {
+			if match := govMessageId.FindStringSubmatch(message); match != nil {
+				reminded[match[1]] = true
+			}
+		}
+	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok {
 			id := govAlarmId(valInfo, message)
+			if match := govMessageId.FindStringSubmatch(message); match != nil && reminded[match[1]] && !strings.Contains(message, " has not voted") {
+				td.resolveQuietly(cc.name, message, &id)
+				continue
+			}
 			td.alert(cc.name, message, "info", true, &id)
 		}
 	}

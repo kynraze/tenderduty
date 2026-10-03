@@ -1,0 +1,195 @@
+package tenderduty
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"testing"
+	"time"
+)
+
+// recoveries reads the alerts recorded so far: the recoveries chats get, and the ones that only clear.
+func recoveries(t *testing.T, c *Config) (announced, quiet []string) {
+	t.Helper()
+	for {
+		select {
+		case a := <-c.alertChan:
+			if !a.resolved {
+				continue
+			}
+			if a.quiet {
+				quiet = append(quiet, a.message)
+			} else {
+				announced = append(announced, a.message)
+			}
+		default:
+			sort.Strings(announced)
+			sort.Strings(quiet)
+			return
+		}
+	}
+}
+
+func expectOne(t *testing.T, c *Config, announce string, quietly ...string) {
+	t.Helper()
+	announced, quiet := recoveries(t, c)
+	if len(announced) != 1 || announced[0] != announce {
+		t.Errorf("announced %q, want only %q", announced, announce)
+	}
+	sort.Strings(quietly)
+	if len(quiet) != len(quietly) {
+		t.Fatalf("cleared quietly %q, want %q", quiet, quietly)
+	}
+	for i := range quiet {
+		if quiet[i] != quietly[i] {
+			t.Fatalf("cleared quietly %q, want %q", quiet, quietly)
+		}
+	}
+}
+
+func TestAProposalsAlarmAndReminderClearAsOneMessage(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", proposalsLoaded: true}
+	c.Chains["Chain"] = cc
+	p := govProposal{ID: 7, Title: "Raise the limit", VotingEnd: time.Now().Add(time.Hour)}
+	open, remind := cc.govOpenMessage(p), cc.govRemindMessage(p, "Kynraze")
+	alarms.AllAlarms["Chain"] = map[string]time.Time{open: time.Now(), remind: time.Now()}
+	// the vote was cast, nothing is wanted any more
+	cc.govAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	expectOne(t, c, remind, open)
+
+	// voted before the reminder, the proposal's own alarm says it
+	alarms.AllAlarms["Chain"] = map[string]time.Time{open: time.Now()}
+	cc.govAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	expectOne(t, c, open)
+}
+
+func TestAnUpgradesAlarmAndReminderClearAsOneMessage(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", upgradeLoaded: true, lastBlockNum: 1001}
+	c.Chains["Chain"] = cc
+	plan := &upgradePlan{Name: "v4", Height: 1000}
+	alarms.AllAlarms["Chain"] = map[string]time.Time{upgradeMessage(plan): time.Now(), upgradeSoonMessage(plan): time.Now()}
+	cc.upgradeAlarms(&ValInfo{Valcons: "cons"}, false)
+	expectOne(t, c, upgradeSoonMessage(plan), upgradeMessage(plan))
+}
+
+func TestAVersionsSignalAlarmsClearAsOneMessage(t *testing.T) {
+	c := auditConfig(t)
+	// the chain runs version 10 now, state.Version is the next one
+	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, signal: signalState{Version: 11}, lastBlockNum: 2000}
+	cc.Alerts.SignalAlerts, cc.Alerts.SignalPercent = true, 10
+	c.Chains["Celestia"] = cc
+	started, missing := signalStartMessage(10), signalMissingMessage(10)
+	upgrade, soon := signalUpgradeMessage(10, 1500), signalUpgradeSoonMessage(10, 1500)
+	alarms.AllAlarms["Celestia"] = map[string]time.Time{started: time.Now(), missing: time.Now(), upgrade: time.Now(), soon: time.Now()}
+	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	expectOne(t, c, soon, started, missing, upgrade)
+
+	// signalling dropped: the missing signal goes with it
+	cc.signal = signalState{Version: 10, Power: 1, Total: 100}
+	alarms.AllAlarms["Celestia"] = map[string]time.Time{started: time.Now(), missing: time.Now()}
+	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	expectOne(t, c, started, missing)
+
+	// the validator signalled: only that changed, so it is said
+	cc.signal = signalState{Version: 10, Power: 50, Total: 100, Signalled: true}
+	alarms.AllAlarms["Celestia"] = map[string]time.Time{started: time.Now(), missing: time.Now()}
+	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	expectOne(t, c, missing)
+}
+
+func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, lastBlockNum: 1000,
+		signal: signalState{Version: 10, Power: 90, Total: 100, Threshold: 84, Signalled: true, UpgradeHeight: 1500}}
+	cc.Alerts.SignalAlerts, cc.Alerts.SignalPercent = true, 10
+	c.Chains["Celestia"] = cc
+	threshold := signalThresholdMessage(10)
+	alarms.AllAlarms["Celestia"] = map[string]time.Time{signalStartMessage(10): time.Now(), threshold: time.Now()}
+	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	announced, quiet := recoveries(t, c)
+	// the new "upgrade scheduled" alarm says it
+	if len(announced) != 0 || len(quiet) != 1 || quiet[0] != threshold {
+		t.Fatalf("announced %q, quiet %q", announced, quiet)
+	}
+	if !alarmIsActive("Celestia", signalUpgradeMessage(10, 1500)) {
+		t.Fatal("the upgrade alarm was not raised")
+	}
+}
+
+func TestAMovedFibreHostIsOneMessage(t *testing.T) {
+	c := auditConfig(t)
+	c.NodeDownMin = 5
+	const old, moved = "old.example:7980", "new.example:7980"
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", fibreLoaded: true,
+		fibre: fibreState{Registered: true, Host: moved, Reachable: true, KeyKnown: true, IdentityOK: true}}
+	cc.Alerts.FibreAlerts = true
+	c.Chains["Chain"] = cc
+	down, identity := fibreDownMessage(old, "chain-1"), fibreIdentityMessage(old, "chain-1")
+	alarms.AllAlarms["Chain"] = map[string]time.Time{down: time.Now(), identity: time.Now()}
+	cc.fibreAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
+	announced, quiet := recoveries(t, c)
+	if len(announced) != 1 || len(quiet) != 1 {
+		t.Fatalf("announced %q, quiet %q", announced, quiet)
+	}
+}
+
+// a quiet recovery sends nothing to a chat but clears what was sent there, so the alarm can be sent again later
+func TestAQuietRecoverySendsNothingButClears(t *testing.T) {
+	auditConfig(t)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	msg := &alertMsg{disc: true, chain: "Chain", message: "Kynraze is tombstoned on chain-1", discHook: server.URL}
+	if err := notifyDiscord(msg); err != nil || calls != 1 {
+		t.Fatalf("the alert was not sent: %v, %d calls", err, calls)
+	}
+	msg.resolved, msg.quiet = true, true
+	if err := notifyDiscord(msg); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("a quiet recovery was sent: %d calls", calls)
+	}
+	if alarms.sentAnywhere("Chain\x00"+msg.message, msg.message) {
+		t.Fatal("the alert is still recorded as sent")
+	}
+	msg.resolved, msg.quiet = false, false
+	if err := notifyDiscord(msg); err != nil || calls != 2 {
+		t.Fatalf("the alert could not be sent again: %v, %d calls", err, calls)
+	}
+}
+
+// the quiet mark rides along a recovery that waits in the outbox or for a restart
+func TestQuietSurvivesTheQueue(t *testing.T) {
+	c := auditConfig(t)
+	c.Chains["Chain"] = &ChainConfig{name: "Chain", ChainId: "chain-1"}
+	c.Discord.Enabled = yes(true)
+	c.Chains["Chain"].Alerts.Discord.Webhook = "http://127.0.0.1:1/hook"
+	message := "Kynraze is tombstoned on chain-1"
+	alarms.AllAlarms["Chain"] = map[string]time.Time{message: time.Now()}
+	alarms.SentDiAlarms["Chain\x00"+message] = time.Now()
+	id := "cons-tombstoned"
+	c.resolveQuietly("Chain", message, &id)
+	alarms.notifyMux.RLock()
+	defer alarms.notifyMux.RUnlock()
+	if r := alarms.PendingRecoveries["Chain\x00"+message]; r == nil || !r.Quiet {
+		t.Fatalf("pending recovery %+v", r)
+	}
+	found := false
+	for _, item := range alarms.Outbox {
+		if item.Message == message && item.Resolved {
+			found = true
+			if !item.Quiet {
+				t.Fatalf("queued recovery %+v is not quiet", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the recovery was not queued")
+	}
+}

@@ -460,10 +460,18 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	}
 	// what cleared goes out before what is new, so "registered" reads before the problem found on the new host. The
 	// ids differ by host, so no new incident shares a dedup key with one being resolved.
+	// the old host's down and identity alarms clear together when it moves or is dropped, with the same news
+	said := make(map[string]bool)
 	for message := range active {
 		if _, ok := wanted[message]; !ok && isFibreMessage(message) {
-			resolve(cc.name, message, cc.fibreResolution(message, state, valInfo.Moniker))
+			r := cc.fibreResolution(message, state, valInfo.Moniker)
+			resolve(cc.name, message, r)
 			id := fibreAlarmId(valInfo, message)
+			if said[r.label+"\x00"+r.text] {
+				td.resolveQuietly(cc.name, message, &id)
+				continue
+			}
+			said[r.label+"\x00"+r.text] = true
 			td.alert(cc.name, message, "info", true, &id)
 		}
 	}

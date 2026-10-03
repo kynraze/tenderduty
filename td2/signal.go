@@ -327,15 +327,54 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
+	// a version's alarms clear together (it upgraded, or signalling dropped), only the one that says the most is announced.
+	// A threshold that clears because the upgrade was scheduled is said by the new upgrade alarm.
+	announce := make(map[string]string) // version to the message that announces it
+	for message := range active {
+		if _, ok := wanted[message]; ok || !isSignalMessage(message) {
+			continue
+		}
+		version := signalVersion.FindStringSubmatch(message)
+		if version == nil {
+			continue
+		}
+		if best, ok := announce[version[1]]; !ok || signalRank(message) < signalRank(best) {
+			announce[version[1]] = message
+		}
+	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok && isSignalMessage(message) {
 			if r, ok := cc.signalResolution(message, state, valInfo.Moniker); ok {
 				resolve(cc.name, message, r)
 			}
 			id := signalAlarmId(valInfo, message)
+			version := signalVersion.FindStringSubmatch(message)
+			scheduledNow := false
+			for raised := range wanted {
+				scheduledNow = scheduledNow || isSignalUpgrade(raised) && !active[raised] && version != nil && signalVersion.FindStringSubmatch(raised)[1] == version[1]
+			}
+			if version != nil && announce[version[1]] != message || strings.HasSuffix(message, " reached the upgrade threshold") && scheduledNow {
+				td.resolveQuietly(cc.name, message, &id)
+				continue
+			}
 			td.alert(cc.name, message, "info", true, &id)
 		}
 	}
+}
+
+// signalRank orders a version's alarms by how much their recovery says, the reminder first.
+func signalRank(message string) int {
+	switch {
+	case isSignalUpgrade(message) && strings.HasSuffix(message, " is close"):
+		return 0
+	case isSignalUpgrade(message):
+		return 1
+	case strings.HasSuffix(message, " signalling has started"):
+		return 2
+	case strings.HasPrefix(message, signalMissingPrefix):
+		return 3
+	}
+	return 4
 }
 
 // signalResolution is why a signalling alarm cleared: the chain upgraded, the validator signalled, the upgrade was

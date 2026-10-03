@@ -128,7 +128,10 @@ func govResolvedText(chain, message string) string {
 	return ""
 }
 
+// orphanNote is the last line of an alarm cleared because nothing watches it any more.
+const orphanNote = "The alert was turned off or its settings changed"
+
 // orphanResolution is for a restored alarm cleared because nothing watches it any more: it didn't get better.
 func orphanResolution(message string) resolution {
-	return resolution{"ℹ️", "No longer watched", withoutSeverity(message) + "\nThe alert was turned off or its settings changed"}
+	return resolution{"ℹ️", "No longer watched", withoutSeverity(message) + "\n" + orphanNote}
 }

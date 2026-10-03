@@ -119,7 +119,30 @@ Dashboard:
 
 Notifications:
 
-* There really isn't anything special about the notifications it sends. For Discord and Telegram it will only send an alert on a new alarm and when the alarm clears. Pagerduty has a little more nuance.
+* For Discord and Telegram it will only send an alert on a new alarm and when the alarm clears. Pagerduty has a little more nuance.
+* Telegram, Discord and Slack show each notification as a card: the chain and what happened on top, then a line for each fact with an icon and a label, and a coloured dot where something can be good or bad. A cleared alert says what is true now and how long it lasted. In Discord the lines are the embed's fields and `extra_info` is its footer, in Slack they are the attachment's fields. Pagerduty gets the plain text. In Telegram:
+
+```
+🚨 Devnet1 · Fibre down
+
+🌐 Host: localhost:7980
+⛓ Chain: devnet-1
+📡 Reachable: 🔴 no, for 2m
+❓ Why: connection refused: Fibre is not listening on that port
+⚠️ Severity: critical
+```
+
+```
+✅ Devnet1 · Fibre up
+
+🌐 Host: localhost:7980
+⛓ Chain: devnet-1
+📡 Reachable: 🟢 yes
+⏱ Lasted: 12m
+```
+
+* One event is one message. Alarms that clear together for the same reason are announced once: a proposal's alarm and its vote reminder, an upgrade and its reminder, a signalling version's alarms when it upgrades, the jailed alarm and "can unjail" when the validator is unjailed, a Fibre host's alarms when it moves. A tombstone is permanent, it is sent once and never cleared in a chat. Pagerduty still resolves every incident.
+
 * Pagerduty:
   * Pro-tip: the alarms sent to pagerduty all use a unique "key". Pagerduty will automatically de-deduplicate alerts based on this key. If you want redundant monitoring you can run multiple instances of tenderduty alerting to pagerduty and will not get duplicate alerts.
   * Additional flapping detection is applied to pagerduty (not to discord or telegram). If a node is going up and down every few minutes it will only send an alert once in a five minute period.

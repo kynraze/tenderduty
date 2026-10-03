@@ -145,16 +145,18 @@ func TestSlackRecoveryDoesNotChangeAlertIdentity(t *testing.T) {
 
 func TestExtraInfoIsAddedToAlerts(t *testing.T) {
 	msg := &alertMsg{chain: "Osmosis", message: "missed blocks", extra: "sent from monitor-eu"}
-	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks\nsent from monitor-eu" {
-		t.Fatalf("discord message is %q", got)
+	// extra_info is the embed's footer, the body stays the alert
+	embed := buildDiscordMessage(msg).Embeds[0]
+	if embed.Description != "missed blocks" || embed.Footer == nil || embed.Footer.Text != "sent from monitor-eu" {
+		t.Fatalf("discord message is %+v", embed)
 	}
 	if got := buildSlackMessage(msg).Text; got != "missed blocks\nsent from monitor-eu" {
 		t.Fatalf("slack message is %q", got)
 	}
 
 	msg.extra = ""
-	if got := buildDiscordMessage(msg).Embeds[0].Description; got != "missed blocks" {
-		t.Fatalf("discord message without extra_info is %q", got)
+	if embed = buildDiscordMessage(msg).Embeds[0]; embed.Description != "missed blocks" || embed.Footer != nil {
+		t.Fatalf("discord message without extra_info is %+v", embed)
 	}
 }
 
@@ -197,7 +199,7 @@ func TestDiscordPlainStyle(t *testing.T) {
 	msg := &alertMsg{chain: "AtomOne", severity: "critical", message: "Validator is jailed on atomone-1",
 		extra: "monitor-eu", discMentions: "@here", discStyle: "plain"}
 	plain := buildDiscordMessage(msg)
-	want := "🚨 **AtomOne** · Jailed @here\n\nValidator is jailed on atomone-1\nmonitor-eu"
+	want := "🚨 **AtomOne** · Jailed @here\n\n👤 **Validator:** Validator\n⛓ **Chain:** `atomone-1`\n🔒 **Status:** 🔴 jailed\n⚠️ **Severity:** critical\nmonitor-eu"
 	if plain.Content != want || len(plain.Embeds) != 0 {
 		t.Fatalf("plain is %q with %d embeds", plain.Content, len(plain.Embeds))
 	}

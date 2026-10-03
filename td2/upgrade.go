@@ -159,9 +159,20 @@ func (cc *ChainConfig) upgradeAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
+	// an upgrade's alarm and its reminder clear together once it happens or is cancelled, the reminder says it
+	reminded := make(map[string]bool)
+	for message := range active {
+		if _, ok := wanted[message]; !ok && strings.HasSuffix(message, " is close") {
+			reminded[messageHeight(message)] = true
+		}
+	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok {
 			id := upgradeAlarmId(valInfo, message)
+			if reminded[messageHeight(message)] && !strings.HasSuffix(message, " is close") {
+				td.resolveQuietly(cc.name, message, &id)
+				continue
+			}
 			td.alert(cc.name, message, "info", true, &id)
 		}
 	}
