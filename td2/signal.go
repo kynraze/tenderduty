@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,8 +325,40 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok && isSignalMessage(message) {
+			if r, ok := cc.signalResolution(message, state, valInfo.Moniker); ok {
+				resolve(cc.name, message, r)
+			}
 			id := signalAlarmId(valInfo, message)
 			td.alert(cc.name, message, "info", true, &id)
 		}
 	}
+}
+
+// signalResolution is why a signalling alarm cleared: the chain upgraded, the validator signalled, the upgrade was
+// scheduled, or signalling fell back. A scheduled upgrade's own message reads fine as it is.
+func (cc *ChainConfig) signalResolution(message string, state signalState, moniker string) (resolution, bool) {
+	if isSignalUpgrade(message) {
+		return resolution{}, false
+	}
+	match := signalVersion.FindStringSubmatch(message)
+	if match == nil {
+		return resolution{}, false
+	}
+	version, err := strconv.ParseUint(match[1], 10, 64)
+	if err != nil {
+		return resolution{}, false
+	}
+	// state.Version is the one after the version the chain runs
+	if state.Version > version {
+		return resolution{"✅", "Upgraded", fmt.Sprintf("%s runs version %d now", cc.ChainId, state.Version-1)}, true
+	}
+	switch {
+	case strings.HasPrefix(message, signalMissingPrefix) && state.Signalled:
+		return resolution{"✅", "Signalled", fmt.Sprintf("%s signalled version %d on %s", moniker, version, cc.ChainId)}, true
+	case strings.HasSuffix(message, " reached the upgrade threshold") && state.UpgradeHeight > 0:
+		return resolution{"⬆️", "Upgrade scheduled", fmt.Sprintf("Version %d upgrade is scheduled at height %s", version, thousands(state.UpgradeHeight))}, true
+	case strings.HasSuffix(message, " reached the upgrade threshold"):
+		return resolution{"✅", "Resolved", fmt.Sprintf("Version %d fell back under the upgrade threshold", version)}, true
+	}
+	return resolution{"✅", "Resolved", fmt.Sprintf("Version %d signalling dropped below %d%%", version, cc.Alerts.SignalPercent)}, true
 }

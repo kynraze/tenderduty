@@ -49,6 +49,14 @@ type alertMsg struct {
 
 // summary is the message as people read it, a "Severity: x" line some alarms carry is shown in the header instead.
 func (msg *alertMsg) summary() string {
+	if msg.resolved {
+		if r, ok := storedResolution(msg.chain, msg.message); ok {
+			return r.text
+		}
+		if text := resolvedText(msg.chain, msg.message); text != "" {
+			return text
+		}
+	}
 	if strings.HasPrefix(msg.message, "Severity: ") {
 		if _, rest, ok := strings.Cut(msg.message, "\n"); ok {
 			return rest
@@ -75,6 +83,11 @@ func (msg *alertMsg) text() string {
 
 // header gives the first line of every notification: an icon and the severity, or Resolved.
 func (msg *alertMsg) header() (icon, state string) {
+	if msg.resolved {
+		if r, ok := storedResolution(msg.chain, msg.message); ok {
+			return r.icon, r.label
+		}
+	}
 	// governance isn't a problem, it gets its own labels
 	if strings.HasPrefix(msg.message, "Proposal #") {
 		if msg.resolved {
@@ -651,6 +664,10 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	if a == nil {
 		return
 	}
+	// raised again, so how it cleared last time doesn't apply to its next recovery
+	if !resolved {
+		resolutions.Delete(chainName + "\x00" + message)
+	}
 	uniq := a.uniqueId
 	alarms.notifyMux.Lock()
 	key := chainName + "\x00" + message
@@ -1195,6 +1212,7 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			continue // no idea where this came from, it gets purged once it's stale
 		}
 		l("📂 clearing restored alarm that is no longer monitored -", message)
+		resolve(cc.name, message, orphanResolution(message))
 		td.alert(cc.name, message, "info", true, &id)
 	}
 }

@@ -23,6 +23,7 @@ import (
 
 func auditConfig(t *testing.T) *Config {
 	t.Helper()
+	resolutions.Range(func(key, _ interface{}) bool { resolutions.Delete(key); return true })
 	oldConfig, oldAlarms := td, alarms
 	ctx, cancel := context.WithCancel(context.Background())
 	delivery, cancelDelivery := context.WithCancel(context.Background())
