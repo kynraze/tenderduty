@@ -98,7 +98,7 @@ func diffChains(old, next map[string]*ChainConfig) chainDiff {
 			diff.Removed = append(diff.Removed, name)
 		case restartReason(chain, other) != "":
 			diff.Restarted[name] = restartReason(chain, other)
-		case !reflect.DeepEqual(chain.alertSettings(), other.alertSettings()) || chain.extraInfo() != other.extraInfo() || chain.publicFallbackEnabled() != other.publicFallbackEnabled():
+		case !reflect.DeepEqual(chain.alertSettings(), other.alertSettings()) || chain.extraInfo() != other.extraInfo() || chain.publicFallbackEnabled() != other.publicFallbackEnabled() || !reflect.DeepEqual(chain.reportTestnet(), other.reportTestnet()):
 			diff.Updated = append(diff.Updated, name)
 		default:
 			diff.Unchanged = append(diff.Unchanged, name)

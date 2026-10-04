@@ -47,6 +47,7 @@ func (c *Config) sendUpdate(update *dash.ChainStatus) {
 func (cc *ChainConfig) setMonitoring(active bool) {
 	cc.stateMux.Lock()
 	defer cc.stateMux.Unlock()
+	cc.reportWatchingLocked(time.Now())
 	cc.monitoring = active
 	if active {
 		cc.monitoringSince = time.Now()

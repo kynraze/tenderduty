@@ -792,10 +792,12 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 	}
 	var lasted time.Duration
 	if resolved && !alarms.AllAlarms[chainName][message].IsZero() {
+		c.recordReportAlarm(chainName, message, alarms.AllAlarms[chainName][message], time.Now())
 		lasted = time.Since(alarms.AllAlarms[chainName][message])
 		delete(alarms.AllAlarms[chainName], message)
 	} else if !resolved && alarms.AllAlarms[chainName][message].IsZero() {
 		alarms.AllAlarms[chainName][message] = time.Now()
+		c.recordReportAlarm(chainName, message, alarms.AllAlarms[chainName][message], time.Time{})
 	}
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
 		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq, Lasted: lasted, Quiet: quiet}

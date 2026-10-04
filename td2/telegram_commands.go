@@ -12,11 +12,10 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// telegram's limit is 4096 characters a message, longer replies are split on lines
+// telegram's limit is 4096 characters, longer replies are split on lines
 const telegramMessageLimit = 4000
 
-// commandAllowed says if a message may command tenderduty: it has to come from the configured chat, and in a group or
-// channel from one of the admins.
+// commandAllowed: the chat must be the configured one, and in a group or channel the sender an admin.
 func (c *Config) commandAllowed(chatId int64, chatType string, fromId int64) bool {
 	telegram := c.settings().Telegram
 	if strconv.FormatInt(chatId, 10) != strings.TrimSpace(telegram.Channel) {
@@ -33,7 +32,6 @@ func (c *Config) commandAllowed(chatId int64, chatType string, fromId int64) boo
 	return false
 }
 
-// chainNamed finds a chain by its name or chain id, ignoring case.
 func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 	c.chainsMux.RLock()
 	defer c.chainsMux.RUnlock()
@@ -45,8 +43,7 @@ func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 	return "", nil
 }
 
-// telegramCommand answers one command with telegram HTML. The only thing it changes is who gets pinged, by the person
-// asking for themselves, so nothing about the monitoring can be touched from telegram.
+// telegramCommand answers one command with HTML. It only changes who gets pinged, so monitoring can't be touched from telegram.
 func (c *Config) telegramCommand(command, args string, now time.Time, from tgMention) string {
 	switch command {
 	case "mentionme":
@@ -63,9 +60,15 @@ func (c *Config) telegramCommand(command, args string, now time.Time, from tgMen
 		addMention(from.ID, from.Name)
 		c.saveMentions()
 		return fmt.Sprintf("🔔 %s will be pinged in alerts. Send /mentionme off to stop.", from.link())
+	case "report":
+		weekly := strings.EqualFold(strings.TrimSpace(args), "weekly")
+		if strings.TrimSpace(args) != "" && !weekly {
+			return "Use /report or /report weekly"
+		}
+		return c.buildReport(now, weekly, false, nil).telegram()
 	case "status":
 	default:
-		return "Commands: /status for every chain, /status &lt;chain&gt; for one, /mentionme to be pinged in alerts"
+		return "Commands: /report or /report weekly, /status for every chain, /status &lt;chain&gt; for one, /mentionme to be pinged in alerts"
 	}
 	if name := strings.TrimSpace(args); name != "" {
 		chainName, cc := c.chainNamed(name)
@@ -77,8 +80,7 @@ func (c *Config) telegramCommand(command, args string, now time.Time, from tgMen
 	return c.statusSummary()
 }
 
-// chainState is the dot in front of a chain: red with active alerts or jailed, yellow when it can't be watched,
-// white when not in the active set, green otherwise.
+// chainState is the dot before a chain: red for active alerts or jailed, yellow when unwatchable, white when not in the active set, else green.
 func (cc *ChainConfig) chainState(name string, info *ValInfo) (dot, label string) {
 	switch {
 	case info.Tombstoned:
@@ -98,7 +100,6 @@ func (cc *ChainConfig) chainState(name string, info *ValInfo) (dot, label string
 	}
 }
 
-// statusSummary is a line per chain, problems first.
 func (c *Config) statusSummary() string {
 	c.chainsMux.RLock()
 	names := make([]string, 0, len(c.Chains))
@@ -141,12 +142,11 @@ func (c *Config) statusSummary() string {
 	return strings.Join(lines, "\n")
 }
 
-// statusField is a labelled line of /status <chain>: an icon, the label in bold, and the value.
 func statusField(icon, label, value string) string {
 	return icon + " <b>" + label + ":</b> " + value
 }
 
-// statusDetail is everything about one chain, in sections: the validator, its Fibre when watched, the active alerts.
+// statusDetail is the sections of /status <chain>: validator, Fibre when watched, active alerts.
 func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	info, _ := cc.validatorState()
 	cc.stateMux.RLock()
@@ -213,7 +213,6 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	return strings.Join(lines, "\n")
 }
 
-// splitMessage cuts a reply into telegram sized messages on line breaks.
 func splitMessage(text string) []string {
 	parts := make([]string, 0, 1)
 	current := ""
@@ -230,8 +229,7 @@ func splitMessage(text string) []string {
 	return append(parts, current)
 }
 
-// telegramCommands reads commands sent to the bot by long polling, no port needs to be open. The bot can't be read by
-// anything else at the same time, telegram only allows one reader.
+// telegramCommands long polls for commands, so no port needs to be open. Telegram allows one reader at a time.
 func (c *Config) telegramCommands() {
 	c.telegramCommandsContext(c.context())
 }

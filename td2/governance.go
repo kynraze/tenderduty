@@ -344,7 +344,7 @@ func govAlarmId(valInfo *ValInfo, message string) string {
 
 // refreshProposals reads the proposals in voting, it runs with the validator refresh.
 func (cc *ChainConfig) refreshProposals(ctx context.Context, client *rpchttp.HTTP) {
-	if !cc.Alerts.GovAlerts {
+	if !cc.alertSettings().GovAlerts && !td.reportsEnabled() {
 		return
 	}
 	proposals, err := getProposals(ctx, client, voterAddress(cc.ValAddress))
@@ -354,6 +354,12 @@ func (cc *ChainConfig) refreshProposals(ctx context.Context, client *rpchttp.HTT
 	}
 	// the ones that left voting since the last read have a result now, keep it for the message clearing their alarm
 	previous, _ := cc.govSnapshot()
+	td.reportsMux.Lock()
+	if remembered := td.reportData.OpenVotes[cc.name]; len(remembered) > 0 {
+		previous = append([]govProposal(nil), remembered...)
+	}
+	td.reportsMux.Unlock()
+	observed := append([]govProposal(nil), proposals...)
 	open := make(map[uint64]bool)
 	for _, p := range proposals {
 		open[p.ID] = true
@@ -362,11 +368,21 @@ func (cc *ChainConfig) refreshProposals(ctx context.Context, client *rpchttp.HTT
 		if open[p.ID] {
 			continue
 		}
+		if !p.Voted && voterAddress(cc.ValAddress) != "" {
+			for _, module := range govModules {
+				if voted, err := hasVoted(ctx, client, module, p.ID, voterAddress(cc.ValAddress)); err == nil && voted {
+					p.Voted = true
+					observed = append(observed, p)
+					break
+				}
+			}
+		}
 		if outcome := getOutcome(ctx, client, p.ID); outcome != "" {
 			govOutcomes.Store(fmt.Sprintf("%s#%d", cc.name, p.ID), outcome)
 		}
 	}
 	cc.stateMux.Lock()
+	td.recordReportVotes(cc.name, previous, observed, time.Now())
 	cc.proposals, cc.proposalsLoaded = proposals, true
 	cc.stateMux.Unlock()
 }

@@ -35,6 +35,9 @@ func useRegistries(t *testing.T, mainnet, testnet string) {
 		registryMux.Lock()
 		registryCache = oldCache
 		registryMux.Unlock()
+		for _, id := range []string{"osmosis-1", "both-1", "mocha-4", "osmo-test-5"} {
+			reportNetworks.Delete(id)
+		}
 	})
 }
 
@@ -103,6 +106,9 @@ func TestTestnetOnlyChainIsNamedFromRegistry(t *testing.T) {
 	if strings.Contains(output.String(), "Not in the chain registry") {
 		t.Fatalf("registered chain got the unregistered hint: %s", output.String())
 	}
+	if known, _ := reportNetworks.Load("mocha-4"); known != true {
+		t.Fatal("testnet wasn't marked for reports")
+	}
 }
 
 func TestChainFlagTakesTestnetPath(t *testing.T) {
@@ -114,6 +120,9 @@ func TestChainFlagTakesTestnetPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Mocha-Testnet.yml")); err != nil {
 		t.Fatal(err)
+	}
+	if known, _ := reportNetworks.Load("mocha-4"); known != true {
+		t.Fatal("testnet wasn't marked for reports")
 	}
 	if err := addChain(context.Background(), options, &bytes.Buffer{}, addChainTestnetFetchers("chain-1")); err == nil || !strings.Contains(err.Error(), "your node reports chain-1") {
 		t.Fatalf("wrong chain id accepted: %v", err)
@@ -133,6 +142,9 @@ func TestChainInBothRegistriesUsesMainnet(t *testing.T) {
 	name, err := registryName(context.Background(), "both-1")
 	if err != nil || name != "Both Mainnet" {
 		t.Fatalf("name = %q, %v", name, err)
+	}
+	if known, _ := reportNetworks.Load("both-1"); known != false {
+		t.Fatal("mainnet entry was marked testnet")
 	}
 	// a testnet entry from an earlier refresh gives way, and a mainnet one is kept while mainnet is down
 	pathMux.Lock()

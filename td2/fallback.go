@@ -139,6 +139,7 @@ func fetchRegistryFrom(ctx context.Context, base, path string) (registryChain, e
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&result); err != nil {
 		return registryChain{}, err
 	}
+	reportNetworks.Store(result.Chain.ChainID, result.Chain.NetworkType == "testnet")
 	return result.Chain, nil
 }
 

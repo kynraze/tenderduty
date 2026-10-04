@@ -285,6 +285,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			}
 			cc.lastBlockNum, cc.lastBlockTime = update.HeadHeight, time.Now()
 			cc.observedBlock = true
+			cc.reportWatchingLocked(time.Now())
 			cc.monitoring, cc.monitoringSince = true, time.Now()
 			cc.blocksResults = append([]int{int(status)}, cc.blocksResults[:len(cc.blocksResults)-1]...)
 			switch status {
@@ -313,6 +314,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 					cc.proposalMisses = cc.proposalMisses[len(cc.proposalMisses)-maxProposalMisses:]
 				}
 			}
+			td.recordReportBlock(cc.name, time.Now(), status, missedProposal)
 			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss, metricMissedProposals: cc.statProposalMiss}
 			cc.stateMux.Unlock()
 			if status >= 0 && status < StatusSigned {

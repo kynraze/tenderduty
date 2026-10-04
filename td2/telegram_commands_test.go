@@ -93,7 +93,6 @@ func TestMentionMeRegistersAndPings(t *testing.T) {
 	if list := mentionSnapshot(); len(list) != 1 || list[0].Name != "Ops Team" {
 		t.Fatalf("ping list is %+v", list)
 	}
-	// it survives a restart
 	restored := mentionSnapshot()
 	restoreMentions(nil)
 	restoreMentions(restored)

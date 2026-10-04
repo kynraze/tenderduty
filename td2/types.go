@@ -81,6 +81,10 @@ type Config struct {
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
 	// QuietHours holds back less severe alerts
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
+	Reports    ReportsConfig    `yaml:"reports"`
+
+	reportsMux sync.Mutex
+	reportData reportHistory
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
 	// FibreMetrics receives the OTLP metrics a Fibre server exports
@@ -114,6 +118,7 @@ type savedState struct {
 	Consecutive map[string]float64              `json:"consecutive_missed,omitempty"`
 	Proposals   map[string][]time.Time          `json:"missed_proposals,omitempty"`
 	TgMentions  []tgMention                     `json:"telegram_mentions,omitempty"`
+	Reports     *reportHistory                  `json:"reports,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -169,6 +174,7 @@ type ChainConfig struct {
 	ChainId string `yaml:"chain_id"`
 	Testnet *bool  `yaml:"testnet"`
 
+	reportWatchAt time.Time
 	// ValAddress is the validator operator address to be monitored. Tenderduty v1 required the consensus address,
 	// this is no longer needed. The operator address is much easier to find in explorers etc.
 	ValAddress string `yaml:"valoper_address"`
@@ -399,6 +405,10 @@ type HealthcheckConfig struct {
 func validateConfig(c *Config) (fatal bool, problems []string) {
 	problems = make([]string, 0)
 	problems = append(problems, c.configWarnings...)
+	if err := c.Reports.validate(c.QuietHours.Timezone); err != nil {
+		fatal = true
+		problems = append(problems, "error: "+err.Error())
+	}
 
 	if c.EnableDash {
 		port, parseErr := strconv.Atoi(c.Listen)
@@ -933,6 +943,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 			c.Chains[k].statConsecutiveMiss = missed
 		}
 	}
+	c.restoreReports(saved.Reports, time.Now())
 	restoreMentions(saved.TgMentions)
 	for k, misses := range saved.Proposals {
 		if c.Chains[k] != nil {
@@ -983,6 +994,13 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 		if saved.Alarms.Groups != nil {
 			alarms.Groups = saved.Alarms.Groups
 			alarms.pruneGroups()
+		}
+	}
+
+	// older state files have no report history
+	for chain, active := range alarms.AllAlarms {
+		for message, start := range active {
+			c.recordReportAlarm(chain, message, start, time.Time{})
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -293,5 +294,28 @@ func newNotificationClient(ctx context.Context, timeout time.Duration) notificat
 
 func (client notificationClient) Do(request *http.Request) (*http.Response, error) {
 	//#nosec G704 -- webhook URLs come from the operator's config
-	return client.client.Do(request.WithContext(client.ctx))
+	resp, err := client.client.Do(request.WithContext(client.ctx))
+	return resp, scrubURLError(err)
+}
+
+// scrubbedError is a *url.Error without its path and query, where bot tokens and webhook secrets live.
+type scrubbedError struct {
+	text string
+	err  error
+}
+
+func (e *scrubbedError) Error() string { return e.text }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// scrubURLError reads "Post scheme://host: cause", for logs and alerts.
+func scrubURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	text := urlErr.Op
+	if u, perr := url.Parse(urlErr.URL); perr == nil && u.Host != "" {
+		text += " " + u.Scheme + "://" + u.Host
+	}
+	return &scrubbedError{text: text + ": " + urlErr.Err.Error(), err: urlErr.Err}
 }
