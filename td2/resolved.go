@@ -8,16 +8,13 @@ import (
 	"time"
 )
 
-// A message is its alarm's key, so a cleared alarm still carries the problem it was about. These say what is true once
-// it clears instead, so a notification never reads "Active again" over "is jailed".
+// A message is its alarm's key and names the problem, these say what is true once it clears.
 
-// resolution is how a cleared alarm is announced.
 type resolution struct {
 	icon, label, text string
 }
 
-// resolutions holds, by chain and message, the announcement for an alarm that clears for more than one reason, worked
-// out when it clears. It is dropped when the alarm is raised again.
+// resolutions is keyed chain and message: the announcement for an alarm that clears for several reasons, dropped when it is raised again.
 var resolutions sync.Map
 
 func resolve(chain, message string, r resolution) {
@@ -56,8 +53,7 @@ var (
 	jailSoon          = regexp.MustCompile(`^(.+) will be jailed in under .+ on (\S+) if it keeps missing blocks$`)
 )
 
-// resolvedText is what is true once an alarm clears, from its message. Each of these clears for one reason only, an
-// alarm that clears for several stores its resolution instead. Empty when the message reads fine as it is.
+// resolvedText covers alarms that clear for one reason only, others store a resolution. Empty if the message reads fine.
 func resolvedText(chain, message string) string {
 	if strings.HasPrefix(message, "Proposal #") {
 		return govResolvedText(chain, message)
@@ -99,7 +95,7 @@ func resolvedText(chain, message string) string {
 	return ""
 }
 
-// govResolvedText follows govResolvedLabel: voted, or voting ended with or without the validator's vote.
+// govResolvedText follows govResolvedLabel.
 func govResolvedText(chain, message string) string {
 	lines := strings.Split(message, "\n")
 	ends, moniker := "", ""
@@ -128,10 +124,10 @@ func govResolvedText(chain, message string) string {
 	return ""
 }
 
-// orphanNote is the last line of an alarm cleared because nothing watches it any more.
+// orphanNote is the last line of an alarm cleared because nothing watches it.
 const orphanNote = "The alert was turned off or its settings changed"
 
-// orphanResolution is for a restored alarm cleared because nothing watches it any more: it didn't get better.
+// orphanResolution is for a restored alarm nothing watches any more.
 func orphanResolution(message string) resolution {
 	return resolution{"ℹ️", "No longer watched", withoutSeverity(message) + "\n" + orphanNote}
 }

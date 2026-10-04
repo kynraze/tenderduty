@@ -8,13 +8,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// govProposal is a proposal in its voting period.
 type govProposal struct {
 	ID        uint64
 	Title     string
@@ -22,12 +22,12 @@ type govProposal struct {
 	Voted     bool
 }
 
-// gov module versions to try, v1 first. Both share the field numbers read here, v1beta1 keeps the title in content.
+// versions to try, v1 first, same field numbers, v1beta1 keeps the title in content
 var govModules = []string{"cosmos.gov.v1", "cosmos.gov.v1beta1"}
 
 const proposalStatusVoting = 2
 
-// voterAddress is the validator's account, the valoper's bytes with the account prefix. Empty when it can't be told.
+// voterAddress is the validator's account: the valoper's bytes with the account prefix, empty if unknown.
 func voterAddress(valoper string) string {
 	prefix, bz, err := bech32.DecodeAndConvert(valoper)
 	if err != nil || !strings.HasSuffix(prefix, "valoper") {
@@ -40,7 +40,6 @@ func voterAddress(valoper string) string {
 	return voter
 }
 
-// getProposals lists the proposals in voting and, when the voter is known, whether it has voted on each.
 func getProposals(ctx context.Context, client *rpchttp.HTTP, voter string) ([]govProposal, error) {
 	// QueryProposalsRequest{proposal_status: voting, pagination: {limit: 100}}
 	request := protowire.AppendTag(nil, 1, protowire.VarintType)
@@ -74,7 +73,7 @@ func getProposals(ctx context.Context, client *rpchttp.HTTP, voter string) ([]go
 	return nil, lastErr
 }
 
-// hasVoted asks for the voter's vote, a chain answers with an error when there is none.
+// hasVoted: a chain answers with an error when there is no vote.
 func hasVoted(ctx context.Context, client *rpchttp.HTTP, module string, id uint64, voter string) (bool, error) {
 	request := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), id)
 	request = protowire.AppendString(protowire.AppendTag(request, 2, protowire.BytesType), voter)
@@ -85,8 +84,7 @@ func hasVoted(ctx context.Context, client *rpchttp.HTTP, module string, id uint6
 	return resp.Response.Code == 0 && len(resp.Response.Value) > 0, nil
 }
 
-// parseProposals reads QueryProposalsResponse by field number, only what the alerts need, so chains with their own
-// proposal messages decode the same.
+// parseProposals reads only what the alerts need by field number, so chains with custom proposal messages decode too.
 func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 	proposals := make([]govProposal, 0)
 	err := eachField(b, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
@@ -99,7 +97,7 @@ func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 			case num == 1 && typ == protowire.VarintType:
 				p.ID = varint
 			case num == 2 && typ == protowire.BytesType && legacy:
-				// content Any, its value is the legacy proposal with the title first
+				// content Any, legacy proposal with the title first
 				return eachField(value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
 					if num == 2 && typ == protowire.BytesType {
 						p.Title = firstString(value)
@@ -122,7 +120,7 @@ func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 	return proposals, err
 }
 
-// eachField walks a protobuf message, giving bytes fields their value and varints their number.
+// eachField calls fn per field with its bytes value or varint.
 func eachField(b []byte, fn func(num protowire.Number, typ protowire.Type, value []byte, varint uint64) error) error {
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
@@ -175,14 +173,25 @@ func parseTimestamp(b []byte) time.Time {
 	return time.Unix(int64(seconds), int64(nanos)).UTC()
 }
 
-// govEndFormat is how the end of voting is written, the time left is worked out from it when a message is sent.
+// govEndFormat is how the end of voting is written, the time left is parsed from it when sent.
 const govEndFormat = "2 Jan 2006 15:04 UTC"
+
+// govTitle is on-chain text: newlines and control characters become spaces, capped at 200 runes.
+func govTitle(title string) string {
+	title = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, title)
+	return clipRunes(strings.TrimSpace(title), 200)
+}
 
 // the messages are the alarms' keys, so they only hold what doesn't change while the proposal is in voting
 func (cc *ChainConfig) govOpenMessage(p govProposal) string {
 	title := ""
-	if p.Title != "" {
-		title = " " + p.Title
+	if t := govTitle(p.Title); t != "" {
+		title = " " + t
 	}
 	return fmt.Sprintf("Proposal #%d%s\nEnds %s", p.ID, title, p.VotingEnd.Format(govEndFormat))
 }
@@ -193,7 +202,7 @@ func (cc *ChainConfig) govRemindMessage(p govProposal, moniker string) string {
 
 var govMessageId = regexp.MustCompile(`^Proposal #(\d+)`)
 
-// govTimeLeft adds the time left to a message's Ends or Can unjail after line, while that time is still ahead.
+// govTimeLeft adds the time left to the Ends or Can unjail after line while it is ahead.
 func govTimeLeft(message string) string {
 	lines := strings.Split(message, "\n")
 	for i, line := range lines {
@@ -212,7 +221,7 @@ func govTimeLeft(message string) string {
 	return strings.Join(lines, "\n")
 }
 
-// shortDuration writes a duration as its two largest units, 6d 23h, 5h 12m or 59m.
+// shortDuration writes the two largest units: 6d 23h, 5h 12m, 59m.
 func shortDuration(d time.Duration) string {
 	minutes := int(d.Minutes())
 	days, hours, minutes := minutes/(24*60), minutes/60%24, minutes%60
@@ -228,10 +237,10 @@ func shortDuration(d time.Duration) string {
 	}
 }
 
-// govOutcomes holds how proposals ended, by chain name and id, for the message that clears their alarm.
+// govOutcomes is keyed chain#id, read when the alarm clears.
 var govOutcomes sync.Map
 
-// govResolvedLabel says why a governance alarm cleared: the proposal's result once voting ended, else the vote.
+// govResolvedLabel is the proposal's result once voting ended, else the vote.
 func govResolvedLabel(chain, message string) (icon, label string) {
 	if match := govMessageId.FindStringSubmatch(message); match != nil {
 		if outcome, ok := govOutcomes.Load(chain + "#" + match[1]); ok {
@@ -249,7 +258,7 @@ func govResolvedLabel(chain, message string) (icon, label string) {
 	return "✅", "Voted"
 }
 
-// getOutcome reads a proposal's status after voting: passed, rejected or failed.
+// getOutcome returns passed, rejected or failed.
 func getOutcome(ctx context.Context, client *rpchttp.HTTP, id uint64) string {
 	request := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), id)
 	for _, module := range govModules {
@@ -281,8 +290,7 @@ func getOutcome(ctx context.Context, client *rpchttp.HTTP, id uint64) string {
 	return ""
 }
 
-// govAlarms keeps one alarm per proposal waiting on a vote, and a reminder when voting is about to end. The wanted
-// alarms are worked out fresh each time and compared with the active ones, so a restart picks up where it was.
+// govAlarms keeps an alarm per proposal awaiting a vote and a reminder near its end, recomputed each time.
 func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 	proposals, loaded := cc.govSnapshot()
 	if !loaded {
@@ -309,7 +317,7 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
-	// a proposal's alarm and its reminder clear together when the vote is cast or voting ends, the reminder says it
+	// alarm and reminder clear together, the reminder announces it
 	reminded := make(map[string]bool)
 	for message := range active {
 		if _, ok := wanted[message]; !ok && strings.Contains(message, " has not voted") {
@@ -330,7 +338,7 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 	}
 }
 
-// govAlarmId rebuilds an alarm's id from its message, for alarms that are no longer wanted.
+// govAlarmId rebuilds the id from the message, for alarms no longer wanted.
 func govAlarmId(valInfo *ValInfo, message string) string {
 	id := uint64(0)
 	if match := govMessageId.FindStringSubmatch(message); match != nil {
@@ -342,7 +350,6 @@ func govAlarmId(valInfo *ValInfo, message string) string {
 	return fmt.Sprintf("%sgov%d", valInfo.Valcons, id)
 }
 
-// refreshProposals reads the proposals in voting, it runs with the validator refresh.
 func (cc *ChainConfig) refreshProposals(ctx context.Context, client *rpchttp.HTTP) {
 	if !cc.alertSettings().GovAlerts && !td.reportsEnabled() {
 		return
@@ -352,7 +359,7 @@ func (cc *ChainConfig) refreshProposals(ctx context.Context, client *rpchttp.HTT
 		l(cc.ChainId, "could not read governance proposals:", err)
 		return
 	}
-	// the ones that left voting since the last read have a result now, keep it for the message clearing their alarm
+	// keep the result of proposals that left voting, for the clearing message
 	previous, _ := cc.govSnapshot()
 	td.reportsMux.Lock()
 	if remembered := td.reportData.OpenVotes[cc.name]; len(remembered) > 0 {
@@ -393,7 +400,6 @@ func (cc *ChainConfig) govSnapshot() ([]govProposal, bool) {
 	return append([]govProposal(nil), cc.proposals...), cc.proposalsLoaded
 }
 
-// activeMessages lists a chain's active alarms whose message starts with prefix.
 func activeMessages(chain, prefix string) map[string]bool {
 	alarms.notifyMux.RLock()
 	defer alarms.notifyMux.RUnlock()

@@ -36,9 +36,9 @@ type alertMsg struct {
 	extra    string
 	uniqueId string
 	key      string
-	// lasted is how long a resolved alarm was active, worked out when it cleared. Zero when that isn't known.
+	// how long a resolved alarm was active, zero if unknown
 	lasted time.Duration
-	// quiet is a recovery another one of the same event announces: chats don't get it, pagerduty still resolves it.
+	// recovery announced by another alarm of the same event: no chat message, pagerduty still resolves
 	quiet bool
 	// several nodes of one server, see group_alerts.go
 	group *groupCard
@@ -102,7 +102,6 @@ func (msg *alertMsg) summary() string {
 	return msg.message
 }
 
-// text is the summary with the chain's extra_info on its own line.
 func (msg *alertMsg) text() string {
 	if msg.extra == "" {
 		return msg.summary()
@@ -110,7 +109,7 @@ func (msg *alertMsg) text() string {
 	return msg.summary() + "\n" + msg.extra
 }
 
-// header gives the first line of every notification: an icon and the severity, or Resolved.
+// header is the icon and severity (or Resolved) of the first line.
 func (msg *alertMsg) header() (icon, state string) {
 	if msg.resolved {
 		if r, ok := storedResolution(msg.chain, msg.message); ok {
@@ -217,7 +216,7 @@ type pendingRecovery struct {
 	Message  string `json:"message"`
 	Severity string `json:"severity"`
 	ID       string `json:"id"`
-	// Lasted is how long the alarm was active, for the recovery's card. It is gone with the alarm, so it is kept here.
+	// Lasted is gone with the alarm, so it is kept here.
 	Lasted time.Duration `json:"lasted,omitempty"`
 	Quiet  bool          `json:"quiet,omitempty"`
 }
@@ -410,7 +409,7 @@ func notifySlack(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, slk, err) }()
-	// another recovery of the same event says it, this one only clears what was sent
+	// another alarm announces this recovery
 	if msg.quiet {
 		return nil
 	}
@@ -426,12 +425,11 @@ func postSlack(msg *alertMsg) (err error) {
 
 	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.slkHook, bytes.NewBuffer(data))
 	if err != nil {
-		return
+		return scrubURLError(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := newNotificationClient(msg.context(), 10*time.Second).Do(req)
 	if err != nil {
 		return
 	}
@@ -458,8 +456,7 @@ type Attachment struct {
 	MrkdwnIn  []string     `json:"mrkdwn_in,omitempty"`
 }
 
-// tone is how serious a notification looks, the colors discord and slack show are picked from it. Only the three
-// states that need an eye get a color, anything else stays plain so a channel doesn't read as a rainbow.
+// tone picks the discord and slack colour, "plain" has none.
 func (msg *alertMsg) tone() string {
 	switch {
 	case msg.resolved:
@@ -473,12 +470,10 @@ func (msg *alertMsg) tone() string {
 	}
 }
 
-// buildSlackMessage is the card as attachment fields. The text stays the whole message in plain words, it is what
-// shows in a notification preview.
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
 	card := msg.card()
 	icon, state := card.Icon, card.State
-	// the first line is the preview a notification shows, the fields hold the rest. A card with no fields carries it all.
+	// the first line is the notification preview, the fields hold the rest
 	message, _, _ := strings.Cut(msg.summary(), "\n")
 	if card.Note != "" {
 		message = msg.text()
@@ -488,10 +483,10 @@ func buildSlackMessage(msg *alertMsg) *SlackMessage {
 	if msg.resolved {
 		message = "OK: " + message
 	}
-	// slack's own words, "plain" leaves the bar off
+	// slack colour names, plain has none
 	color := map[string]string{"good": "good", "warning": "warning", "danger": "danger"}[msg.tone()]
 	return &SlackMessage{
-		Text: message,
+		Text: slackText(message),
 		Attachments: []Attachment{
 			{
 				Title:    strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.heading(), state, msg.slkMentions)),
@@ -512,7 +507,7 @@ func notifyDiscord(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, di, err) }()
-	// another recovery of the same event says it, this one only clears what was sent
+	// another alarm announces this recovery
 	if msg.quiet {
 		return nil
 	}
@@ -521,7 +516,7 @@ func notifyDiscord(msg *alertMsg) (err error) {
 
 func postDiscord(msg *alertMsg) (err error) {
 	discPost := buildDiscordMessage(msg)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newNotificationClient(msg.context(), 10*time.Second)
 	data, err := json.MarshalIndent(discPost, "", "  ")
 	if err != nil {
 		l("⚠️ Could not notify discord!", err)
@@ -530,6 +525,7 @@ func postDiscord(msg *alertMsg) (err error) {
 
 	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.discHook, bytes.NewBuffer(data))
 	if err != nil {
+		err = scrubURLError(err)
 		l("⚠️ Could not notify discord!", err)
 		return err
 	}
@@ -550,10 +546,48 @@ func postDiscord(msg *alertMsg) (err error) {
 }
 
 type DiscordMessage struct {
-	Username  string         `json:"username,omitempty"`
-	AvatarUrl string         `json:"avatar_url,omitempty"`
-	Content   string         `json:"content"`
-	Embeds    []DiscordEmbed `json:"embeds,omitempty"`
+	Username        string                  `json:"username,omitempty"`
+	AvatarUrl       string                  `json:"avatar_url,omitempty"`
+	Content         string                  `json:"content"`
+	Embeds          []DiscordEmbed          `json:"embeds,omitempty"`
+	AllowedMentions *DiscordAllowedMentions `json:"allowed_mentions,omitempty"`
+}
+
+// DiscordAllowedMentions lists who a message may ping, anything else in its text is plain.
+type DiscordAllowedMentions struct {
+	Parse []string `json:"parse"`
+	Users []string `json:"users,omitempty"`
+	Roles []string `json:"roles,omitempty"`
+}
+
+var (
+	discordUserMention = regexp.MustCompile(`<@!?(\d+)>`)
+	discordRoleMention = regexp.MustCompile(`<@&(\d+)>`)
+)
+
+// discordMentionLimit is how many users or roles discord accepts in allowed_mentions.
+const discordMentionLimit = 100
+
+// discordAllowedMentions lets the operator's own mentions ping, never chain text such as a chain name or proposal title.
+func discordAllowedMentions(configured string) *DiscordAllowedMentions {
+	allowed := &DiscordAllowedMentions{Parse: []string{}}
+	// "everyone" covers @here as well
+	if strings.Contains(configured, "@everyone") || strings.Contains(configured, "@here") {
+		allowed.Parse = append(allowed.Parse, "everyone")
+	}
+	ids := func(pattern *regexp.Regexp) []string {
+		var found []string
+		seen := make(map[string]bool)
+		for _, m := range pattern.FindAllStringSubmatch(configured, -1) {
+			if !seen[m[1]] && len(found) < discordMentionLimit {
+				seen[m[1]] = true
+				found = append(found, m[1])
+			}
+		}
+		return found
+	}
+	allowed.Users, allowed.Roles = ids(discordUserMention), ids(discordRoleMention)
+	return allowed
 }
 
 type DiscordEmbed struct {
@@ -574,14 +608,15 @@ func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 		if card.Extra != "" {
 			lines = append(lines, card.Extra)
 		}
-		return &DiscordMessage{Username: "Tenderduty", Content: clipRunes(header+"\n\n"+strings.Join(lines, "\n"), discordContentLimit)}
+		return &DiscordMessage{Username: "Tenderduty", Content: clipRunes(header+"\n\n"+strings.Join(lines, "\n"), discordContentLimit), AllowedMentions: discordAllowedMentions(msg.discMentions)}
 	}
-	// the dashboard's colors, a tone with none is drawn without a bar
+	// dashboard colours, plain gets no bar
 	color := map[string]uint{"good": 0x63d6c4, "warning": 0xf1b663, "danger": 0xf27c76}[msg.tone()]
 	return &DiscordMessage{
-		Username: "Tenderduty",
-		Content:  header,
-		Embeds:   []DiscordEmbed{card.discordEmbed(color)},
+		Username:        "Tenderduty",
+		Content:         header,
+		Embeds:          []DiscordEmbed{card.discordEmbed(color)},
+		AllowedMentions: discordAllowedMentions(msg.discMentions),
 	}
 }
 
@@ -593,7 +628,7 @@ func notifyTg(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, tg, err) }()
-	// another recovery of the same event says it, this one only clears what was sent
+	// another alarm announces this recovery
 	if msg.quiet {
 		return nil
 	}
@@ -617,11 +652,10 @@ func postTg(msg *alertMsg) (err error) {
 	return err
 }
 
-// timeLeft finds the time left that governance and upgrade messages show, to make it stand out.
+// timeLeft matches the time left shown in governance and upgrade messages.
 var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 
-// buildTelegramMessage formats an alert as telegram HTML: a bold header, the card's fields, then extra_info in italics.
-// Everything that comes from a message or the config is escaped, telegram refuses a whole message over a stray <.
+// buildTelegramMessage escapes all text, telegram rejects a message with a stray <.
 func buildTelegramMessage(msg *alertMsg) string {
 	card := msg.card()
 	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.heading()), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
@@ -629,7 +663,7 @@ func buildTelegramMessage(msg *alertMsg) string {
 		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
 	if msg.tgMentions != "" {
-		// already telegram HTML, telegramMentions escaped what came from the config
+		// already HTML, escaped in telegramMentions
 		text += "\n" + msg.tgMentions
 	}
 	return text
@@ -724,7 +758,7 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 	return a
 }
 
-// severityRank orders severities for min_severity, an unknown one ranks as critical so it is never dropped.
+// severityRank orders severities for min_severity, unknown ranks as critical so it is never dropped.
 func severityRank(severity string) int {
 	switch severity {
 	case "":
@@ -745,8 +779,7 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	c.record(chainName, message, severity, resolved, false, id)
 }
 
-// resolveQuietly clears an alarm whose recovery another alarm of the same event announces, so chats get one message
-// for it. Pagerduty still resolves its incident.
+// resolveQuietly clears an alarm whose recovery another alarm announces, pagerduty still resolves.
 func (c *Config) resolveQuietly(chainName, message string, id *string) {
 	c.record(chainName, message, "info", true, true, id)
 }
@@ -809,7 +842,7 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 	heldMux.Lock()
 	_, wasHeld := held[key]
 	if resolved {
-		// never sent, so there is nothing to recover
+		// never sent, nothing to recover
 		delete(held, key)
 	} else if c.holdsAlert(chainName, severity, resolved, time.Now()) {
 		held[key] = heldAlert{chain: chainName, message: message, severity: severity, id: uniq}
@@ -880,7 +913,7 @@ func (cc *ChainConfig) watch() {
 	jailSoonAlarm = alarmIsActive(cc.name, cc.jailSoonMessage(valInfo.Moniker))
 	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
-	// the old message is still matched so alarms saved by earlier versions clear
+	// old message wording, kept for saved alarms
 	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
 	if inactiveMessage == "" {
 		inactiveMessage = activeMessage(cc.name, " is no longer in the active set on ")
@@ -1002,8 +1035,7 @@ func (cc *ChainConfig) watch() {
 		// inactive status must also be reconciled after a restart.
 		if cc.alertSettings().AlertIfInactive && !valInfo.ValidatorStale {
 			id, tombId, unjailId := valInfo.Valcons+"jailed", valInfo.Valcons+"tombstoned", valInfo.Valcons+"unjail"
-			// tombstoning is only in the signing info, wait a little for it instead of calling a tombstoned validator
-			// jailed. A chain that never answers signing info queries gets the jailed message.
+			// tombstoned shows only in signing info, wait briefly before alerting jailed
 			waitForSigning := valInfo.Jailed && !valInfo.Tombstoned && valInfo.SigningStale &&
 				!valInfo.SigningUpdatedAt.IsZero() && time.Since(valInfo.SigningUpdatedAt) < 3*time.Minute
 			out := !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned
@@ -1011,7 +1043,7 @@ func (cc *ChainConfig) watch() {
 			switch {
 			case waitForSigning:
 			case valInfo.Tombstoned:
-				// permanent, so it is never cleared. A jailed alarm sent before stays as it was.
+				// permanent, never cleared; an earlier jailed alarm stays
 				if tombstoneMessage == "" || reconcile {
 					tombstoneMessage = jailMessage(valInfo, cc.ChainId)
 					td.alert(cc.name, tombstoneMessage, "critical", false, &tombId)
@@ -1029,20 +1061,19 @@ func (cc *ChainConfig) watch() {
 				td.alert(cc.name, inactiveMessage, "info", true, &id)
 				inactiveMessage, backInSet = "", true
 			}
-			// tombstoning is permanent, the first alert is all there is to say. It clears only when what the chain
-			// reports changed (a reset, another validator in the config), quietly so pagerduty's incident closes.
+			// clears only when chain data changed (reset, other validator), quietly so pagerduty closes
 			if tombstoneMessage != "" && !valInfo.Tombstoned && !valInfo.SigningStale {
 				td.resolveQuietly(cc.name, tombstoneMessage, &tombId)
 				tombstoneMessage = ""
 			}
 
-			// jailed for downtime ends after jailed_until, then it takes an unjail transaction
+			// downtime jail ends after jailed_until, then an unjail tx is needed
 			canUnjail := valInfo.Jailed && !valInfo.Tombstoned && valInfo.JailedUntil.After(time.Unix(0, 0)) && time.Now().After(valInfo.JailedUntil)
 			if canUnjail && (unjailMessage == "" || reconcile) {
 				unjailMessage = fmt.Sprintf("%s can unjail on %s", valInfo.Moniker, cc.ChainId)
 				td.alert(cc.name, unjailMessage, "info", false, &unjailId)
 			} else if unjailMessage != "" && !valInfo.Jailed {
-				// back in the active set already says it was unjailed
+				// back in the set already says unjailed
 				if backInSet {
 					td.resolveQuietly(cc.name, unjailMessage, &unjailId)
 				} else {
@@ -1132,7 +1163,7 @@ func (cc *ChainConfig) watch() {
 				td.alert(cc.name, cc.jailRiskMessage(valInfo.Moniker), "info", true, &id)
 			}
 
-			// while it is missing blocks right now, how long until the misses left run out at the chain's block time
+			// estimate time to jailing from block time
 			soonId := valInfo.Valcons + "jailsoon"
 			blockTime := cc.averageBlockTime()
 			soon := consecutiveMiss >= jailSoonAfter && blockTime > 0 &&
@@ -1232,10 +1263,9 @@ func (cc *ChainConfig) watch() {
 	}
 }
 
-// jailSoonAfter is how many blocks in a row have to be missed before the time left until jailing is estimated.
+// jailSoonAfter is the consecutive misses needed before estimating time to jailing.
 const jailSoonAfter = 3
 
-// plural writes a count with its noun, "1 minute" or "5 minutes".
 func plural(n int, noun string) string {
 	if n == 1 {
 		return "1 " + noun
@@ -1243,8 +1273,7 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// jailMessage says why the validator is out of the active set. A jailing's end is part of it, the time left is added
-// when the message is sent.
+// jailMessage says why the validator is out, the time left is added when sent.
 func jailMessage(valInfo *ValInfo, chainId string) string {
 	switch {
 	case valInfo.Tombstoned:
@@ -1359,7 +1388,7 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			}
 			id = fibreAlarmId(valInfo, message)
 		case isFibreMetricsMessage(message):
-			// one the current settings still expect was skipped above, this is off or its threshold changed
+			// expected ones are skipped above, so this is off or its threshold changed
 			id = fibreMetricsAlarmId(valInfo, message)
 		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
 			id = valInfo.Valcons + "proposal"

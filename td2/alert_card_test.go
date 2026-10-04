@@ -8,8 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// cardCase is one notification, raised or resolved. Its resolution (what is stored when an alarm clears for more than
-// one reason) is set by use, since cases share a message and differ in how it cleared.
+// cardCase is one notification, its stored resolution is reset by use() because cases share a message.
 type cardCase struct {
 	name  string
 	msg   *alertMsg
@@ -26,7 +25,6 @@ func (c cardCase) use() *alertMsg {
 
 const cardHost = "localhost:7980"
 
-// cardChain is Devnet1 with the settings the messages are made from, as td's only chain.
 func cardChain(t *testing.T) *ChainConfig {
 	t.Helper()
 	c := auditConfig(t)
@@ -47,7 +45,6 @@ func cardChain(t *testing.T) *ChainConfig {
 	return cc
 }
 
-// cardCases is every kind of notification there is, raised and resolved, with what each resolution can be.
 func cardCases(t *testing.T) []cardCase {
 	t.Helper()
 	cc := cardChain(t)
@@ -112,12 +109,11 @@ func cardCases(t *testing.T) []cardCase {
 		raised(name, plain[name], severity)
 	}
 
-	// cleared for one reason, the text comes from the message
+	// one reason only, text from the message
 	for _, name := range []string{"node down", "no RPC", "stalled", "missed blocks", "missed window", "missed proposals", "jail risk",
 		"jail soon", "jailed", "jailed no end", "tombstoned", "inactive", "can unjail"} {
 		cleared(name, plain[name], nil)
 	}
-	// governance: voted, voting ended without a vote, or the result
 	open, remind, past := plain["proposal"], plain["vote reminder"], cc.govOpenMessage(govProposal{ID: 39, Title: "Community Pool", VotingEnd: until.Add(-48 * time.Hour)})
 	pastRemind := cc.govRemindMessage(govProposal{ID: 39, Title: "Community Pool", VotingEnd: until.Add(-48 * time.Hour)}, "Kynraze")
 	outcome := func(result string) func() {
@@ -132,13 +128,11 @@ func cardCases(t *testing.T) []cardCase {
 	cleared("proposal rejected without a vote", remind, outcome("Rejected"))
 	cleared("proposal failed", open, outcome("Failed"))
 	cleared("proposal no title", plain["proposal no title"], func() { govOutcomes.Delete("Devnet1#40") })
-	// upgrades
 	for _, name := range []string{"upgrade", "upgrade soon", "signal upgrade", "signal upgrade end"} {
 		cleared(name+" done", plain[name], func() { upgradeOutcomes.Delete("Devnet1@12345678") })
 		cleared(name+" cancelled", plain[name], func() { upgradeOutcomes.Store("Devnet1@12345678", "Cancelled") })
 	}
 
-	// Fibre: registered, up, verified, replaced, dropped, or no longer checked
 	down, identity, unregistered := plain["fibre down"], plain["fibre identity"], plain["fibre unregistered"]
 	fibre := func(name, message string, state fibreState) {
 		stored(name, message, cc.fibreResolution(message, state, "Kynraze"))
@@ -149,12 +143,10 @@ func cardCases(t *testing.T) []cardCase {
 	fibre("fibre dropped", down, fibreState{})
 	fibre("fibre verified", identity, fibreState{Registered: true, Host: cardHost, Reachable: true, KeyKnown: true, IdentityOK: true})
 	fibre("fibre not checked", identity, fibreState{Registered: true, Host: cardHost, Reachable: true})
-	// the metrics alarms
 	for _, kind := range fibreMetricsKinds {
 		message := plain["fibre metrics "+kind.kind]
 		stored("fibre metrics "+kind.kind, message, cc.fibreMetricsResolution(message, fibreSnapshot{}))
 	}
-	// signalling: the chain upgraded, the validator signalled, it was scheduled, or it fell back
 	signal := func(name, message string, state signalState) {
 		r, ok := cc.signalResolution(message, state, "Kynraze")
 		if !ok {
@@ -168,14 +160,13 @@ func cardCases(t *testing.T) []cardCase {
 	signal("signal fell back", plain["signal threshold"], signalState{Version: 10})
 	signal("signal dropped", plain["signal started"], signalState{Version: 10})
 
-	// restored from the state file after a restart, nothing remembers how it cleared
+	// restored after a restart, no stored resolution
 	for _, name := range []string{"fibre unregistered", "fibre down", "fibre identity", "signal started", "signal missing", "signal threshold"} {
 		cleared("restored "+name, plain[name], nil)
 	}
 	for _, kind := range fibreMetricsKinds {
 		cleared("restored fibre metrics "+kind.kind, plain["fibre metrics "+kind.kind], nil)
 	}
-	// an alarm nothing watches any more, whatever it was
 	for _, name := range order {
 		message := plain[name]
 		stored("no longer watched "+name, message, orphanResolution(message))
@@ -184,7 +175,7 @@ func cardCases(t *testing.T) []cardCase {
 	return cases
 }
 
-// detailForms are the second lines a message gets when it is sent, as the live detail functions write them.
+// detailForms are the live detail lines a message gets when sent.
 var detailForms = []struct{ message, detail string }{
 	{"Fibre at localhost:7980 is unreachable on devnet-1", "connection refused: Fibre is not listening on that port"},
 	{"Fibre at localhost:7980 does not prove it belongs to this validator on devnet-1", "the certificate is not valid at this time"},
@@ -205,7 +196,7 @@ var detailForms = []struct{ message, detail string }{
 	{"Proposal #39 Community Pool\nEnds 10 Oct 2026 17:48 UTC", ""},
 }
 
-// checkCard is what every card has to satisfy: known, short labelled lines, and valid for telegram and discord.
+// checkCard: known, short labelled lines, valid for telegram and discord.
 func checkCard(t *testing.T, name string, card alertCard) {
 	t.Helper()
 	if !card.known() {
@@ -222,7 +213,7 @@ func checkCard(t *testing.T, name string, card alertCard) {
 		if f.Icon == "" || f.Label == "" || f.Value == "" || strings.Contains(f.Value, "\n") || utf8.RuneCountInString(f.Value) > cardValueLimit {
 			t.Errorf("%s: bad field %+v", name, f)
 		}
-		// a line that was not read stays as a Detail, a Note is one the message itself words
+		// unread lines stay Detail or Note
 		if f.Label == "Detail" || f.Label == "Note" && !strings.HasPrefix(f.Value, "The budget is") && !strings.HasPrefix(f.Value, "Permanent,") {
 			t.Errorf("%s: a line was not understood: %+v", name, f)
 		}
@@ -239,7 +230,7 @@ func checkCard(t *testing.T, name string, card alertCard) {
 	}
 }
 
-// checkSent is what every destination gets of a notification: valid html and json, within discord's limits.
+// checkSent: valid html and json, within discord's limits.
 func checkSent(t *testing.T, name string, msg *alertMsg) {
 	t.Helper()
 	telegram := buildTelegramMessage(msg)
@@ -294,7 +285,7 @@ func TestCardDetailLinesAreUnderstood(t *testing.T) {
 	}
 }
 
-// alarms saved by earlier versions carry the old message, raised and cleared after an upgrade
+// saved state from earlier versions carries the old message
 func TestTheOldInactiveMessageIsACard(t *testing.T) {
 	cardChain(t)
 	for _, resolved := range []bool{false, true} {
@@ -322,15 +313,13 @@ func TestUnknownMessageStaysAsNote(t *testing.T) {
 		t.Fatalf("discord embed is %+v", embed)
 	}
 	slack := buildSlackMessage(msg)
-	if slack.Text != msg.message+"\nmonitor-eu" || len(slack.Attachments[0].Fields) != 0 {
+	if slack.Text != "something new &lt;&amp;&gt; happened\nmonitor-eu" || len(slack.Attachments[0].Fields) != 0 {
 		t.Fatalf("slack is %+v", slack)
 	}
-	// a node down message that isn't ours still loses its severity line
 	msg = &alertMsg{chain: "Devnet1", severity: "critical", message: "Severity: critical\nsomething else"}
 	if card := msg.card(); card.known() || card.Note != "something else" {
 		t.Fatalf("card is %+v", card)
 	}
-	// a resolved one that no rule reads shows what it says now
 	msg = &alertMsg{chain: "Devnet1", resolved: true, message: "something else"}
 	if card := msg.card(); card.known() || card.Note != "something else" || card.State != "Resolved" {
 		t.Fatalf("card is %+v", card)
@@ -363,7 +352,6 @@ func TestTelegramCards(t *testing.T) {
 			"⬆️ <b>Devnet1</b> · Upgrade scheduled\n\n<b>v4.0.0</b>\n📏 <b>Height:</b> 99,999\n⚠️ <b>Severity:</b> warning"},
 		{"jailed", &alertMsg{chain: "Devnet1", severity: "critical", message: "Kynraze is jailed on devnet-1"},
 			"🚨 <b>Devnet1</b> · Jailed\n\n👤 <b>Validator:</b> Kynraze\n⛓ <b>Chain:</b> <code>devnet-1</code>\n🔒 <b>Status:</b> 🔴 jailed\n⚠️ <b>Severity:</b> critical"},
-		// resolved cards say what is true now, and how long it lasted
 		{"fibre up", &alertMsg{chain: "Devnet1", resolved: true, severity: "info", lasted: 12 * time.Minute, message: fibreDownMessage(cardHost, "devnet-1")},
 			"✅ <b>Devnet1</b> · Fibre up\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n📡 <b>Reachable:</b> 🟢 yes\n⏱ <b>Lasted:</b> 12m"},
 		{"signing", &alertMsg{chain: "Devnet1", resolved: true, severity: "info", lasted: 3*time.Hour + 5*time.Minute, message: "Kynraze has missed 10 blocks on devnet-1"},
@@ -378,7 +366,6 @@ func TestTelegramCards(t *testing.T) {
 		})
 	}
 
-	// the governance outcomes and an alarm nothing watches
 	govOutcomes.Store("Devnet1#39", "Passed")
 	passed := &alertMsg{chain: "Devnet1", resolved: true, severity: "info", message: "Proposal #39 Community Pool\nEnds 10 Oct 2020 17:48 UTC"}
 	if got, want := buildTelegramMessage(passed), "✅ <b>Devnet1</b> · Passed\n\n<b>#39 Community Pool</b>\n📜 <b>Result:</b> 🟢 passed\n🏁 <b>Voting:</b> ended 10 Oct 2020 17:48 UTC"; got != want {
@@ -406,12 +393,12 @@ func TestHostileTextIsEscaped(t *testing.T) {
 			t.Fatalf("%q fell back", message)
 		}
 		telegram := buildTelegramMessage(msg)
-		// the mentions are already telegram HTML, everything else must have no raw markup
+		// mentions are already HTML, the rest must be escaped
 		telegramHTML(t, strings.Replace(telegram, "<b>@ops</b>", "", 1))
 		if strings.Contains(telegram, "<b>&") || strings.Contains(telegram, "<i>extra") || strings.Contains(telegram, "Dev<net>") {
 			t.Fatalf("unescaped text in %q", telegram)
 		}
-		// discord only pings from the content, which is the header and the configured mentions
+		// discord only pings from the content
 		hook := buildDiscordMessage(msg)
 		if strings.Contains(hook.Content, "everyone") || !strings.HasSuffix(hook.Content, "@here") {
 			t.Fatalf("discord content is %q", hook.Content)
@@ -504,7 +491,7 @@ func TestDiscordLimits(t *testing.T) {
 		t.Fatalf("not valid json: %v", err)
 	}
 
-	// 25 fields of a modest size fit, the 26th does not
+	// discord allows 25 fields
 	card = alertCard{}
 	for i := 0; i < 30; i++ {
 		card.Fields = append(card.Fields, alertField{Icon: "🎯", Label: "Label", Value: "value"})
@@ -513,7 +500,6 @@ func TestDiscordLimits(t *testing.T) {
 		t.Fatalf("%d fields", got)
 	}
 
-	// the plain style is one message, cut to 2000 characters
 	msg := &alertMsg{chain: "Devnet1", severity: "critical", message: strings.Repeat("x", 5000), discStyle: "plain"}
 	if got := utf8.RuneCountInString(buildDiscordMessage(msg).Content); got > discordContentLimit {
 		t.Fatalf("plain content is %d characters", got)
@@ -524,7 +510,6 @@ func TestSlackCards(t *testing.T) {
 	cardChain(t)
 	msg := &alertMsg{chain: "Devnet1", severity: "critical", message: fibreDownMessage(cardHost, "devnet-1"), slkMentions: "<!here>"}
 	slack := buildSlackMessage(msg)
-	// one line for the notification's preview, the fields hold the detail
 	if slack.Text != fibreDownMessage(cardHost, "devnet-1") {
 		t.Fatalf("text is %q", slack.Text)
 	}
@@ -579,7 +564,7 @@ func TestLastedFollowsTheAlarm(t *testing.T) {
 
 	c.alert("Devnet1", message, "critical", false, &id)
 	<-c.alertChan
-	// raised 12 minutes ago, as it was before a restart
+	// raised 12 minutes ago
 	alarms.notifyMux.Lock()
 	alarms.AllAlarms["Devnet1"][message] = time.Now().Add(-12 * time.Minute)
 	alarms.notifyMux.Unlock()
@@ -594,7 +579,7 @@ func TestLastedFollowsTheAlarm(t *testing.T) {
 	if fields := got.card().Fields; fields[len(fields)-1] != (alertField{Icon: "⏱", Label: "Lasted", Value: "12m"}) {
 		t.Fatalf("fields %+v", fields)
 	}
-	// the delivery worker builds the message again from the queue, it has to come out the same
+	// the worker rebuilds it from the queue, same result
 	alarms.notifyMux.RLock()
 	var queued *queuedNotification
 	for i := range alarms.Outbox {
@@ -612,7 +597,6 @@ func TestLastedFollowsTheAlarm(t *testing.T) {
 		t.Fatalf("not saved: %s %v", data, err)
 	}
 
-	// an alarm that was never raised has no time to tell
 	c.alert("Devnet1", "Kynraze has missed 11 blocks on devnet-1", "info", true, &id)
 	if never := <-c.alertChan; never.lasted != 0 {
 		t.Fatalf("lasted %v", never.lasted)

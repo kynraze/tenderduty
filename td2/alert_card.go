@@ -7,9 +7,7 @@ import (
 	"time"
 )
 
-// An alert is shown as a card: a header, an optional title, and a labelled line for each fact. The card is worked out
-// from the message that is the alarm's key and its live detail lines, so nothing here changes what is sent to
-// pagerduty or kept as state. A message this file doesn't know is shown as it is, as the card's note.
+// Cards are built from the message and its detail lines only, nothing sent to pagerduty or kept as state changes.
 
 const (
 	dotGreen  = "🟢"
@@ -18,23 +16,22 @@ const (
 	dotWhite  = "⚪"
 )
 
-// alertField is one labelled line of a card.
 type alertField struct {
 	Icon, Label, Value string
-	Code               bool // the value is shown as code: hosts, urls and chain ids
+	Code               bool // shown as code: hosts, urls and chain ids
 }
 
 type alertCard struct {
 	Icon, State string
-	Title       string // bold line above the fields: a proposal's number and name, an upgrade's name
+	Title       string // bold line above the fields: proposal or upgrade name
 	Fields      []alertField
-	Note        string // the body text of a message that is not known, with no fields
+	Note        string // body of an unknown message, no fields
 	Extra       string // the chain's extra_info
 }
 
 func (c alertCard) known() bool { return c.Note == "" }
 
-// cardValueLimit keeps one odd value (an error from a host) from taking over a card.
+// cardValueLimit caps a field value, e.g. an error from a host.
 const cardValueLimit = 300
 
 func row(icon, label, value string) alertField {
@@ -53,15 +50,14 @@ func who(moniker, chainId string) []alertField {
 	return []alertField{validatorField(moniker), chainField(chainId)}
 }
 
-// cardParts are the facts of one message. The ident ones say who and where and stay true when the alarm clears, the
-// state ones are about the problem or what replaced it.
+// cardParts: ident facts say who and where and stay true after the alarm clears, state facts are the problem or what replaced it.
 type cardParts struct {
 	title        string
 	ident, state []alertField
-	used         bool // the rule already used the detail lines
+	used         bool // rule consumed the detail lines
 }
 
-// cardRule reads one form of message: m is the regex match of the first line, rest the lines after it.
+// cardRule reads one form of message: m is the match of the first line, rest the lines after it.
 type cardRule struct {
 	re    *regexp.Regexp
 	build func(msg *alertMsg, m, rest []string) cardParts
@@ -118,7 +114,7 @@ var (
 	cardUpgrade       = regexp.MustCompile(`^Upgrade (.+) at height ([\d,]+)(?: is close)?$`)
 	cardSignalUpgrade = regexp.MustCompile(`^Version (\d+) upgrade at height ([\d,]+)(?: is close)?$`)
 
-	// what is true once an alarm clears, the texts of resolved.go and the resolutions
+	// resolution texts, see resolved.go
 	backSigning       = regexp.MustCompile(`^(.+) is signing blocks again on (\S+)$`)
 	backWindow        = regexp.MustCompile(`^(.+) is back under (\d+)% of the slashing window missed on (\S+)$`)
 	backProducing     = regexp.MustCompile(`^(\S+) is producing blocks again$`)
@@ -165,7 +161,6 @@ var (
 	cardLastUploadLine = regexp.MustCompile(`^last successful upload (.+)$`)
 )
 
-// raisedRules read the alarms' messages, with the live detail lines under them.
 var raisedRules = []cardRule{
 	{cardMissed, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[3]), state: []alertField{row("🎯", "Missed", m[2]+" blocks in a row")}}
@@ -196,7 +191,7 @@ var raisedRules = []cardRule{
 		}
 		return p
 	}},
-	// the old message, still in state files saved by earlier versions, has no chain id
+	// old message in saved state, no chain id
 	{cardLegacyInactive, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{validatorField(m[1])}, state: []alertField{row("🔒", "Status", dotRed+" "+m[2])}}
 	}},
@@ -264,7 +259,7 @@ var raisedRules = []cardRule{
 	}},
 }
 
-// whyFields is the detail line of a Fibre host that is down or failed its identity check.
+// whyFields shows the detail line of a down or mismatched Fibre host.
 func whyFields(rest []string) []alertField {
 	if len(rest) == 0 || rest[0] == "" {
 		return nil
@@ -272,7 +267,7 @@ func whyFields(rest []string) []alertField {
 	return []alertField{row("❓", "Why", rest[0])}
 }
 
-// metricsParts is a Fibre metrics alarm: the chain, what is wrong and the figures behind it, from the detail line.
+// metricsParts is a Fibre metrics alarm, figures from the detail line.
 func metricsParts(chainId string, state alertField, kind string, rest []string) cardParts {
 	p := cardParts{ident: []alertField{chainField(chainId)}, state: []alertField{state}, used: true}
 	if len(rest) == 0 {
@@ -322,7 +317,7 @@ func metricsParts(chainId string, state alertField, kind string, rest []string) 
 	return p
 }
 
-// resolvedRules read what is true once an alarm clears, as resolved.go and the resolutions word it.
+// resolvedRules match the texts of resolved.go.
 var resolvedRules = []cardRule{
 	{backSigning, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[2]), state: []alertField{row("✍️", "Signing", dotGreen+" signing blocks again")}}
@@ -418,7 +413,7 @@ var resolvedRules = []cardRule{
 	}},
 }
 
-// fibreDownFor is how long the chain's Fibre host has been unreachable, 0 when that isn't known for this host.
+// fibreDownFor is how long the host has been unreachable, 0 if unknown.
 func fibreDownFor(chain, host string) time.Duration {
 	if td == nil {
 		return 0
@@ -437,7 +432,6 @@ func fibreDownFor(chain, host string) time.Duration {
 	return max(time.Since(cc.fibre.DownSince), 0)
 }
 
-// proposalParts is a governance card: the proposal is its title, the rest are its end, and the vote or the result.
 func (msg *alertMsg) proposalParts(first string, rest []string, state string) cardParts {
 	p := cardParts{title: strings.TrimPrefix(first, "Proposal ")}
 	if msg.resolved {
@@ -477,7 +471,7 @@ func (msg *alertMsg) proposalParts(first string, rest []string, state string) ca
 	return p
 }
 
-// upgradeParts is an upgrade card, from x/upgrade or x/signal: its name, height and estimated time, or how it ended.
+// upgradeParts is the card for x/upgrade and x/signal upgrades.
 func (msg *alertMsg) upgradeParts(title, height string, rest []string, state string) cardParts {
 	p := cardParts{title: title, ident: []alertField{row("📏", "Height", height)}, used: true}
 	if msg.resolved {
@@ -497,11 +491,11 @@ func (msg *alertMsg) upgradeParts(title, height string, rest []string, state str
 	return p
 }
 
-// cardParts works out a message's facts, false for a message it doesn't know.
+// parts returns false for a message it doesn't know.
 func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts, bool) {
 	orphan := msg.resolved && len(rest) > 0 && rest[len(rest)-1] == orphanNote
 	if orphan {
-		// nothing watches it any more, so it says who and where and that it stopped
+		// orphaned alarm: show who and where, and that it stopped
 		p, ok := raisedParts(msg, first, rest[:len(rest)-1], state)
 		if !ok {
 			return cardParts{}, false
@@ -514,7 +508,7 @@ func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts
 			if p, ok := matchRule(msg, resolvedRules, first, rest); ok {
 				return p, true
 			}
-			// no resolution is known (the process restarted since it cleared), the message still says who and where
+			// no stored resolution (restarted since it cleared): fall back to the raised message
 			p, ok := matchRule(msg, raisedRules, first, nil)
 			p.state = []alertField{row("📌", "Status", dotGreen+" cleared")}
 			return p, ok
@@ -536,7 +530,6 @@ func raisedParts(msg *alertMsg, first string, rest []string, state string) (card
 	return matchRule(msg, raisedRules, first, rest)
 }
 
-// card is the notification as a card, worked out from the alert's summary.
 func (msg *alertMsg) card() alertCard {
 	if msg.group != nil {
 		return msg.group.card(msg)
@@ -544,7 +537,6 @@ func (msg *alertMsg) card() alertCard {
 	return msg.cardFrom(msg.summary())
 }
 
-// cardFrom is card for a given summary, the message and its detail lines.
 func (msg *alertMsg) cardFrom(body string) alertCard {
 	icon, state := msg.header()
 	c := alertCard{Icon: icon, State: state, Extra: msg.extra}
@@ -579,14 +571,13 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 	return c
 }
 
-// wasAProblem is whether how long the alarm lasted means anything. A proposal, an upgrade or signalling is news, not an
-// outage, and a tombstone is permanent.
+// wasAProblem is false for news (proposal, upgrade, signalling) and permanent tombstones, where the duration means nothing.
 func (msg *alertMsg) wasAProblem() bool {
 	m := msg.message
 	return !strings.HasPrefix(m, "Proposal #") && !strings.HasPrefix(m, "Upgrade ") && !isSignalMessage(m) && !strings.Contains(m, " is tombstoned on ")
 }
 
-// clipRunes cuts text to n characters, ending in … when it was longer.
+// clipRunes cuts s to n runes, ending in … when longer.
 func clipRunes(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n-1]) + "…"
@@ -614,7 +605,6 @@ func (c alertCard) telegramLines() []string {
 	return lines
 }
 
-// markdownLines are the card for discord's plain style.
 func (c alertCard) markdownLines() []string {
 	var lines []string
 	if c.Title != "" {
@@ -647,7 +637,7 @@ const (
 	discordEmbedLimit       = 6000
 )
 
-// inlineLimit is how long a value can be for a field to sit beside others.
+// inlineLimit is the longest value, in runes, that sits beside others.
 const inlineLimit = 24
 
 type DiscordField struct {
@@ -660,7 +650,7 @@ type DiscordFooter struct {
 	Text string `json:"text"`
 }
 
-// discordEmbed is the card as an embed, cut to discord's limits: it refuses a message that is over any of them.
+// discordEmbed clips to discord's limits, it rejects the whole message otherwise.
 func (c alertCard) discordEmbed(color uint) DiscordEmbed {
 	description := ""
 	if c.Title != "" {
@@ -697,14 +687,14 @@ func (c alertCard) discordEmbed(color uint) DiscordEmbed {
 	return embed
 }
 
-// SlackField is a field of a legacy attachment, short ones sit two to a row.
+// SlackField is a legacy attachment field, short ones sit two to a row.
 type SlackField struct {
 	Title string `json:"title"`
 	Value string `json:"value"`
 	Short bool   `json:"short"`
 }
 
-// slackText escapes what slack reads as markup in a message.
+// slackText escapes what slack reads as markup.
 func slackText(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
@@ -721,7 +711,6 @@ func (c alertCard) slackFields() []SlackField {
 	return fields
 }
 
-// slackTitle is the card's title in bold, for the attachment's text.
 func slackTitle(c alertCard) string {
 	if c.Title == "" {
 		return ""

@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// every cleared alarm says what is true now, never the problem it was about
 func TestResolvedNotificationsSayWhatIsTrueNow(t *testing.T) {
 	c := auditConfig(t)
 	c.NodeDownMin, c.NodeDownSeverity = 3, "critical"
@@ -102,7 +101,7 @@ func TestResolvedSignalling(t *testing.T) {
 	}
 }
 
-// the signalling alarms record why they cleared, so a chain that upgraded doesn't read "Signalled"
+// a chain that upgraded must not read "Signalled"
 func TestSignalAlarmsRecordWhyTheyCleared(t *testing.T) {
 	c := auditConfig(t)
 	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, signal: signalState{Version: 11}}
@@ -116,7 +115,7 @@ func TestSignalAlarmsRecordWhyTheyCleared(t *testing.T) {
 	}
 }
 
-// raising an alarm again drops how it cleared before, or its next recovery would repeat the old reason
+// or its next recovery would repeat the old reason
 func TestRaisingAgainForgetsTheLastResolution(t *testing.T) {
 	c := auditConfig(t)
 	c.Chains["Chain"] = &ChainConfig{name: "Chain", ChainId: "chain-1"}
@@ -129,7 +128,6 @@ func TestRaisingAgainForgetsTheLastResolution(t *testing.T) {
 	}
 }
 
-// a restored alarm cleared because nothing watches it didn't get better, and says so
 func TestOrphanedAlarmIsNotCalledFixed(t *testing.T) {
 	r := orphanResolution("Severity: critical\nRPC node https://rpc.example.com:443 has been down for > 3 minutes on atomone-1")
 	if r.label != "No longer watched" || r.text != "RPC node https://rpc.example.com:443 has been down for > 3 minutes on atomone-1\nThe alert was turned off or its settings changed" {
@@ -137,7 +135,7 @@ func TestOrphanedAlarmIsNotCalledFixed(t *testing.T) {
 	}
 }
 
-// what cleared goes out before what is new: "registered" reads before the problem found on the new host
+// "registered" reads before the problem found on the new host
 func TestFibreSendsWhatClearedFirst(t *testing.T) {
 	c := auditConfig(t)
 	cc := &ChainConfig{name: "Mocha", ChainId: "mocha-5", fibreLoaded: true,

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// recoveries reads the alerts recorded so far: the recoveries chats get, and the ones that only clear.
+// recoveries returns the recoveries chats get, and the quiet ones.
 func recoveries(t *testing.T, c *Config) (announced, quiet []string) {
 	t.Helper()
 	for {
@@ -119,7 +119,7 @@ func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
 	}
 }
 
-// unjailed and back in the active set in one check: "back in the active set" says it, "can unjail" clears quietly
+// "back in the active set" announces it, "can unjail" clears quietly
 func TestAnUnjailIsOneMessage(t *testing.T) {
 	oldConfig, oldAlarms := td, alarms
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,7 +174,7 @@ func TestAMovedFibreHostIsOneMessage(t *testing.T) {
 	}
 }
 
-// a quiet recovery sends nothing to a chat but clears what was sent there, so the alarm can be sent again later
+// clearing lets the alarm be sent again later
 func TestAQuietRecoverySendsNothingButClears(t *testing.T) {
 	auditConfig(t)
 	calls := 0
@@ -203,7 +203,6 @@ func TestAQuietRecoverySendsNothingButClears(t *testing.T) {
 	}
 }
 
-// the quiet mark rides along a recovery that waits in the outbox or for a restart
 func TestQuietSurvivesTheQueue(t *testing.T) {
 	c := auditConfig(t)
 	c.Chains["Chain"] = &ChainConfig{name: "Chain", ChainId: "chain-1"}
