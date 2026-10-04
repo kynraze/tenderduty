@@ -1,29 +1,25 @@
 ---
-# The file name is the label: Osmosis.yml is "Osmosis". No chains: section needed here.
+# The file name is the label: Osmosis.yml is "Osmosis".
 
-# chain_id is validated for a match when connecting to an RPC endpoint, also used as a label in several places.
+# Checked against the RPC node when connecting.
 chain_id: osmosis-1
-# Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how
-# to convert ed25519 keys to the appropriate bech32 address.
+# The validator's operator address (valoper). The signing address is looked up from the chain.
 valoper_address: osmovaloper1xxxxxxx...
-# Should the monitor fall back to a public RPC node if all supplied nodes fail? It picks one from the chain
-# registry that is on the right chain, synced, and accepts websockets. Public nodes aren't yours, only use this
-# as a backup.
+# Fall back to a public RPC node if all your nodes fail? Only use it as a backup.
 public_fallback: no
-# Added to every alert for this chain, useful to tell which tenderduty instance sent it.
+# Added to every alert for this chain, e.g. which tenderduty instance sent it.
 # extra_info: "sent from monitor-eu"
 
-# Only settings that differ from alert_defaults need to be set here.
+# Only settings that differ from alert_defaults.
 alerts:
   consecutive_missed: 3
-  # The destinations enabled in config.yml are used for this chain. To leave one out:
+  # Destinations enabled in config.yml are used. To leave one out:
   # telegram:
   #   enabled: no
 
-# This section covers our RPC providers. No LCD (aka REST) endpoints are used, only TM's RPC endpoints
-# Multiple hosts are encouraged, and will be tried sequentially until a working endpoint is discovered.
+# RPC nodes, tried in order. Only the RPC port is used, no LCD/REST.
 nodes:
-  # URL for the endpoint, protocol://hostname:port. Without a port https uses 443 and http 80
+  # protocol://hostname:port. Without a port https uses 443 and http 80.
   - url: http://YOUR_OSMOSIS_NODE:26657
-    # Should we send an alert if this host isn't responding?
+    # Alert if this node isn't responding?
     alert_if_down: yes

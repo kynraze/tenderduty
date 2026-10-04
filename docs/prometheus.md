@@ -1,109 +1,28 @@
 # Prometheus Endpoint
 
-This is the list of the prometheus statistics that are exposed by tenderduty. An example Grafana dashboard is planned, but not ready. Some notes about the stats:
+Enable with `prometheus_enabled` and `prometheus_listen_port` in [config.md](config.md#general-settings). Metrics are on `/metrics`.
 
-* All metrics are gauges, because counters are reset at startup using counters is ill-advised.
-* All endpoints include the following attributes: chain_id, moniker, and name.
-* Node specifc stats include an additional attribute: endpoint, which contains the RPC node's URL.
+* Chain metrics are gauges (counters would reset at startup) with the labels `chain_id`, `moniker` and `name`, for example `tenderduty_voting_power{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 125000`.
+* Node metrics add `endpoint`, the RPC node's URL.
+* Celestia Fibre metrics (`tenderduty_fibre_*`) are listed in [fibre.md](fibre.md#prometheus-and-grafana).
 
-### tenderduty_consecutive_missed_blocks
-
-The current count of consecutively missed blocks regardless of precommit or prevote status
-
-`tenderduty_consecutive_missed_blocks{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_endpoint_down_seconds
-
-How many seconds a node has been marked as unhealthy
-
-`tenderduty_endpoint_down_seconds{chain_id="chain-id",endpoint="http://somehost:26657",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_missed_block_window
-
-The missed block aka slashing window
-
-`tenderduty_missed_block_window{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 10000`
-
-### tenderduty_missed_blocks
-
-Count of blocks missed without seeing a precommit or prevote since tenderduty was started
-
-`tenderduty_missed_blocks{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_missed_blocks_for_window
-
-The current count of missed blocks in the slashing window regardless of precommit or prevote status
-
-`tenderduty_missed_blocks_for_window{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_missed_blocks_precommit_present
-
-Count of blocks missed where a precommit was seen since tenderduty was started
-
-`tenderduty_missed_blocks_precommit_present{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_missed_blocks_prevote_present
-
-Count of blocks missed where a prevote was seen since tenderduty was started
-
-`tenderduty_missed_blocks_prevote_present{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_misses_before_jail
-
-How many more blocks can be missed in the slashing window before the validator is jailed
-
-`tenderduty_misses_before_jail{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 5000`
-
-### tenderduty_missed_proposals
-
-Count of blocks the validator was due to propose but another validator did, since tenderduty was started
-
-`tenderduty_missed_proposals{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_proposed_blocks
-
-Count of blocks proposed since tenderduty was started
-
-`tenderduty_proposed_blocks{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 1`
-
-### tenderduty_signed_blocks
-
-Count of blocks signed since tenderduty was started
-
-`tenderduty_signed_blocks{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 27`
-
-### tenderduty_time_since_last_block
-
-How many seconds since the previous block was finalized, only set when a new block is seen, not useful for stall detection, helpful for averaging times
-
-`tenderduty_time_since_last_block{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 5.982313445`
-
-### tenderduty_time_since_last_block_unfinalized
-
-How many seconds since the previous block was finalized, set regardless of finalization, useful for stall detection, not helpful for figuring average time
-
-`tenderduty_time_since_last_block_unfinalized{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 5.9648419`
-
-### tenderduty_total_monitored_endpoints
-
-The count of rpc endpoints being monitored for a chain
-
-`tenderduty_total_monitored_endpoints{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 3`
-
-### tenderduty_total_unhealthy_endpoints
-
-The count of unhealthy rpc endpoints being monitored for a chain
-
-`tenderduty_total_unhealthy_endpoints{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 0`
-
-### tenderduty_voting_power
-
-The validator's consensus voting power, 0 when not in the active set
-
-`tenderduty_voting_power{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 125000`
-
-### tenderduty_voting_power_rank
-
-The validator's position in the active set by voting power, 0 when not in it
-
-`tenderduty_voting_power_rank{chain_id="chain-id",moniker="Moniker",name="Chain Name"} 42`
+| Metric | Description |
+| --- | --- |
+| `tenderduty_consecutive_missed_blocks` | Consecutive missed blocks, regardless of precommit or prevote. |
+| `tenderduty_endpoint_down_seconds` | Seconds a node has been unhealthy (node). |
+| `tenderduty_endpoint_syncing_seconds_behind` | Seconds a node is behind the head of the chain (node). |
+| `tenderduty_missed_block_window` | The missed block (slashing) window. |
+| `tenderduty_missed_blocks` | Blocks missed without a precommit or prevote seen, since tenderduty started. |
+| `tenderduty_missed_blocks_for_window` | Missed blocks in the slashing window, regardless of precommit or prevote. |
+| `tenderduty_missed_blocks_precommit_present` | Blocks missed with a precommit seen, since start. |
+| `tenderduty_missed_blocks_prevote_present` | Blocks missed with a prevote seen, since start. |
+| `tenderduty_misses_before_jail` | Blocks that can still be missed in the window before jailing. |
+| `tenderduty_missed_proposals` | Blocks the validator was due to propose but another validator did, since start. |
+| `tenderduty_proposed_blocks` | Blocks proposed, since start. |
+| `tenderduty_signed_blocks` | Blocks signed, since start. |
+| `tenderduty_time_since_last_block` | Seconds since the previous block was finalized. Set only when a block arrives, good for averaging block times. |
+| `tenderduty_time_since_last_block_unfinalized` | Seconds since the previous block, always set. Use it for stall detection. |
+| `tenderduty_total_monitored_endpoints` | RPC endpoints monitored for the chain. |
+| `tenderduty_total_unhealthy_endpoints` | Unhealthy RPC endpoints for the chain. |
+| `tenderduty_voting_power` | Consensus voting power, 0 when not in the active set. |
+| `tenderduty_voting_power_rank` | Position in the active set by voting power, 0 when not in it. |

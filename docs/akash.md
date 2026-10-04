@@ -70,14 +70,12 @@ If the transaction is successful, you will get a few bids. Select one and press 
 
 ![accept bid](img/akt-bids.png)
 
-Once the bid has been accepted the application will change to the deployments screen showing the event log for the pod. Once it shows it as deployed the tenderduty application should be up and running.
+After the bid is accepted, the deployments screen shows the event log. Once it shows deployed, tenderduty is running.
 
 ![deployed](img/akt-deployed.png)
 
 You can get the hostname for the deployment on the deployments screen by selecting your deployment.
 
 ![deployments](img/akt-deployments.png)
-
-If you made it this far, congrats!
 
 ![td dash on akash](img/akt-running.png)

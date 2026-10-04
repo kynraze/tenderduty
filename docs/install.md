@@ -6,8 +6,6 @@
 * [Systemd Service](#run-as-a-systemd-service-on-ubuntu)
 * [Dashboard and metrics access](#dashboard-and-metrics-access)
 
-Contributions and corrections are welcomed here. Would be nice to add a section on Akash deployments too.
-
 ## Docker Container
 
 Opens the dashboard (8888) and metrics (28686) ports, see [dashboard and metrics access](#dashboard-and-metrics-access).
@@ -20,6 +18,8 @@ mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-cha
 docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
+
+After editing the config, use `docker exec tenderduty tenderduty reload` or `docker kill -s HUP tenderduty`.
 
 ## Docker Compose
 
@@ -64,27 +64,17 @@ docker compose logs -f --tail 20
 
 ## Building from source
 
-*Note: building tenderduty requires go v1.27.1 or later*
+Building needs Go 1.27.1 or later. Install it from [go.dev](https://go.dev/doc/install), or:
 
-### Installing Go
-
-If you intend to build from source, you will need to install Go. There are many choices on how to do this. **The most common method is to use the official installation instructions at [go.dev](https://go.dev/doc/install),** but there are a couple of shortcuts that can also be used:
-
-Ubuntu:
 ```shell
+# Ubuntu
 sudo apt-get install -y snapd
 sudo snap install go --classic
-```
-
-MacOS: using [Homebrew](https://brew.sh)
-```shell
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# macOS, with Homebrew
 brew install go
 ```
 
-### Building
-
-Clone the repository before building because its dependencies use replace directives in `go.mod`.
+Clone the repository before building, its dependencies use replace directives in `go.mod`.
 
 ```
 git clone --branch main https://github.com/kynraze/tenderduty.git
@@ -98,58 +88,32 @@ go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 
 ## Run as a systemd service on Ubuntu
 
-One tenderduty process for all chains, running as its own user.
-
-### 1. Build and install the binary
-
-Install Go using the [instructions above](#installing-go), then:
+One process for all chains, running as its own user. Build the binary as above, then:
 
 ```shell
-git clone --branch main https://github.com/kynraze/tenderduty.git
-cd tenderduty
-go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
-```
-
-### 2. Create the user and config directories
-
-```shell
+# skip useradd if the tenderduty user already exists
 id tenderduty || sudo useradd --system --user-group --home-dir /var/lib/tenderduty --shell /usr/sbin/nologin tenderduty
 sudo install -d -m 0750 -o root -g tenderduty /etc/tenderduty /etc/tenderduty/chains.d
-```
-
-### 3. Write the configuration
-
-Copy the examples, then edit them:
-
-```shell
 sudo cp examples/config.yml /etc/tenderduty/config.yml
 sudo cp examples/chains.d/Osmosis.yml /etc/tenderduty/chains.d/
-```
-
-- `config.yml`: notifications and `alert_defaults`. A destination turned on here is used by every chain.
-- `chains.d/`: one file per chain, use `Realio.yml` for several validators on one chain.
-
-Then let the service user read them:
-
-```shell
+# edit both, then let the service user read them
 sudo chown -R root:tenderduty /etc/tenderduty
 sudo chmod -R u=rwX,g=rX,o= /etc/tenderduty
-```
-
-### 4. Start the service
-
-```shell
 sudo install -m 0644 contrib/tenderduty.service /etc/systemd/system/tenderduty.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now tenderduty
 sudo journalctl -u tenderduty -f
 ```
 
-State is kept in `/var/lib/tenderduty`. Restart after changing the config: `sudo systemctl restart tenderduty`.
+- `config.yml` holds notifications and `alert_defaults`. `chains.d/` has one file per chain, see `Realio.yml` for several validators on one chain.
+- [contrib/tenderduty.service](../contrib/tenderduty.service) runs `tenderduty -f /etc/tenderduty/config.yml -cc /etc/tenderduty/chains.d -state /var/lib/tenderduty/.tenderduty-state.json`, and its `ExecReload` sends SIGHUP.
+- State is kept in `/var/lib/tenderduty`.
+- `tenderduty chain ...` and `tenderduty reload` find `/etc/tenderduty` and `/var/lib/tenderduty` on their own.
+- `--home <dir>` (or `TENDERDUTY_HOME`) can replace `-f`, `-cc` and `-state` when they sit in one directory, for example `tenderduty --home $HOME/tenderduty`.
+- After editing config: `sudo systemctl reload tenderduty`. Listener and port changes need `sudo systemctl restart tenderduty`.
 
-### Updating
-
+To update:
 
 ```shell
 git pull
@@ -172,7 +136,7 @@ sudo ufw allow from YOUR_PROMETHEUS_IP to any port 28686 proto tcp
 sudo ufw enable
 ```
 
-For a domain with HTTPS, put a reverse proxy on the host in front of `localhost:8888`. Caddy:
+For a domain with HTTPS, put a reverse proxy in front of `localhost:8888`. Caddy:
 
 ```
 tenderduty.example.com {
@@ -180,7 +144,7 @@ tenderduty.example.com {
 }
 ```
 
-nginx (with certbot for the certificate), the dashboard uses a websocket so pass the upgrade headers:
+nginx (with certbot for the certificate). The dashboard uses a websocket, so pass the upgrade headers:
 
 ```
 server {
@@ -195,7 +159,7 @@ server {
 }
 ```
 
-Want it private? Add `basic_auth` (Caddy) or `auth_basic` (nginx), or use an SSH tunnel and open `http://127.0.0.1:8888`:
+To keep it private, add `basic_auth` (Caddy) or `auth_basic` (nginx), or use an SSH tunnel and open `http://127.0.0.1:8888`:
 
 ```shell
 ssh -L 8888:127.0.0.1:8888 YOUR_USER@YOUR_MONITOR_SERVER

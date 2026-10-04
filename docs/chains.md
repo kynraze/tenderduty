@@ -1,24 +1,21 @@
 # Settings for a chain
 
-Each chain gets its own file in `chains.d`, named after the chain: `chains.d/Osmosis.yml` is watched as "Osmosis". The settings below are the whole of that file, there is no `chains:` section in it. See [examples/chains.d](../examples/chains.d), or get one with `tenderduty -example-chain`.
+Each chain goes in its own file in `chains.d`, named after the chain: `chains.d/Osmosis.yml` is "Osmosis". The file holds the settings below directly, with no `chains:` section. See [examples/chains.d](../examples/chains.d), or run `tenderduty -example-chain`.
 
-The shared settings, notification destinations and `alert_defaults` are in [config.md](config.md).
+Shared settings, destinations and `alert_defaults` are in [config.md](config.md).
 
 * [A minimal chain](#a-minimal-chain)
 * [Chain Settings](#chain-settings)
 * [Alerting Settings](#alerting-settings)
 * [Node Settings](#node-settings)
 * [Several validators on one chain](#several-validators-on-one-chain)
+* [Chain commands](#chain-commands)
 
-A few notes on how Go handles YAML:
-
-* Booleans can be specified with either true/false or yes/no
-* If a setting is omitted it will default to an empty string for strings, zero for numbers, false for booleans, and nil for arrays and structures.
-* This can be useful for building a more compact config file.
+Booleans can be `true/false` or `yes/no`. An omitted setting is an empty string, zero, false or nil.
 
 ## A minimal chain
 
-Only what differs from `alert_defaults` has to be here, so a chain can be short:
+Only what differs from `alert_defaults` has to be here:
 
 ```yaml
 # chains.d/Osmosis.yml
@@ -31,83 +28,83 @@ nodes:
     alert_if_down: yes
 ```
 
-It alerts to every destination enabled in `config.yml` without naming any of them, see [alert destinations](config.md#alert-destinations).
+It alerts to every destination enabled in `config.yml`, see [alert destinations](config.md#alert-destinations).
 
-Chains can also be written inline under `chains:` in `config.yml`, the older layout. The settings are the same, one level further in: `chains."Osmosis".alerts.consecutive_missed`. A `chains.d` file replaces a chain of the same name in `config.yml`.
+Chains can also go inline under `chains:` in `config.yml` (the older layout), one level deeper. A `chains.d` file replaces a chain of the same name there.
 
 ## Chain Settings
 
-| Config Setting     | Description                                                                                                                                                                                  |
-|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| file name          | The user-friendly name used for labels, taken from the file: `Osmosis.yml` is "Osmosis". Written inline instead, wrap the name in quotes to prevent YAML parsing issues if there is a space or special characters. |
-| `chain_id`         | The chain-id for the chain, this is verified to match when connecting to an RPC server.                                                                                                       |
-| `valoper_address`  | Hooray, in v2 we derive the valcons from abci queries so you don't have to jump through hoops to figure out how to convert ed25519 keys to the appropriate bech32 address.                     |
-| `valcons_override` | The valcons address to watch, for the rare chain where it cannot be derived from the valoper. Also valid per validator under `validators`.                                                     |
-| `validators`       | Several validators on one chain, used instead of `valoper_address`. See [several validators on one chain](#several-validators-on-one-chain).                                                   |
-| `public_fallback`  | Should the monitor fall back to a public RPC node if all supplied nodes fail? One is picked from the [chain registry](https://cosmos.directory) that is on the right chain, synced, and accepts websockets. Public nodes aren't yours, only use this as a backup. |
-| `extra_info`       | Text added to every alert for this chain, e.g. which tenderduty instance sent it. PagerDuty gets it in the custom details.                                                                     |
+| Config Setting | Description |
+| --- | --- |
+| file name | The chain's label: `Osmosis.yml` is "Osmosis". Inline, quote names with spaces or special characters. |
+| `chain_id` | Checked against the RPC node when connecting. |
+| `valoper_address` | The validator's operator address. The signing (valcons) address is looked up from the chain. |
+| `valcons_override` | Valcons address to watch, for a chain where it can't be derived from the valoper. Also valid per validator. |
+| `validators` | Several validators on one chain, instead of `valoper_address`. See [below](#several-validators-on-one-chain). |
+| `public_fallback` | Fall back to a public RPC node from the [chain registry](https://cosmos.directory), testnets included, if all your nodes fail. Public nodes aren't yours, use it as a backup. |
+| `testnet` | `yes` or `no` overrides the registry's `network_type` for [reports](config.md#reports). Unknown chains count as mainnet. |
+| `extra_info` | Text added to every alert for this chain, e.g. which instance sent it. PagerDuty gets it in the custom details. |
 
 ## Alerting Settings
 
-These go under `alerts`. Anything left out comes from `alert_defaults` in `config.yml`.
+These go under `alerts`. Anything left out comes from `alert_defaults`. The `*_priority` settings are the severity sent, used by PagerDuty and `min_severity` routing.
 
-| Config Setting            | Description                                                                                                                                                                                      |
-|---------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `stalled_enabled`         | If the chain stops seeing new blocks, should an alert be sent?                                                                                                                                    |
-| `stalled_minutes`         | How long a halted chain takes in minutes to generate an alarm.                                                                                                                                    |
-| `consecutive_enabled`     | Most basic alarm, you just missed x blocks ... would you like to know?                                                                                                                            |
-| `consecutive_missed`      | How many missed blocks should trigger a notification?                                                                                                                                             |
-| `consecutive_priority`    | Severity sent with the alert, used by pagerduty and by `min_severity` routing. Critical when empty.                                                                                                |
-| `percentage_enabled`      | For each chain there is a specific window of blocks and a percentage of missed blocks that will result in a downtime jail infraction. Should an alert be sent if a certain percentage of this window is exceeded? |
-| `percentage_missed`       | What percentage should trigger the alert?                                                                                                                                                         |
-| `percentage_priority`     | Severity sent with the alert, used by pagerduty and by `min_severity` routing. Warning when empty, which [quiet hours](config.md#quiet-hours) hold back by default.                                |
-| `proposal_enabled`        | Alert on missed proposals: the validator was due to propose a block but another validator did. Off by default.                                                                                     |
-| `proposal_missed`         | How many missed proposals within `proposal_minutes` should trigger a notification?                                                                                                                |
-| `proposal_minutes`        | The window in minutes that missed proposals are counted over.                                                                                                                                     |
-| `proposal_priority`       | Severity sent with the alert, used by pagerduty. Warning when empty.                                                                                                                              |
-| `jail_risk_enabled`       | Alert when the validator gets close to being jailed for downtime. The limit comes from the chain's slashing params.                                                                                |
-| `jail_risk_percent`       | How much of the misses allowed before jailing, in percent, should trigger the alert?                                                                                                               |
-| `jail_risk_minutes`       | While the validator is missing blocks, alert when at the chain's block time it would be jailed within this many minutes.                                                                           |
-| `jail_risk_priority`      | Severity sent with the alert, used by pagerduty. Critical when empty.                                                                                                                             |
-| `gov_enabled`             | Send a message when a proposal opens for voting, cleared once the validator votes. The voter is the account of the valoper address.                                                                |
-| `gov_remind_minutes`      | Remind when voting ends within this many minutes and the validator has not voted.                                                                                                                 |
-| `gov_priority`            | Severity sent with new proposals, used by pagerduty. Info when empty, reminders are always critical.                                                                                               |
-| `upgrade_enabled`         | Send a message when an upgrade is scheduled in x/upgrade, with its height and the time estimated from the block time.                                                                              |
-| `upgrade_remind_minutes`  | Remind this many minutes before the estimated time of the upgrade.                                                                                                                                |
-| `upgrade_priority`        | Severity sent with scheduled upgrades, used by pagerduty. Warning when empty, reminders are always critical.                                                                                        |
-| `signal_enabled`          | Celestia's x/signal: send a message when `signal_percent` of the voting power has signalled the next version, while the validator has not signalled it, when the upgrade threshold is reached, and when the upgrade is scheduled. A chain without x/signal is logged once and not asked again, so this can be set in `alert_defaults` for every chain. |
-| `signal_percent`          | The share of the voting power that must have signalled before the first two messages are sent. 10 when empty.                                                                                     |
-| `signal_remind_minutes`   | Remind this many minutes before the estimated time of the scheduled upgrade. 60 when empty.                                                                                                       |
-| `signal_priority`         | Severity sent with the signalling and not signalled messages, used by pagerduty. Warning when empty, the threshold and the scheduled upgrade are always critical.                                  |
-| `fibre_enabled`           | Celestia Fibre: send a message while the validator is not registered as a Fibre provider, while its Fibre host is unreachable (a TLS handshake that fails for `node_down_alert_minutes`), and while the host's certificate does not prove it belongs to this validator, checked against the validator's consensus key. The last two say why: connection refused, timed out, a failed TLS handshake, or what is wrong with the certificate. All three resolve themselves, and a host that only stops answering keeps its failed certificate check until it answers again. A chain without x/valaddr is logged once and not asked again, so this can be set in `alert_defaults` for every chain. The registered host can be an IP or a DNS name. The check runs from where tenderduty runs, so running tenderduty on the Fibre machine itself proves less than running it elsewhere. With [`fibre_metrics`](config.md#fibre-metrics) also set up, it sends five more messages from what Fibre reports about itself, all things the operator can fix: it has sent no metrics, it could not sign payment promises, signing is slower than 10ms, storage operations are failing, and object storage requests are failing. Two more are optional: its storage budget is nearly full (`fibre_storage_percent`) and it has stored nothing for a while (`fibre_idle_minutes`). Each one resolves itself, see [fibre.md](fibre.md). |
-| `fibre_instance`          | The hostname Fibre reports as `service.instance.id`, which is its machine's hostname. Needed when more than one chain has `fibre_enabled`, so each chain takes the metrics of its own Fibre. A chain without one takes metrics from a Fibre that no chain names, if it is the only chain with `fibre_enabled` and no `fibre_instance`. |
-| `fibre_storage_percent`   | Alert when Fibre's storage use is at this percent of its budget or more, or any upload was turned away in the last 10 minutes. 1 to 100, 0 or empty is off. It clears when use is 15 points lower and nothing was turned away for 30 minutes. Optional because the budget is set by the chain from the validator's stake and the whole network fills together, there is nothing to fix on the validator's side, see [fibre.md](fibre.md#the-storage-budget). Nothing is sent for use while the budget is 0, that is Fibre running with `--unlimited-budget`. |
-| `fibre_idle_minutes`      | Alert when Fibre has stored no upload for this many minutes. 0 or empty is off. Only useful when uploads are steady, a Fibre nobody uploads to would alert all the time. |
-| `fibre_priority`          | Severity sent with the Fibre messages, used by pagerduty and `min_severity`. Warning when empty, set `critical` to be woken up: [quiet hours](config.md#quiet-hours) hold warnings back by default, so with `warning` a Fibre that goes down at night is reported in the morning. |
-| `alert_if_inactive`       | Should an alert be sent if the validator is not in the active set: jailed, tombstoned, or unbonding?                                                                                               |
-| `alert_if_no_servers`     | Should an alert be sent if no RPC servers are responding? (Note this alarm uses the `node_down_alert_minutes` setting)                                                                             |
-| `pagerduty.*`             | The same structure as `pagerduty` in `config.yml`, for this chain only. Including routing to a different destination. If the api_key is blank it uses the one from `config.yml`.                   |
-| `discord.*`               | The same structure as `discord` in `config.yml`, for this chain only. If the webhook is blank it uses the one from `config.yml`.                                                                   |
-| `telegram.*`              | The same structure as `telegram` in `config.yml`, for this chain only. If the api_key and channel are blank it uses the ones from `config.yml`.                                                    |
-| `slack.*`                 | The same structure as `slack` in `config.yml`, for this chain only. If the webhook is blank it uses the one from `config.yml`.                                                                     |
+| Config Setting | Description |
+| --- | --- |
+| `stalled_enabled` | Alert when the chain stops producing blocks. |
+| `stalled_minutes` | Minutes without a block before alerting. |
+| `consecutive_enabled` | Alert on consecutive missed blocks. |
+| `consecutive_missed` | How many missed blocks trigger it. |
+| `consecutive_priority` | Critical when empty. |
+| `percentage_enabled` | Alert when a percentage of the slashing window is missed. |
+| `percentage_missed` | The percentage that triggers it. |
+| `percentage_priority` | Warning when empty, which [quiet hours](config.md#quiet-hours) hold back. |
+| `proposal_enabled` | Alert on missed proposals: the validator was due to propose but another validator did. Off by default. |
+| `proposal_missed` | How many within `proposal_minutes` trigger it. |
+| `proposal_minutes` | The window in minutes. |
+| `proposal_priority` | Warning when empty. |
+| `jail_risk_enabled` | Alert when the validator is close to jail for downtime, using the chain's slashing params. |
+| `jail_risk_percent` | Percent of the misses allowed before jailing that triggers it. |
+| `jail_risk_minutes` | Also alert if, while missing blocks, it would be jailed within this many minutes at the chain's block time. |
+| `jail_risk_priority` | Critical when empty. |
+| `gov_enabled` | Message when a proposal opens for voting, cleared when the valoper's account votes. |
+| `gov_remind_minutes` | Remind when voting ends within this many minutes without a vote. |
+| `gov_priority` | Info when empty, reminders are always critical. |
+| `upgrade_enabled` | Message when an upgrade is scheduled in x/upgrade, with height and estimated time. |
+| `upgrade_remind_minutes` | Remind this many minutes before the upgrade. |
+| `upgrade_priority` | Warning when empty, reminders are always critical. |
+| `signal_enabled` | Celestia x/signal: message when `signal_percent` of the voting power has signalled the next version and this validator has not, when the upgrade threshold is reached, and when it is scheduled. Chains without x/signal are skipped, so it is safe in `alert_defaults`. |
+| `signal_percent` | Share of voting power that must have signalled first. 10 when empty. |
+| `signal_remind_minutes` | Remind this many minutes before the scheduled upgrade. 60 when empty. |
+| `signal_priority` | Warning when empty, the threshold and the scheduled upgrade are always critical. |
+| `fibre_enabled` | Celestia Fibre: alert while the validator is not a registered Fibre provider, its Fibre host is unreachable (TLS handshake fails for `node_down_alert_minutes`), or the host's certificate isn't this validator's. With [`fibre_metrics`](config.md#fibre-metrics) it also alerts on what Fibre reports. Chains without x/valaddr are skipped, so it is safe in `alert_defaults`. See [fibre.md](fibre.md). |
+| `fibre_instance` | The hostname Fibre reports as `service.instance.id`. Needed when more than one chain has `fibre_enabled`, so each chain gets its own Fibre's metrics. |
+| `fibre_storage_percent` | Alert when Fibre's storage is at this percent of its budget or more, or an upload was turned away. 1 to 100, 0 or empty is off. See [the storage budget](fibre.md#the-storage-budget). |
+| `fibre_idle_minutes` | Alert when Fibre stored no upload for this many minutes. 0 or empty is off. Only for steady uploads. |
+| `fibre_priority` | Warning when empty. Quiet hours hold warnings back, use `critical` to hear about a dead Fibre at night. |
+| `alert_if_inactive` | Alert if the validator is not in the active set: jailed, tombstoned or unbonding. |
+| `alert_if_no_servers` | Alert if no RPC servers respond (uses `node_down_alert_minutes`). |
+| `pagerduty.*` | Same as `pagerduty` in `config.yml`, for this chain only. A blank api_key uses the shared one. |
+| `discord.*` | Same as `discord` in `config.yml`. A blank webhook uses the shared one. |
+| `telegram.*` | Same as `telegram` in `config.yml`. A blank api_key and channel use the shared ones. |
+| `slack.*` | Same as `slack` in `config.yml`. A blank webhook uses the shared one. |
 
-A destination is only reached when it is enabled in `config.yml`; this chain follows that unless it sets `enabled` itself. See [alert destinations](config.md#alert-destinations).
+A destination is only reached when it is enabled in `config.yml`; the chain follows that unless it sets `enabled` itself.
 
 ## Node Settings
 
-*Note: if this section is omitted and public fallbacks are enabled, tenderduty will only use public endpoints. This is not encouraged for a few reasons: public nodes can be unreliable, some proxy servers do not support websockets (which td relies on for watching blocks,) and it consumes resources from other validators.*
+Nodes are tried in order until one answers, so put your own first. Without `nodes` and with `public_fallback`, only public nodes are used. That is discouraged: they can be unreliable, some proxies lack the websockets tenderduty needs, and they use other validators' resources.
 
-Nodes are tried in order until one answers, so put your own first.
-
-| Config Setting        | Description                                                                                                                                                 |
-|-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `nodes[]`             | This is an array of nodes to use as RPC servers.                                                                                                            |
-| `nodes[].url`         | protocol://hostname:port, without a port https uses 443 and http 80. For now only http (tcp is an alias) and https (with a valid certificate) are supported. |
-| `nodes[].alert_if_down` | Should an alert be sent if this host isn't responding? Uses the `node_down_alert_minutes` setting to determine threshold.                                  |
+| Config Setting | Description |
+| --- | --- |
+| `nodes[]` | List of RPC servers. |
+| `nodes[].url` | `protocol://hostname:port`. Without a port https uses 443 and http 80. Only http (or tcp) and https with a valid certificate. |
+| `nodes[].alert_if_down` | Alert if this node isn't responding (uses `node_down_alert_minutes`). |
+| `nodes[].server` | Name of the server this node runs on, for [`group_node_alerts`](config.md#general-settings). Default: the IP of the node's host. |
 
 ## Several validators on one chain
 
-Running several validators on one chain, like Realio multistaking? List them under `validators` instead of `valoper_address`, each with its own `nodes`. Works on any chain.
+For several validators on one chain, like Realio multistaking, list them under `validators` instead of `valoper_address`, each with its own `nodes`.
 
 ```yaml
 # chains.d/Realio.yml
@@ -132,5 +129,28 @@ validators:
 
 - Each validator alerts on its own, as `Realio / RIO` and `Realio / dstrx`.
 - A node going down alerts under its validator.
-- `nodes` at the chain level are shared: every validator falls back to them when its own nodes fail, so a spare RPC only has to be written once. `alert_if_down` is ignored there, because a shared node belongs to no single validator and would page once per validator; it is logged as a warning at startup.
+- Chain-level `nodes` are shared fallbacks. `alert_if_down` is ignored there (logged as a warning), since a shared node belongs to no single validator.
 - Every validator needs a node of its own, a shared one, or `public_fallback`.
+
+`tenderduty chain add realiovaloper1... --node http://node-b:26657 --to Realio` adds a validator to an existing file and `tenderduty chain remove Realio --validator RIO` removes one. The name comes from `--label`, else the validator's multistaking token symbol (`RIO`), else its moniker.
+
+## Chain commands
+
+```shell
+tenderduty chain add atonevaloper1... --node https://rpc.example.com --set public_fallback=yes --set alerts.fibre_enabled=yes
+tenderduty chain set Celestia alerts.fibre_enabled=yes alerts.telegram.min_severity=warning
+tenderduty chain list
+tenderduty chain remove Celestia
+# Skip confirmation:
+tenderduty chain remove Celestia --yes
+```
+
+- `add` needs `--node`, your own synced node. It checks the node and validator, then prints the moniker, status and voting power (`LinkPool on mocha-5: active, not jailed, voting power 1,100,105`). A consensus (`valcons`) address is accepted if it is in the active set.
+- `--chain osmosis` takes a registry path, mainnet ([cosmos.directory](https://cosmos.directory)) or testnet ([testcosmos.directory](https://testcosmos.directory)); its chain id and prefix must match your node and validator. `--name Celestia` sets the file name, otherwise the registry name or chain id. Names can't contain periods or path separators. An existing file needs `--force`. Your input is checked before anything is fetched.
+- `--set key=value` (repeatable on `add`, positional on `set`) uses chain YAML paths. Booleans take yes/no/true/false, lists are comma separated: `alerts.telegram.mentions=alice,bob`. Unknown keys suggest the closest one. Edit `nodes` in the file; `add --to` and `remove --validator` manage `validators`.
+- `add --to` on a single-validator file turns it into a `validators` list, so its alerts get the validator name (`Realio / RST`) and the old ones resolve as no longer watched.
+- `set` keeps comments and key order, prints `key: old -> new` per change (`already X` for a key that has that value, in which case the file is left alone), and validates before writing.
+- `set` and `remove` only edit `chains.d/<Name>.yml`, not chains in `config.yml`.
+- `list` prints a table: NAME, CHAIN ID, VALIDATOR, NODES, FALLBACK, ALERTS, FILE.
+- `-f`, `-cc` and `-state` work before the command or after the subcommand.
+- After a change tenderduty reloads the running process found through the state file's PID, and says `Applied: reloaded tenderduty (pid N)`, `Not applied yet: tenderduty is not running; ...` or `Saved, but reload failed: ...`. New files take the directory's group (0640 when it is group-readable); a replaced file keeps its owner and mode.

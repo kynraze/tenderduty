@@ -1,89 +1,38 @@
 # Celestia Fibre
 
-Tenderduty watches a validator's Fibre provider in two ways. Both are turned on per chain with `fibre_enabled`, see [chains.md](chains.md).
+Tenderduty watches a validator's Fibre provider in two ways, both turned on per chain with `fibre_enabled` ([chains.md](chains.md)):
 
-**Run tenderduty on a different machine from Fibre.** The outside check is what Fibre's clients experience: it dials the host the validator registered, from where tenderduty runs. Run on the Fibre machine it goes through the same network and firewall as Fibre itself, and proves less. It also stops telling you anything when that machine goes down.
+- From outside, no other setup. It asks the chain for the validator's registered Fibre host and dials it. Chains without x/valaddr are skipped.
+- From Fibre's own reports, with [`fibre_metrics`](config.md#fibre-metrics). Fibre exports metrics over OTLP/HTTP and tenderduty receives them, so it sees a Fibre that answers but signs nothing or can't write to disk.
 
-## What tenderduty checks
+**Run tenderduty on a different machine from Fibre.** The outside check should see what Fibre's clients see, and it stops telling you anything if that machine goes down.
 
-**From outside** (no setup besides `fibre_enabled`). Tenderduty asks the chain for the validator's registered Fibre host, then dials it. Chains without x/valaddr are skipped.
+## Alerts
 
-**From Fibre's own reports** (needs [`fibre_metrics`](config.md#fibre-metrics)). Fibre exports its metrics over OTLP/HTTP and tenderduty receives them, so it can see what the outside can't: a Fibre that answers but signs nothing, or can't write to disk.
+All use the chain's `fibre_priority`. Each alert shows its numbers on the second line and resolves with what is true now.
 
-All of these use the chain's `fibre_priority`. Every alert says the numbers behind it on its second line, and resolves with what is true now.
-
-| Alert | What it means for the validator | What to do |
+| Alert | Meaning | What to do |
 | --- | --- | --- |
-| Validator is not a registered Fibre provider | The chain has no Fibre host for this validator, so clients can't find it. | Register the validator's Fibre host. |
-| Fibre at `host` is unreachable | A TLS handshake to the registered host fails for `node_down_alert_minutes`. Clients can't reach Fibre. The message says why: refused, timed out, handshake failed. | Check that Fibre runs, and the firewall and DNS for the registered host. |
-| Fibre at `host` does not prove it belongs to this validator | The certificate isn't signed by this validator's consensus key. Something else answers on that host. | Check the registered host points at your Fibre and Fibre uses your validator's key. |
-| Fibre has sent no metrics | No export for `node_down_alert_minutes` (counted from tenderduty's start if none arrived). Fibre is down, or can't reach tenderduty. | Check the Fibre process, its `--otel-endpoint` and the token. |
-| Fibre could not sign payment promises | Fibre asks your validator key (the node's privval, or TMKMS or Horcrux behind it) to sign a payment promise for every upload it stores. When that fails Fibre looks fine from outside, and the validator takes part in nothing. Raised when more than 1% of the signatures failed. | Check the signer: its connection to Fibre, that it is running and has the key. |
-| Fibre signing is slower than 10ms | Fibre's README requires the median signature to take 10ms or less. Raised when fewer than half of the successful signatures did, with at least 20 of them. | Look at the signer's latency, a remote signer over a slow link is the usual cause. |
-| Fibre storage operations are failing | A store put or get, or a prune, failed in the last 10 minutes. Fibre can't keep what clients upload. | Check disk space, disk health and permissions of Fibre's data directory. |
-| Fibre object storage requests are failing | More than 1% of the requests Fibre makes to its object storage timed out, were throttled or failed. | Check the object storage's credentials, limits and the network to it. |
-| Fibre storage is nearly full | The budget the chain gives this validator is almost used up, or uploads were turned away. Off unless `fibre_storage_percent` is set, see [the storage budget](#the-storage-budget). | Nothing on the validator's side fixes it, see below. |
-| Fibre has had no successful upload | `fibre_idle_minutes` is set and the last upload was stored longer ago than that. Off unless set, and only useful when uploads are steady. | Check that Fibre is reachable and registered. |
+| Validator is not a registered Fibre provider | The chain has no Fibre host for this validator. | Register the Fibre host. |
+| Fibre at `host` is unreachable | TLS handshake to the registered host fails for `node_down_alert_minutes`. The message says why. | Check that Fibre runs, the firewall and DNS. |
+| Fibre at `host` does not prove it belongs to this validator | The certificate isn't signed by this validator's consensus key. | Check the registered host points at your Fibre, which uses your validator's key. |
+| Fibre has sent no metrics | No export for `node_down_alert_minutes`. | Check the Fibre process, its `--otel-endpoint` and the token. |
+| Fibre could not sign payment promises | More than 1% of signatures failed. Fibre needs your validator key (privval, TMKMS or Horcrux) for every upload. | Check the signer is running, has the key and reaches Fibre. |
+| Fibre signing is slower than 10ms | Fewer than half of the successful signatures (at least 20) took 10ms or less, as Fibre requires. | Check the signer's latency, usually a remote signer on a slow link. |
+| Fibre storage operations are failing | A store put, get or prune failed in the last 10 minutes. | Check disk space, health and permissions of Fibre's data directory. |
+| Fibre object storage requests are failing | More than 1% of requests to object storage timed out, were throttled or failed. | Check the credentials, limits and network. |
+| Fibre storage is nearly full | Optional: needs `fibre_storage_percent`. Budget nearly used or uploads turned away. | Nothing to fix on your side, see [the storage budget](#the-storage-budget). |
+| Fibre has had no successful upload | Optional: needs `fibre_idle_minutes`. Only for steady uploads. | Check that Fibre is reachable and registered. |
 
-Everything on by default is something the operator can fix. The storage alert is the one that isn't, which is why it is optional.
-
-How the numbers are judged:
-
-- Share rules (signing failed, object storage) look at the last 10 minutes. If that holds fewer than 20 samples they reach further back, newest first, until there are 20 or 24 hours are used up. A busy network is judged on 10 minutes, a quiet one on its last 20 samples. The second line says which: `in the last 10 minutes` or `over the last 3h 0m`.
-- Because of that, one failed signature on a quiet network raises the alert and keeps it up until it falls out of the window: after 20 newer signatures, or 24 hours.
-- Signing slower than 10ms looks only at successful signatures, and holds (an alert that is up stays up, one that isn't is not raised) with fewer than 20.
-- Disk and prune errors raise on any failure in the last 10 minutes and clear after 10 quiet minutes.
-- Fibre's counters only grow, tenderduty works out what changed between exports. What Fibre counted before tenderduty started is not news, only what happens from the first export on.
-- The metrics live in memory. After tenderduty restarts, alerts that were up stay up until an export shows the problem is gone, and a quiet window counts only once tenderduty has watched all of it.
-- A hostname that no chain claims is ignored and logged once. See `fibre_instance` in [chains.md](chains.md).
-
-## The storage budget
-
-Fibre's storage budget comes from the chain: `full_stake_storage_budget` (2 TiB) times the validator's share of the assigned rows. A validator's rows follow its stake (about three times its stake share), and the data it is sent follows the same rows. So every validator fills by the same percentage, and storage full is an event of the whole network, not of one validator.
-
-- Data is kept for 4 hours, then pruned (the prune runs every minute), so use rolls rather than piling up.
-- Governance can raise `full_stake_storage_budget`. Fibre works out its budget again every minute and picks the new value up without a restart.
-- The only knob on the validator's side is `fibre start --unlimited-budget`: no cap from the chain, the disk is the limit. The budget metric is then 0 and tenderduty never raises the alert.
-- Keep Fibre's data on its own disk, as Fibre's README recommends. Then a full Fibre can't take the node's disk with it.
-
-That is why `fibre_storage_percent` is off by default. Set it (1 to 100) and the alert is raised when use reaches that share of the budget, or any upload was turned away in the last 10 minutes. It clears when use is 15 points under the threshold (under 75% for 90%) and no upload was turned away for 30 minutes that tenderduty watched, so a network hovering around the limit doesn't send a message each time it crosses the line. With a threshold of 15 or less there is no room for the gap and it clears under the threshold itself.
-
-## Reading the Fibre status
-
-`/status <chain>` in Telegram and the chain detail on the dashboard show a Fibre section for every chain with `fibre_enabled` (and x/valaddr). It looks like this in Telegram:
-
-```
-🧵 Fibre v10.4.0-mocha
-🌐 Host: fibre.example.com:7980
-📡 Reachable: 🟢 yes
-🔐 Identity: 🟢 verified
-📊 Share: 148/4096 rows · 3.61% min
-💾 Budget: 74 GiB
-🗃 Used: 12 MiB (0.02%)
-⬆️ Uploads 10m: ✅ 42 · ❌ 0 · 🚫 0
-🕒 Last upload: 18s ago
-✍️ Signing: 🟢 98% under 10 ms
-🗄 Storage: 🟢 ok
-📨 Metrics: 34s ago
-```
-
-Uploads are ok, failed, and turned away by the storage limiter. Signing is yellow when most signatures take over 10 ms and red when one failed. The host, share and budget come from the chain, the rest from Fibre's metrics. Without [`fibre_metrics`](config.md#fibre-metrics), or until Fibre has sent something, the metrics lines are replaced by one line saying so. The dashboard shows the same, with the last 10 minutes next to the last 24 hours. The metrics live in memory, so after tenderduty restarts the 24 hours cover only the time since it started, and the dashboard says how long that is.
-
-**Rows.** Each blob is split into 4096 rows that are spread over the active set. A validator gets 3 times its stake share of them (a third of the stake is every row), at least 148 and at most 4096. The data Fibre sends a validator follows its rows. A validator outside the active set gets none. These numbers are Fibre's protocol constants (celestia-app v10, protocol version 0), not chain parameters. Tenderduty works the share out from the validator set the same way Fibre does.
-
-**Budget.** The chain parameter `full_stake_storage_budget` (2 TiB on Mocha) times the share of rows, `budget = full_stake_storage_budget * rows / 4096`. With 148 rows that is 74 GiB. It is the most data Fibre keeps, and it rolls: data is pruned 4 hours after it arrives, so use goes up and down and stays under the budget. When the chain's budget and the one Fibre reports differ, both are shown. Fibre works its budget out again every minute, so a short difference after a stake change is normal. A reported budget of 0 is `--unlimited-budget`, there is no cap.
-
-**Disk.** Keep at least the budget free on the disk with Fibre's data, and more if governance may raise the parameter. Fibre itself logs a warning when the free disk is below its budget. With `--unlimited-budget` the disk is the only limit.
-
-**Fees.** There is no reward for running Fibre. Fibre fees go to the fee collector and are paid out by stake like other fees, not by how much data a validator stores, so a small validator carries more of the data than it earns of the fees. As of celestia-app v10 there is no Fibre slashing. A validator that stores nothing loses no stake, but its Fibre doesn't do what clients rely on.
+Rates are judged over the last 10 minutes, or the last 20 samples (up to 24 hours) on a quiet network, so one failure there stays up until 20 newer samples arrive. Alerts that were up stay up after a tenderduty restart until an export shows the fix. Metrics from a hostname no chain claims are ignored, see `fibre_instance` in [chains.md](chains.md).
 
 ## Setup
 
-4318 is the standard OTLP/HTTP port. Use another one if a collector already uses it on the machine tenderduty runs on.
+Fibre sends its metrics to `--otel-endpoint` (OTLP/HTTP); only tenderduty listens, Fibre opens no port. `--otel-endpoint` takes the base URL only, tenderduty accepts any path ending in `/v1/metrics`.
 
-Tenderduty accepts OTLP metrics as protobuf over HTTP, gzipped or not, at any path that ends in `/v1/metrics`. Traces are accepted and dropped.
+The token is any long random string you choose, set in tenderduty and in Fibre's environment as `OTEL_EXPORTER_OTLP_HEADERS` (the standard OpenTelemetry variable, Fibre has no flag for it). For example `openssl rand -hex 32`.
 
-### Fibre on the same server as tenderduty
+Same server, no token needed on loopback:
 
 ```yaml
 # config.yml
@@ -95,49 +44,83 @@ fibre_metrics:
 fibre start --otel-endpoint http://127.0.0.1:4318
 ```
 
-A loopback address needs no token. `--otel-endpoint` takes the base URL only: Fibre adds `/v1/metrics` and `/v1/traces` itself.
-
-### Fibre on a different server
-
-The recommended setup, see the top of this page. Listen on the address Fibre can reach, and set a token. Without one tenderduty won't start unless `listen` is a loopback address: a sender that isn't Fibre could report healthy numbers and hide a Fibre that is down.
+Different server on a private network (WireGuard, VPN, a provider's private LAN): listen on the private address with a token, and allow only Fibre's IP to port 4318.
 
 ```yaml
-# config.yml
 fibre_metrics:
   listen: 10.0.0.5:4318
-  token: a-long-random-string
+  token: <token>
 ```
 
 ```
-OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer a-long-random-string" \
+OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>" \
   fibre start --otel-endpoint http://10.0.0.5:4318
 ```
 
-Over the internet, serve HTTPS as well:
+Without a token (not recommended), let only Fibre's IP reach the port and say so:
 
 ```yaml
 fibre_metrics:
   listen: 0.0.0.0:4318
-  token: a-long-random-string
+  allow_without_token: yes
+```
+
+```
+sudo ufw allow from <fibre-ip> to any port 4318 proto tcp
+```
+
+Over the internet, put Caddy or nginx in front for HTTPS and keep `listen` on loopback. Proxied requests come from 127.0.0.1, so tenderduty can't tell they came from the internet: use a token (recommended), or at least let only Fibre's IP through the proxy. Without either, anyone can send fake metrics and hide a broken Fibre.
+
+```
+# Caddyfile, the certificate is automatic
+otel.example.com {
+  @fibre remote_ip 203.0.113.7   # optional without a token: only Fibre's IP
+  reverse_proxy @fibre 127.0.0.1:4318
+}
+```
+
+```
+# nginx, certificate from certbot
+server {
+  listen 443 ssl;
+  server_name otel.example.com;
+  ssl_certificate     /etc/letsencrypt/live/otel.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/otel.example.com/privkey.pem;
+  location / {
+    allow 203.0.113.7;   # optional without a token: only Fibre's IP
+    deny all;
+    proxy_pass http://127.0.0.1:4318;
+  }
+}
+```
+
+```yaml
+fibre_metrics:
+  listen: 127.0.0.1:4318
+  token: <token>   # recommended, leave out only with the IP rule above
+```
+
+```
+OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>" \
+  fibre start --otel-endpoint https://otel.example.com
+```
+
+Listening on a public or private address directly, tenderduty requires the token unless `allow_without_token: yes`.
+
+Without a proxy, tenderduty can serve HTTPS itself (TLS 1.2 and up). With a self-signed certificate, point Fibre at it with `OTEL_EXPORTER_OTLP_CERTIFICATE`.
+
+```yaml
+fibre_metrics:
+  listen: 0.0.0.0:4318
+  token: <token>
   tls_cert: /etc/tenderduty/cert.pem
   tls_key: /etc/tenderduty/key.pem
 ```
 
-```
-OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer a-long-random-string" \
-OTEL_EXPORTER_OTLP_CERTIFICATE=/path/ca.pem \
-  fibre start --otel-endpoint https://tenderduty.example.com:4318
-```
-
-`ca.pem` is the CA that signed `cert.pem`, or the certificate itself when it is self-signed. TLS 1.2 and up.
-
-### Fibre already sends to a collector
-
-Fibre only sends to one address, so the collector forwards to tenderduty. Other apps' metrics the collector sends along are ignored. Run tenderduty with the same `fibre_metrics` as above and use a port the collector isn't using.
-
-OpenTelemetry Collector:
+If Fibre already sends to a collector, forward to tenderduty from there. Other metrics are ignored.
 
 ```yaml
+# OpenTelemetry Collector
 exporters:
   otlphttp/tenderduty:
     endpoint: http://tenderduty:4318
@@ -149,9 +132,8 @@ service:
       exporters: [prometheus, otlphttp/tenderduty]
 ```
 
-Grafana Alloy:
-
 ```
+# Grafana Alloy
 otelcol.exporter.otlphttp "tenderduty" {
   client {
     endpoint = "http://tenderduty:4318"
@@ -160,4 +142,37 @@ otelcol.exporter.otlphttp "tenderduty" {
 }
 ```
 
-Add `otelcol.exporter.otlphttp.tenderduty.input` to the `metrics` list of the output block that receives Fibre's metrics (for example `otelcol.receiver.otlp`'s `output`).
+In Alloy, add `otelcol.exporter.otlphttp.tenderduty.input` to the `output` metrics list of the block that receives Fibre's metrics.
+
+## The storage budget
+
+Each blob is split into 4096 rows spread over the active set. A validator gets `rows = ceil(4096 x stake share x 3)`, at least 148 and at most 4096, and the data it receives follows its rows. These are Fibre protocol constants, not governance parameters. The budget is `full_stake_storage_budget x rows / 4096` (2 TiB on Mocha, so 74 GiB at 148 rows). Every validator fills by the same percentage, so a full budget is the whole network's event and there is nothing to fix on one validator. That is why `fibre_storage_percent` is off by default.
+
+- Data is pruned after 4 hours, so use rolls under the budget.
+- Set `fibre_storage_percent` (1 to 100) to alert when use reaches that share or an upload was turned away in the last 10 minutes. It clears 15 points lower with no rejected uploads for 30 minutes.
+- `fibre start --unlimited-budget` removes the cap: the budget reads 0 and the alert never fires. The disk is then the limit.
+- Keep at least the budget free on Fibre's data disk, ideally its own disk, and more if governance may raise the parameter.
+
+## /status and the dashboard
+
+`/status <chain>` in Telegram and the chain detail on the dashboard show a Fibre section for chains with `fibre_enabled`: version, host, reachable, identity, row share, budget (chain's and Fibre's), storage used, uploads in the last 10 minutes (ok, failed, turned away), last upload, signing, storage and metrics age. Host, share and budget come from the chain, the rest from Fibre's metrics. Without `fibre_metrics`, or before Fibre has sent anything, one line says so.
+
+The dashboard has a **Fibre** tab beside Overview and Activity. Pick a chain and a range (1h, 24h, 7d, 30d). It has cards for status, share, budget and Fibre's Go memory, and panels for latency (p50/p95), signing, errors, uploads and downloads. Blank intervals mean no observation, not zero. A quiet interval's latency also counts up to 5 earlier intervals, until it has 50 operations. The interval still being counted is faded. **Customize panels** sets the chart type of count panels (auto, bars, area, line), shows, hides and reorders panels, and is saved in the browser. Hourly rollups are kept for 30 days in the state file; the short charts start fresh after a restart.
+
+Fibre doesn't export CPU or process RSS. Use node_exporter or process-exporter for those. Set `GOMEMLIMIT` on Fibre to have the memory card show a limit.
+
+`GET /fibre?range=24h&chain=ChainName` returns the same data as JSON (all watched chains without `chain`).
+
+## Prometheus and Grafana
+
+With `prometheus_enabled: yes`, Fibre metrics join the `/metrics` endpoint with the labels `name`, `chain_id` and `moniker`. All names start with `tenderduty_fibre_`. Counters and histograms reset when tenderduty restarts, use `rate` or `increase`.
+
+- Gauges: `rows`, `rows_total`, `row_share` (0 to 1), `chain_budget_bytes`, `budget_bytes` (0 is unlimited), `occupancy_bytes`, `registered`, `reachable`, `identity_verified`, `metrics_age_seconds`, `uploads_in_flight`, `downloads_in_flight`, `last_upload_timestamp_seconds`, `object_storage_in_flight`, `go_memory_used_bytes`, `go_memory_limit_bytes` (absent without a limit), `go_gc_goal_bytes`, `go_goroutines`, `go_processor_limit`, `go_gogc`.
+- Counters: `uploads_total{result="ok|failed|rejected"}`, `upload_bytes_total`, `downloads_total{result="ok|failed"}`, `download_bytes_total`, `signatures_total{result="ok|failed"}`, `signatures_fast_total`, `sign_seconds_total`, `store_errors_total{op="put|get|prune"}`, `object_storage_requests_total{outcome}` (success, not_found, canceled, timeout, throttled, error, unknown), `prune_entries_total`, `object_storage_bytes_total`, `go_memory_allocated_bytes_total`, `go_memory_allocations_total`.
+- Histograms (seconds, with `_bucket{le}`, `_sum`, `_count`): `upload_seconds`, `download_seconds`, `sign_seconds`, `store_put_seconds`, `store_get_seconds`, `prune_seconds`, and `go_schedule_seconds` when Fibre exports it (Fibre v10.4 doesn't, so it is absent).
+
+Grafana: **Dashboards > New > Import**, upload [`examples/grafana/fibre.json`](../examples/grafana/fibre.json), then pick your Prometheus datasource and chain.
+
+### Raw export
+
+`fibre_metrics.export_raw: yes` (default `no`, needs `prometheus_enabled`) serves every metric Fibre exports, not only the ones tenderduty uses, on `/metrics`, named as an OpenTelemetry Collector's Prometheus exporter would (for example `fibre_server_upload_shard_duration_seconds_bucket`). The official Celestia Fibre dashboard works unchanged. Labels are the metric's attributes, the resource's (`service_name`, `service_instance_id`, `service_version`), and `name` and `chain_id`. Exponential histograms and summaries are skipped (logged). A series not exported for 10 minutes is dropped, and each chain keeps at most 20,000 series. Applies on reload. It is separate from the `tenderduty_fibre_*` metrics, so both can stay on.

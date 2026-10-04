@@ -1,40 +1,31 @@
-Setting up the alerts to be shown on Telegram consists of a couple of steps:
-1. Create a channel on Telegram
-2. Create a bot with @botfather
-3. Add the bot to the newly created channel and make it an admin
-4. Add the Telegram channel to the config.yml on your TenderDuty configuration
+# Telegram Configuration
 
-Let's do it step by step:<br />
-#### 1. Create a channel on Telegram<br />
-Adding a channel goes best by following the following guide:<br />
-https://www.alphr.com/telegram-how-to-create-supergroup/<br />
-NOTE: you don't need to add people to the group at this point in time.
+1. Create a channel on Telegram, no need to add people yet:
+   https://www.alphr.com/telegram-how-to-create-supergroup/
+2. Create a bot with @botfather and save its API key:
+   https://riptutorial.com/telegram-bot/example/25075/create-a-bot-with-the-botfather
+3. Add the bot to the channel and make it an admin so it can post:
+   https://www.alphr.com/add-bot-telegram/ and https://www.alphr.com/add-admin-telegram/
+4. Get the channel id and add both to `config.yml`:
+   https://stackoverflow.com/questions/45414021/get-telegram-channel-group-id
+   A supergroup or channel id like `1068773197` is `-1001068773197` for bots (with the `-100` prefix).
 
-#### 2. Create a bot with @botfather<br />
-For the Telegram signals you need to create a bot. Use the following guide to do so:<br />
-https://riptutorial.com/telegram-bot/example/25075/create-a-bot-with-the-botfather<br />
-NOTE: save the API key from this bot, you need it later.<br />
+```yaml
+telegram:
+  enabled: yes
+  api_key: "your-bot-token"
+  channel: "-1001068773197"
+```
 
-#### 3. Add the bot to the newly created channel and make it an admin<br />
-To add the bot to the Telegram group you created in the first step follow this guide:<br />
-https://www.alphr.com/add-bot-telegram/
+Set these in the shared part of `config.yml`, or per chain under `alerts.telegram`.
 
-And to allow the bot to post messages you need to make it an admin, follow this guide to do so:<br />
-https://www.alphr.com/add-admin-telegram/
+## Commands
 
-#### 4. Add the Telegram channel to the config.yml on your TenderDuty configuration<br />
-Last but not least, you need to link the bot and the channel to your TenderDuty configuration. To do so, you need to retrieve the channel ID from your newly created group:<br />
-https://stackoverflow.com/questions/45414021/get-telegram-channel-group-id<br />
-NOTE: Supergroup and Channel will looks like 1068773197, which is -1001068773197 for bots (with -100 prefix).
+With `commands: yes` in the telegram settings, tenderduty answers these in the configured chat:
 
-You can add the API key and channel ID in the generic part at the start of the config.yml file or set it up per chain.<br />
-https://imgur.com/1JHs581
+* `/status` gives a line per chain, problems first.
+* `/status <chain>` gives one chain in full: height, misses and how many are left before jailing, voting power and rank, RPC nodes and active alerts. The chain is its name or chain id. With `fibre_enabled` it also shows Fibre, see [fibre.md](fibre.md#status-and-the-dashboard).
+* `/report` and `/report weekly` show the current daily or weekly [report](config.md#reports).
+* `/mentionme` pings you in every alert sent to this chat, `/mentionme off` stops. It is saved with the state.
 
-#### Commands
-With `commands: yes` in the telegram settings, tenderduty answers commands sent to the bot in the configured chat:
-
-* `/status` gives a line per chain, problems first: active alerts, jailed, misses in the signing window.
-* `/status <chain>` gives one chain in full: height, misses and how many are left before jailing, voting power and rank, RPC nodes and the active alerts. The chain is its name or chain id. For a chain with `fibre_enabled` it also shows the Fibre provider, share and storage budget, see [fibre.md](fibre.md#reading-the-fibre-status).
-* `/mentionme` asks to be pinged in every alert sent to this chat, `/mentionme off` stops. It records the telegram user id, so it works without a username and keeps working if you change it. The list is saved with the rest of the state, a restart keeps it.
-
-Commands only read, nothing can be changed from telegram. Only the chat in `channel` is listened to, in a group only the telegram user ids in `admins`. Telegram lets only one program read a bot's messages, so use a bot dedicated to tenderduty.
+Commands are read-only, nothing can be changed from telegram. Only the chat in `channel` is listened to, and in a group only the user ids in `admins`. Telegram lets one program read a bot's messages, so use a bot dedicated to tenderduty.
