@@ -13,7 +13,8 @@ type queuedNotification struct {
 	Sequence    uint64     `json:"sequence"`
 	Destination notifyDest `json:"destination"`
 	pendingRecovery
-	Resolved bool `json:"resolved"`
+	Resolved bool      `json:"resolved"`
+	snapshot *alertMsg // credentials kept only in memory, for removed chains
 }
 
 func (item queuedNotification) workerKey() string {
@@ -26,7 +27,7 @@ func (a *alarmCache) enqueue(msg *alertMsg) {
 		if !enabled {
 			continue
 		}
-		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved}
+		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, snapshot: msg}
 		var last *queuedNotification
 		for i := range a.Outbox {
 			if a.Outbox[i].workerKey() == item.workerKey() {
@@ -106,7 +107,9 @@ func (c *Config) restoreRecoveries() {
 
 func (c *Config) runNotifications() {
 	active := make(map[string]bool)
+	c.chainsMux.RLock()
 	done := make(chan string, len(c.Chains)*4+1)
+	c.chainsMux.RUnlock()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -194,6 +197,14 @@ func (c *Config) deliverQueue(key string) {
 			}
 		}
 		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
+		orphan := false
+		if r, ok := storedResolution(item.Chain, item.Message); ok {
+			orphan = item.Resolved && r.label == "No longer watched"
+		}
+		if (msg == nil || orphan) && item.snapshot != nil {
+			copy := *item.snapshot
+			msg = &copy
+		}
 		if msg == nil {
 			skip = true
 		} else {
@@ -254,6 +265,10 @@ func (msg *alertMsg) context() context.Context {
 type notificationClient struct {
 	ctx    context.Context
 	client *http.Client
+}
+
+func newNotificationClient(ctx context.Context, timeout time.Duration) notificationClient {
+	return notificationClient{ctx: ctx, client: &http.Client{Timeout: timeout}}
 }
 
 func (client notificationClient) Do(request *http.Request) (*http.Response, error) {

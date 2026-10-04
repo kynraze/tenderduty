@@ -27,21 +27,21 @@ type ValInfo struct {
 	Bonded           bool      `json:"bonded"`
 	Jailed           bool      `json:"jailed"`
 	Tombstoned       bool      `json:"tombstoned"`
-	JailedUntil      time.Time `json:"jailed_until"` // when a jailed validator can unjail, from the signing info
+	JailedUntil      time.Time `json:"jailed_until"` // when it can unjail
 	Missed           int64     `json:"missed"`
 	Window           int64     `json:"window"`
-	Conspub          []byte    `json:"conspub"`           // the 20-byte consensus address, not the key
-	ConsKey          []byte    `json:"conskey,omitempty"` // the raw ed25519 consensus public key, nil for other key types
+	Conspub          []byte    `json:"conspub"`           // 20-byte consensus address, not the key
+	ConsKey          []byte    `json:"conskey,omitempty"` // raw ed25519 public key, nil for other key types
 	Valcons          string    `json:"valcons"`
 	SigningUpdatedAt time.Time `json:"signing_updated_at"`
 	SigningStale     bool      `json:"signing_stale"`
 	ValidatorStale   bool      `json:"validator_stale"`
 	VotingPower      int64     `json:"voting_power"`
 	TotalPower       int64     `json:"total_power"`
-	Rank             int       `json:"rank"` // position in the active set, 0 when not in it
+	Rank             int       `json:"rank"` // 0 when not in the active set
 	ActiveSet        int       `json:"active_set"`
-	MaxValidators    int       `json:"max_validators"` // the active set's size limit, 0 when unknown
-	MaxMissed        int64     `json:"max_missed"`     // misses in the window allowed before jailing, 0 when unknown
+	MaxValidators    int       `json:"max_validators"` // 0 when unknown
+	MaxMissed        int64     `json:"max_missed"`     // 0 when unknown
 }
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
@@ -75,7 +75,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if client == nil {
 		return errors.New("nil rpc client")
 	}
-	ctx, cancel := context.WithTimeout(td.context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(cc.context(), 10*time.Second)
 	defer cancel()
 
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
@@ -94,7 +94,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		l(fmt.Sprintf("❌ %s (%s) is INACTIVE", cc.ValAddress, info.Moniker))
 	}
 
-	// voting power is only shown, keep the last reading if the node can't list the validator set
+	// voting power is display only; keep the last reading if the node can't list the set
 	power, powerErr := getVotingPower(ctx, client.Remote(), info.Conspub)
 	if powerErr != nil {
 		power = votingPower{power: previous.VotingPower, total: previous.TotalPower, rank: previous.Rank, size: previous.ActiveSet}
@@ -210,7 +210,19 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	return
 }
 
-// getVal returns the consensus address, the ed25519 public key when there is one, the moniker, and if the validator is jailed.
+// validatorNotFoundError: the chain has no such validator (or, with activeOnly, none in the active set).
+type validatorNotFoundError struct {
+	address    string
+	activeOnly bool
+}
+
+func (e *validatorNotFoundError) Error() string {
+	if e.activeOnly {
+		return "consensus validator " + e.address + " was not found in the active set"
+	}
+	return "could not find validator " + e.address
+}
+
 func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
 	if strings.Contains(valoper, "valcons") {
 		_, bz, err := bech32.DecodeAndConvert(valoper)
@@ -234,7 +246,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, con
 		return
 	}
 	if resp == nil || resp.Response.Code != 0 || len(resp.Response.Value) == 0 {
-		return nil, nil, "", false, false, errors.New("could not find validator " + valoper)
+		return nil, nil, "", false, false, &validatorNotFoundError{address: valoper}
 	}
 	val := &staking.QueryValidatorResponse{}
 	err = val.Unmarshal(resp.Response.Value)
@@ -269,12 +281,11 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, con
 	return pubBytes, consKey, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
 }
 
-// maxMissed is how many blocks can be missed in the window before jailing, same rounding as the slashing module.
+// Same rounding as the slashing module.
 func maxMissed(window int64, minSigned sdk.Dec) int64 {
 	return window - minSigned.MulInt64(window).RoundInt64()
 }
 
-// missesBeforeJail is how many more blocks can be missed in the window before the validator is jailed.
 func (info *ValInfo) missesBeforeJail() int64 {
 	if left := info.MaxMissed - info.Missed; left > 0 {
 		return left
@@ -282,7 +293,7 @@ func (info *ValInfo) missesBeforeJail() int64 {
 	return 0
 }
 
-// getMaxValidators reads the active set's size limit from the staking params, 0 if the chain doesn't answer.
+// Returns 0 if the chain doesn't answer.
 func getMaxValidators(ctx context.Context, client *rpchttp.HTTP) int {
 	b, err := (&staking.QueryParamsRequest{}).Marshal()
 	if err != nil {
@@ -304,7 +315,7 @@ type votingPower struct {
 	rank, size   int
 }
 
-// jsonInt reads a number whether it is sent as a number or a string.
+// jsonInt accepts a number or a string.
 type jsonInt int64
 
 func (i *jsonInt) UnmarshalJSON(b []byte) error {
@@ -313,8 +324,7 @@ func (i *jsonInt) UnmarshalJSON(b []byte) error {
 	return err
 }
 
-// getVotingPower reads the validator set from /validators. Only the address and power are decoded, so key types this
-// library doesn't know about don't matter. The set is sorted by power, which gives the rank.
+// Only address and power are decoded, so unknown key types are fine; the set is sorted by power for the rank.
 func getVotingPower(ctx context.Context, remote string, conspub []byte) (votingPower, error) {
 	result := votingPower{}
 	address := strings.ToUpper(hex.EncodeToString(conspub))

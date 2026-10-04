@@ -83,7 +83,7 @@ func TestQuietHoursHoldAndRelease(t *testing.T) {
 	if outbox() != 1 {
 		t.Fatal("a critical alert was held")
 	}
-	// recovered before quiet hours ended, nothing to send for it
+	// recovered while held, nothing to send
 	c.alert("Chain", "stalled: have not seen a new block on chain in 10 minutes", "warning", false, &id)
 	c.alert("Chain", "stalled: have not seen a new block on chain in 10 minutes", "info", true, &id)
 	if outbox() != 1 {

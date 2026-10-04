@@ -74,19 +74,26 @@ type Config struct {
 	Slack SlackConfig `yaml:"slack"`
 	// Healthcheck information
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
-	// QuietHours holds back less severe alerts during part of the day
+	// QuietHours holds back less severe alerts
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
-	// FibreMetrics is the receiver for the OTLP metrics a Celestia Fibre server exports
+	// FibreMetrics receives the OTLP metrics a Fibre server exports
 	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
 
 	fibreOnce  sync.Once
 	fibreStore *fibreStore // what Fibre exported, memory only
 
+	settingsMux     sync.RWMutex
+	liveSettings    *Config
+	settingsVersion uint64
+	commandsCancel  context.CancelFunc
+	commandsDone    chan struct{}
+
 	chainsMux sync.RWMutex // prevents concurrent map access for Chains
-	// configWarnings is what loading found before the config could be validated
-	configWarnings []string
+	// found while loading, before validation
+	configWarnings        []string
+	chainDirectoryPresent bool
 	// Chains has settings for each validator to monitor. The map's name does not need to match the chain-id.
 	Chains map[string]*ChainConfig `yaml:"chains"`
 }
@@ -107,6 +114,11 @@ type savedState struct {
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
 // validators can be monitored on a single chain.
 type ChainConfig struct {
+	ctx             context.Context
+	cancel          context.CancelFunc
+	workers         sync.WaitGroup
+	settingsVersion uint64
+	retiring        bool
 	stateMux        sync.RWMutex
 	validatorMux    sync.RWMutex
 	refreshMux      sync.Mutex
@@ -131,25 +143,27 @@ type ChainConfig struct {
 	statPrecommitMiss   float64
 	statConsecutiveMiss float64
 	statProposalMiss    float64
-	proposalMisses      []time.Time   // when proposals were missed, for the alert window
+	proposalMisses      []time.Time
 	blockTime           time.Duration // running average of the time between blocks
-	proposals           []govProposal // proposals in voting, from the last refresh
+	proposals           []govProposal // in voting, from the last refresh
 	proposalsLoaded     bool
 	publicNode          string       // the public fallback node that worked last
-	upgrade             *upgradePlan // the scheduled upgrade, nil when there is none
+	upgrade             *upgradePlan // nil when none is scheduled
 	upgradeLoaded       bool
 	signal              signalState // x/signal's tally for the next app version
 	signalLoaded        bool
-	signalUnsupported   bool // the chain has no x/signal, it isn't asked again
+	signalUnsupported   bool // no x/signal, not asked again
 	fibre               fibreState
 	fibreLoaded         bool
-	fibreUnsupported    bool  // the chain has no x/valaddr, it isn't asked again
-	fibreFullStake      int64 // x/fibre's full_stake_storage_budget, 0 until it has been read
-	fibreParamsFailing  bool  // the last read failed and was logged, so a streak is logged once
+	fibreUnsupported    bool  // no x/valaddr, not asked again
+	fibreFullStake      int64 // x/fibre's full_stake_storage_budget, 0 until read
+	fibreParamsFailing  bool  // last read failed, logged once per streak
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
 	ChainId string `yaml:"chain_id"`
+	Testnet *bool  `yaml:"testnet"`
+
 	// ValAddress is the validator operator address to be monitored. Tenderduty v1 required the consensus address,
 	// this is no longer needed. The operator address is much easier to find in explorers etc.
 	ValAddress string `yaml:"valoper_address"`
@@ -157,7 +171,7 @@ type ChainConfig struct {
 	Validators []ValidatorConfig `yaml:"validators"`
 	// ValconsOverride allows skipping the lookup of the consensus public key and setting it directly.
 	ValconsOverride string `yaml:"valcons_override"`
-	// ExtraInfo is added to every alert for this chain. This is useful for pagerduty because multiple tenderduty instances
+	// ExtraInfo will be appended to the alert data. This is useful for pagerduty because multiple tenderduty instances
 	// can be pointed at pagerduty and duplicate alerts will be filtered by using a key. The first alert will win, this
 	// can be useful for knowing what tenderduty instance sent the alert.
 	ExtraInfo string `yaml:"extra_info"`
@@ -212,57 +226,46 @@ type AlertConfig struct {
 	// PercentageAlerts is whether to alert on percentage based misses
 	PercentageAlerts bool `yaml:"percentage_enabled"`
 
-	// ProposalMissed is how many missed proposals within ProposalMinutes trigger an alert
-	ProposalMissed int `yaml:"proposal_missed"`
-	// ProposalMinutes is the window missed proposals are counted over
-	ProposalMinutes int `yaml:"proposal_minutes"`
-	// ProposalPriority is a tag for pagerduty to route on priority
+	// missed proposals within ProposalMinutes that trigger an alert
+	ProposalMissed   int    `yaml:"proposal_missed"`
+	ProposalMinutes  int    `yaml:"proposal_minutes"`
 	ProposalPriority string `yaml:"proposal_priority"`
-	// ProposalAlerts is whether to alert on missed proposals
-	ProposalAlerts bool `yaml:"proposal_enabled"`
+	ProposalAlerts   bool   `yaml:"proposal_enabled"`
 
-	// JailRiskPercent is how much of the misses allowed before jailing can be used before alerting
+	// percent of the misses allowed before jailing
 	JailRiskPercent int `yaml:"jail_risk_percent"`
-	// UpgradeRemindMinutes is how long before an upgrade's estimated time to remind
+	// minutes before the estimated time
 	UpgradeRemindMinutes int `yaml:"upgrade_remind_minutes"`
-	// UpgradePriority is a tag for pagerduty to route scheduled upgrades on priority, reminders are critical
+	// reminders are critical
 	UpgradePriority string `yaml:"upgrade_priority"`
-	// UpgradeAlerts is whether to alert on upgrades scheduled in x/upgrade
-	UpgradeAlerts bool `yaml:"upgrade_enabled"`
+	UpgradeAlerts   bool   `yaml:"upgrade_enabled"`
 
-	// SignalPercent is how much of the voting power must have signalled before alerting, the threshold is separate
+	// voting power that must have signalled before alerting
 	SignalPercent int `yaml:"signal_percent"`
-	// SignalRemindMinutes is how long before a signalled upgrade's estimated time to remind
+	// minutes before a signalled upgrade's estimated time
 	SignalRemindMinutes int `yaml:"signal_remind_minutes"`
-	// SignalPriority is a tag for pagerduty to route signalling and unsignalled alerts on priority, the rest are critical
+	// signalling and unsignalled alerts, the rest are critical
 	SignalPriority string `yaml:"signal_priority"`
-	// SignalAlerts is whether to alert on version signalling in Celestia's x/signal
-	SignalAlerts bool `yaml:"signal_enabled"`
-	// FibrePriority is a tag for pagerduty to route the Fibre provider alerts on priority
-	FibrePriority string `yaml:"fibre_priority"`
-	// FibreAlerts is whether to alert on the validator's Celestia Fibre provider registration and host
-	FibreAlerts bool `yaml:"fibre_enabled"`
-	// FibreInstance is the hostname Fibre reports as service.instance.id, it picks this chain's metrics when several
-	// chains have Fibre alerts
+	SignalAlerts   bool   `yaml:"signal_enabled"`
+	FibrePriority  string `yaml:"fibre_priority"`
+	FibreAlerts    bool   `yaml:"fibre_enabled"`
+	// service.instance.id Fibre reports, picks this chain's metrics when several chains alert
 	FibreInstance string `yaml:"fibre_instance"`
-	// FibreStoragePercent is how much of Fibre's storage budget can be used before alerting, 0 is off
+	// percent of Fibre's storage budget used before alerting, 0 is off
 	FibreStoragePercent int `yaml:"fibre_storage_percent"`
-	// FibreIdleMinutes alerts when Fibre has stored no upload for this long, 0 is off
+	// alerts when no upload was stored for this long, 0 is off
 	FibreIdleMinutes int `yaml:"fibre_idle_minutes"`
 
-	// GovRemindMinutes is how long before voting ends to remind when the validator hasn't voted
+	// minutes before voting ends to remind when not voted
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
-	// GovPriority is a tag for pagerduty to route new proposals on priority, reminders are critical
+	// reminders are critical
 	GovPriority string `yaml:"gov_priority"`
-	// GovAlerts is whether to alert on proposals in voting
-	GovAlerts bool `yaml:"gov_enabled"`
+	GovAlerts   bool   `yaml:"gov_enabled"`
 
-	// JailRiskMinutes alerts when, missing every block, the validator would be jailed within this many minutes
-	JailRiskMinutes int `yaml:"jail_risk_minutes"`
-	// JailRiskPriority is a tag for pagerduty to route on priority
+	// alert if missing every block would jail the validator within this many minutes
+	JailRiskMinutes  int    `yaml:"jail_risk_minutes"`
 	JailRiskPriority string `yaml:"jail_risk_priority"`
-	// JailRiskAlerts is whether to alert when the validator gets close to being jailed for downtime
-	JailRiskAlerts bool `yaml:"jail_risk_enabled"`
+	JailRiskAlerts   bool   `yaml:"jail_risk_enabled"`
 
 	// AlertIfInactive decides if tenderduty send an alert if the validator is not in the active set?
 	AlertIfInactive bool `yaml:"alert_if_inactive"`
@@ -290,15 +293,18 @@ type AlertConfig struct {
 	Slack SlackConfig `yaml:"slack"`
 }
 
-// FibreMetricsConfig is where tenderduty listens for the OTLP/HTTP metrics Fibre exports.
+// FibreMetricsConfig is the OTLP/HTTP listener for Fibre metrics.
 type FibreMetricsConfig struct {
 	// Listen is host:port, empty is off
 	Listen string `yaml:"listen"`
-	// Token, when set, has to be sent as Authorization: Bearer <token>
-	Token string `yaml:"token"`
-	// TLSCert and TLSKey serve HTTPS, both or neither
+	// sent as Authorization: Bearer <token> when set
+	Token             string `yaml:"token"`
+	AllowWithoutToken bool   `yaml:"allow_without_token"`
+	// serve HTTPS, both or neither
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+	// republish every Fibre metric on the Prometheus endpoint
+	ExportRaw bool `yaml:"export_raw"`
 }
 
 // NodeConfig holds the basic information for a node to connect to.
@@ -306,6 +312,8 @@ type NodeConfig struct {
 	stateMux    sync.RWMutex
 	Url         string `yaml:"url"`
 	AlertIfDown bool   `yaml:"alert_if_down"`
+	// machine this node runs on, nodes sharing one are alerted together
+	Server string `yaml:"server"`
 
 	down      bool
 	wasDown   bool
@@ -320,7 +328,7 @@ type PDConfig struct {
 	Enabled         *bool  `yaml:"enabled"`
 	ApiKey          string `yaml:"api_key"`
 	DefaultSeverity string `yaml:"default_severity"`
-	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	// drops alerts below this severity (info, warning, error, critical), empty sends all
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -329,9 +337,9 @@ type DiscordConfig struct {
 	Enabled  *bool    `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
-	// Style is "embed", a block with a colour down the side, or "plain" for one plain message
+	// "embed" or "plain" (one message, no colour bar)
 	Style string `yaml:"style"`
-	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	// drops alerts below this severity (info, warning, error, critical), empty sends all
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -341,10 +349,10 @@ type TeleConfig struct {
 	ApiKey   string   `yaml:"api_key"`
 	Channel  string   `yaml:"channel"`
 	Mentions []string `yaml:"mentions"`
-	// Commands answers /status sent to the bot from the channel, in a group only from Admins
+	// answer /status in the channel, in a group only for Admins
 	Commands bool    `yaml:"commands"`
 	Admins   []int64 `yaml:"admins"`
-	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	// drops alerts below this severity (info, warning, error, critical), empty sends all
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -353,22 +361,21 @@ type SlackConfig struct {
 	Enabled  *bool    `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
-	// MinSeverity drops alerts below this severity (info, warning, error, critical), empty sends everything
+	// drops alerts below this severity (info, warning, error, critical), empty sends all
 	MinSeverity string `yaml:"min_severity"`
 }
 
-// on says if a switch is set to yes, one that was left out is off.
+// on is false for an unset switch.
 func on(enabled *bool) bool {
 	return enabled != nil && *enabled
 }
 
-// yes is a switch that was set, for the deprecated settings and for tests.
+// yes returns a set switch, for deprecated settings and tests.
 func yes(enabled bool) *bool {
 	return &enabled
 }
 
-// enabledFor says if a destination gets a chain's alerts. The shared switch has the last word, a chain that doesn't
-// mention the destination follows it, so it only has to be turned on once.
+// enabledFor lets the shared switch win, an unset chain value follows it.
 func enabledFor(shared, chain *bool) bool {
 	if !on(shared) {
 		return false
@@ -738,7 +745,21 @@ func withDefaultPort(rpcUrl string) string {
 }
 
 func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *string) (*Config, error) {
+	return loadConfigMode(yamlFile, stateFile, chainConfigDirectory, password, true)
+}
 
+func loadConfigMode(yamlFile, stateFile, chainConfigDirectory string, password *string, restore bool) (*Config, error) {
+	return loadConfigOptions(yamlFile, stateFile, chainConfigDirectory, password, restore, false)
+}
+
+// loadConfigQuiet prints nothing, for the chain commands.
+var errNoChains = errors.New("no chains configured")
+
+func loadConfigQuiet(yamlFile, chainConfigDirectory string, password *string) (*Config, error) {
+	return loadConfigOptions(yamlFile, "", chainConfigDirectory, password, false, true)
+}
+
+func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, password *string, restore, quiet bool) (*Config, error) {
 	c := &Config{}
 	var configData []byte
 	if strings.HasPrefix(yamlFile, "http://") || strings.HasPrefix(yamlFile, "https://") {
@@ -778,6 +799,12 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 		if e != nil {
 			return nil, e
 		}
+		if strings.HasSuffix(yamlFile, ".asc") {
+			b, e = decrypt(b, *password)
+			if e != nil {
+				return nil, e
+			}
+		}
 		e = unmarshalConfig(yamlFile, b, c, &Config{})
 		if e != nil {
 			return nil, e
@@ -788,7 +815,11 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	// Load additional chain configuration files
 	chainFiles := make(map[string][]byte)
 	chainConfigFiles, e := os.ReadDir(chainConfigDirectory)
+	c.chainDirectoryPresent = e == nil
 	if e != nil {
+		if !os.IsNotExist(e) {
+			return nil, fmt.Errorf("could not scan chains directory: %w", e)
+		}
 		l("Failed to scan chainConfigDirectory", e)
 	}
 
@@ -801,7 +832,11 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 			l("Skipping non .yml file: ", chainConfigFile.Name())
 			continue
 		}
-		fmt.Println("Reading Chain Config File: ", chainConfigFile.Name())
+		if !quiet {
+			if !cliMode {
+				fmt.Println("Reading Chain Config File: ", chainConfigFile.Name())
+			}
+		}
 		chainConfig, e := loadChainConfig(path.Join(chainConfigDirectory, chainConfigFile.Name()))
 		if e != nil {
 			l(fmt.Sprintf("Failed to read %s", chainConfigFile), e)
@@ -824,11 +859,13 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 			c.Chains = make(map[string]*ChainConfig)
 		}
 		c.Chains[chainName] = chainConfig
-		l(fmt.Sprintf("Added %s from ", chainName), chainConfigFile.Name())
+		if !quiet {
+			l(fmt.Sprintf("Added %s from ", chainName), chainConfigFile.Name())
+		}
 	}
 
 	if len(c.Chains) == 0 {
-		return nil, errors.New("no chains configured")
+		return nil, errNoChains
 	}
 	if err := applyAlertDefaults(c, configData, chainFiles); err != nil {
 		return nil, err
@@ -848,6 +885,10 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.deliveryCtx, c.deliveryCancel = context.WithCancel(context.Background())
 	c.stateFile = stateFile
+
+	if !restore {
+		return c, nil
+	}
 
 	alarms = newAlarmCache()
 	saved := &savedState{}
@@ -900,6 +941,7 @@ func loadConfig(yamlFile, stateFile, chainConfigDirectory string, password *stri
 	}
 	// restore alarm state to prevent duplicate alerts
 	if saved.Alarms != nil {
+		alarms.AlarmIDs = saved.Alarms.AlarmIDs
 		alarms.Outbox = saved.Alarms.Outbox
 		alarms.NextNotification = saved.Alarms.NextNotification
 		if saved.Alarms.PendingRecoveries != nil {

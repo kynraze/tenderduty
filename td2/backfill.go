@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// rawCommit is a trimmed down /commit result, the proposer and signatures of one height.
 type rawCommit struct {
 	Result struct {
 		SignedHeader struct {
@@ -27,8 +26,7 @@ type rawCommit struct {
 	} `json:"result"`
 }
 
-// commitStatus reads one height's commit and returns what the validator did, the same states the websocket gives
-// except prevote/precommit seen, those only exist live.
+// commitStatus returns the validator's status at a height; prevote/precommit states only exist live.
 func commitStatus(ctx context.Context, client *http.Client, remote, address string, height int64) (StatusType, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/commit?height=%d", strings.TrimRight(remote, "/"), height), nil)
 	if err != nil {
@@ -59,10 +57,9 @@ func commitStatus(ctx context.Context, client *http.Client, remote, address stri
 	}
 }
 
-// backfillBlocks is how much of the newest history is filled, the length of the dashboard's block trace.
+// backfillBlocks matches the length of the dashboard's block trace.
 const backfillBlocks = 160
 
-// emptyHeights lists the heights in the newest part of the block history that have no data, newest first.
 func (cc *ChainConfig) emptyHeights() []int64 {
 	cc.stateMux.RLock()
 	defer cc.stateMux.RUnlock()
@@ -78,8 +75,7 @@ func (cc *ChainConfig) emptyHeights() []int64 {
 	return heights
 }
 
-// backfill reads the commits of heights we didn't see (tenderduty was down, the websocket reconnected, or it just
-// started) and fills their empty places in the block history. Only the history changes, counters and alarms stay live.
+// backfill fills empty block history from commits; counters and alarms stay live.
 func (cc *ChainConfig) backfill(ctx context.Context, remote string, wanted []int64) {
 	info, _ := cc.validatorState()
 	if !info.Bonded || len(info.Conspub) == 0 || len(wanted) == 0 {
@@ -129,8 +125,7 @@ func (cc *ChainConfig) backfill(ctx context.Context, remote string, wanted []int
 	}
 }
 
-// fillHeight sets a height's place in the history if it is still there and empty. The newest place is the height
-// before lastBlockNum, the head, since a block carries the previous height's signatures.
+// fillHeight: the newest place is lastBlockNum-1, a block carries the previous height's signatures.
 func (cc *ChainConfig) fillHeight(height int64, status StatusType) bool {
 	cc.stateMux.Lock()
 	defer cc.stateMux.Unlock()

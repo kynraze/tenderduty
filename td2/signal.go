@@ -16,15 +16,15 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// signalUpgrade is the upgrade x/signal has scheduled once enough power signalled for it.
+// signalUpgrade is the upgrade x/signal scheduled once enough power signalled.
 type signalUpgrade struct {
 	Version uint64
 	Height  int64
 }
 
-// signalState is the tally for the version after the one the chain runs, and whether our validator signalled it.
+// signalState is the tally for the version after the chain's, and whether our validator signalled it.
 type signalState struct {
-	Version        uint64 // the version being signalled
+	Version        uint64
 	Power          uint64
 	Threshold      uint64
 	Total          uint64
@@ -33,8 +33,8 @@ type signalState struct {
 	UpgradeHeight  int64 // 0 when no upgrade is scheduled
 }
 
-// parseTally reads QueryVersionTallyResponse{voting_power: 1, threshold_power: 2, total_voting_power: 3}. Protobuf leaves
-// out zero values, so with nobody signalled voting_power isn't in the bytes at all and it reads as 0.
+// parseTally reads QueryVersionTallyResponse{voting_power: 1, threshold_power: 2, total_voting_power: 3}.
+// Protobuf omits zero values, so voting_power is absent when nobody signalled.
 func parseTally(b []byte) (power, threshold, total uint64, err error) {
 	err = eachField(b, func(num protowire.Number, typ protowire.Type, _ []byte, varint uint64) error {
 		if typ != protowire.VarintType {
@@ -66,7 +66,7 @@ func parseSignalUpgrade(b []byte) (*signalUpgrade, error) {
 			case num == 1 && typ == protowire.VarintType:
 				upgrade.Version = varint
 			case num == 2 && typ == protowire.VarintType:
-				// the height comes from a node's answer, a bogus one would wrap around to a negative height
+				// a bogus height would wrap negative
 				if varint > math.MaxInt64 {
 					return fmt.Errorf("upgrade height %d is out of range", varint)
 				}
@@ -81,7 +81,7 @@ func parseSignalUpgrade(b []byte) (*signalUpgrade, error) {
 	return upgrade, err
 }
 
-// parseSignalledVersion reads the version a validator signalled from the store, 8 bytes big-endian, or none when empty.
+// parseSignalledVersion reads a validator's signalled version from the store: 8 bytes big-endian, none when empty.
 func parseSignalledVersion(b []byte) (version uint64, signalled bool, err error) {
 	if len(b) == 0 {
 		return 0, false, nil
@@ -92,7 +92,7 @@ func parseSignalledVersion(b []byte) (version uint64, signalled bool, err error)
 	return binary.BigEndian.Uint64(b), true, nil
 }
 
-// abciError is a query the node answered with an error code.
+// abciError is a query answered with an error code.
 type abciError struct {
 	path, codespace, log string
 	code                 uint32
@@ -102,7 +102,7 @@ func (e *abciError) Error() string {
 	return e.path + ": " + e.log
 }
 
-// errNoSignal is a chain without x/signal, which doesn't change while tenderduty runs.
+// errNoSignal means the chain has no x/signal, which never changes.
 var errNoSignal = errors.New("no x/signal on this chain")
 
 func abciQuery(ctx context.Context, client *rpchttp.HTTP, path string, data []byte) ([]byte, error) {
@@ -116,13 +116,12 @@ func abciQuery(ctx context.Context, client *rpchttp.HTTP, path string, data []by
 	return resp.Response.Value, nil
 }
 
-// moduleMissing is a query the chain has no module for. The sdk's query router answers 6, unknown request.
+// moduleMissing: the sdk answers code 6, unknown request, when the chain lacks the module.
 func moduleMissing(err error) bool {
 	var answer *abciError
 	return errors.As(err, &answer) && answer.codespace == "sdk" && answer.code == 6
 }
 
-// getSignalState reads the tally, the scheduled upgrade, and what the validator with this operator address signalled.
 func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (*signalState, error) {
 	info, err := client.ABCIInfo(ctx)
 	if err != nil {
@@ -167,8 +166,7 @@ func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (
 	return state, nil
 }
 
-// refreshSignal reads x/signal and estimates when a scheduled upgrade happens. A chain without the module is logged once
-// and not asked again, so signal_enabled can be set in alert_defaults for every chain.
+// refreshSignal skips chains without x/signal after logging once, so signal_enabled can sit in alert_defaults.
 func (cc *ChainConfig) refreshSignal(ctx context.Context, client *rpchttp.HTTP) {
 	cc.stateMux.RLock()
 	unsupported := cc.signalUnsupported
@@ -238,7 +236,7 @@ func isSignalMessage(message string) bool {
 
 var signalVersion = regexp.MustCompile(`ersion (\d+)`)
 
-// signalAlarmId is the alarm's id, from its message so alarms restored from a saved state resolve with the same one.
+// signalAlarmId derives the id from the message, so alarms restored from state resolve with the same one.
 func signalAlarmId(valInfo *ValInfo, message string) string {
 	version := ""
 	if match := signalVersion.FindStringSubmatch(message); match != nil {
@@ -249,8 +247,7 @@ func signalAlarmId(valInfo *ValInfo, message string) string {
 		return valInfo.Valcons + "signalmissing" + version
 	case strings.HasSuffix(message, " reached the upgrade threshold"):
 		return valInfo.Valcons + "signalthreshold" + version
-	// by height like upgradeAlarmId, an upgrade rescheduled for the same version must not share the pagerduty dedup key
-	// with the one it replaces, or resolving the old one closes the new incident
+	// by height like upgradeAlarmId: a rescheduled upgrade must not share the pagerduty dedup key of the one it replaces
 	case strings.HasSuffix(message, " is close"):
 		return valInfo.Valcons + "signalupgradesoon" + messageHeight(message)
 	case isSignalUpgrade(message):
@@ -259,7 +256,6 @@ func signalAlarmId(valInfo *ValInfo, message string) string {
 	return valInfo.Valcons + "signalstart" + version
 }
 
-// signalLabel is the header of a signalling notification.
 func signalLabel(msg *alertMsg) (icon, state string) {
 	switch {
 	case isSignalUpgrade(msg.message):
@@ -282,8 +278,7 @@ func signalLabel(msg *alertMsg) (icon, state string) {
 	return "📣", "Signalling"
 }
 
-// signalAlarms keeps the signalling alarms the way upgradeAlarms does: the wanted ones are worked out each time and
-// compared with the active ones.
+// signalAlarms works like upgradeAlarms.
 func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	state, loaded, height := cc.signal, cc.signalLoaded, cc.lastBlockNum
@@ -297,11 +292,11 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 		wanted[message], priority[message] = signalAlarmId(valInfo, message), priorityName
 	}
 	scheduled := state.UpgradeHeight > 0 && height < state.UpgradeHeight
-	started := state.Total > 0 && float64(state.Power)/float64(state.Total)*100 >= float64(cc.Alerts.SignalPercent)
+	started := state.Total > 0 && float64(state.Power)/float64(state.Total)*100 >= float64(cc.alertSettings().SignalPercent)
 	if started {
-		want(signalStartMessage(state.Version), cc.Alerts.SignalPriority)
+		want(signalStartMessage(state.Version), cc.alertSettings().SignalPriority)
 		if !state.Signalled {
-			want(signalMissingMessage(state.Version), cc.Alerts.SignalPriority)
+			want(signalMissingMessage(state.Version), cc.alertSettings().SignalPriority)
 		}
 	}
 	if state.Threshold > 0 && state.Power >= state.Threshold && state.UpgradeHeight == 0 {
@@ -313,7 +308,7 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 			version = state.Version
 		}
 		want(signalUpgradeMessage(version, state.UpgradeHeight), "critical")
-		if eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, state.UpgradeHeight)); ok && time.Until(eta.(time.Time)) <= time.Duration(cc.Alerts.SignalRemindMinutes)*time.Minute {
+		if eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, state.UpgradeHeight)); ok && time.Until(eta.(time.Time)) <= time.Duration(cc.alertSettings().SignalRemindMinutes)*time.Minute {
 			want(signalUpgradeSoonMessage(version, state.UpgradeHeight), "critical")
 		}
 	}
@@ -327,8 +322,8 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
-	// a version's alarms clear together (it upgraded, or signalling dropped), only the one that says the most is announced.
-	// A threshold that clears because the upgrade was scheduled is said by the new upgrade alarm.
+	// alarms of one version clear together, only the one that says the most is announced
+	// a threshold cleared by a scheduled upgrade is announced by the upgrade alarm
 	announce := make(map[string]string) // version to the message that announces it
 	for message := range active {
 		if _, ok := wanted[message]; ok || !isSignalMessage(message) {
@@ -362,7 +357,7 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 	}
 }
 
-// signalRank orders a version's alarms by how much their recovery says, the reminder first.
+// signalRank orders a version's alarms by what their recovery says, reminder first.
 func signalRank(message string) int {
 	switch {
 	case isSignalUpgrade(message) && strings.HasSuffix(message, " is close"):
@@ -377,8 +372,7 @@ func signalRank(message string) int {
 	return 4
 }
 
-// signalResolution is why a signalling alarm cleared: the chain upgraded, the validator signalled, the upgrade was
-// scheduled, or signalling fell back. A scheduled upgrade's own message reads fine as it is.
+// signalResolution says why a signalling alarm cleared, a scheduled upgrade's own message needs none.
 func (cc *ChainConfig) signalResolution(message string, state signalState, moniker string) (resolution, bool) {
 	if isSignalUpgrade(message) {
 		return resolution{}, false
@@ -403,5 +397,5 @@ func (cc *ChainConfig) signalResolution(message string, state signalState, monik
 	case strings.HasSuffix(message, " reached the upgrade threshold"):
 		return resolution{"✅", "Resolved", fmt.Sprintf("Version %d fell back under the upgrade threshold", version)}, true
 	}
-	return resolution{"✅", "Resolved", fmt.Sprintf("Version %d signalling dropped below %d%%", version, cc.Alerts.SignalPercent)}, true
+	return resolution{"✅", "Resolved", fmt.Sprintf("Version %d signalling dropped below %d%%", version, cc.alertSettings().SignalPercent)}, true
 }

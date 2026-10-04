@@ -34,17 +34,37 @@ Text and status colors adapt to the selected palette. Color combinations that ma
 
 ```
 $ tenderduty -h
-Usage of tenderduty:
-  -example-config
-    	print an example config.yml with the shared settings and exit
-  -example-chain
-    	print an example chains.d/<Chain>.yml for one chain and exit
-  -f string
-    	configuration file to use (default "config.yml")
-  -state string
-    	file for storing state between restarts (default ".tenderduty-state.json")
-  -cc string
-    	directory containing additional chain specific configurations (default "chains.d")
+Tenderduty monitors Tendermint validators and alerts when they miss blocks, get jailed or a node goes down.
+
+Usage:
+  tenderduty [flags]
+  tenderduty [command]
+
+Available Commands:
+  chain       Add, change, remove or list chains
+  reload      Reload a running tenderduty
+  help        Help about any command
+
+Flags:
+  -home string               directory for config.yml, chains.d and the state file, or env TENDERDUTY_HOME
+                             (default: the current directory if it has config.yml, else /etc/tenderduty
+                             with the state in /var/lib/tenderduty)
+  -f string                  config file, or env CONFIG (default "config.yml", or <home>/config.yml)
+  -cc string                 chain config directory (default "chains.d", or <home>/chains.d)
+  -state string              state file (default ".tenderduty-state.json", or <home>/.tenderduty-state.json)
+  -example-config            print an example config.yml and exit
+  -example-chain             print an example chains.d/<Chain>.yml and exit
+  -h, -help                  help for tenderduty
+
+Remote config (see docs/remote.md):
+  -encrypt                   encrypt -f to -encrypted-config
+  -decrypt                   decrypt -encrypted-config to -f
+  -encrypted-config string   encrypted config file (default "config.yml.asc")
+  -password string           password for -encrypt/-decrypt, or env PASSWORD, prompts if unset
+
+A relative -f, -cc or -state is relative to the current directory, not to -home.
+
+Use "tenderduty [command] -h" for more information about a command.
 ```
 
 ## Installing

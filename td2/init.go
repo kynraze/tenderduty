@@ -30,7 +30,16 @@ func init() {
 
 var logs = make(chan interface{}, 128)
 
+// cliMode drops the loader's progress lines and prints its warnings plainly, for tenderduty chain.
+var cliMode bool
+
 func l(v ...any) {
+	if cliMode {
+		if msg := strings.TrimSpace(fmt.Sprintln(v...)); strings.HasPrefix(msg, "⚠️") {
+			fmt.Fprintln(os.Stderr, "Warning:", strings.TrimSpace(strings.TrimPrefix(msg, "⚠️")))
+		}
+		return
+	}
 	c := td
 	if c.EnableDash && !c.HideLogs && c.logChan != nil {
 		select {

@@ -8,8 +8,7 @@ import (
 	"sync"
 )
 
-// tgMention is someone who asked to be pinged, with /mentionme. The id is used rather than the username so it works
-// for people who have none, and keeps working when they change it.
+// tgMention is someone who asked to be pinged with /mentionme, by id so it works without a username.
 type tgMention struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
@@ -20,13 +19,12 @@ var (
 	tgMentions   []tgMention
 )
 
-// mentionLink pings by user id, telegram follows it even without a username.
+// link pings by user id, which works without a username.
 func (m tgMention) link() string {
 	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, m.ID, html.EscapeString(m.Name))
 }
 
-// telegramMentions is who to ping, as telegram HTML: the names from the config, escaped, then the links /mentionme
-// added. The result is already safe to put in a message, so it is not escaped again.
+// telegramMentions is the config names (escaped) then the /mentionme links as HTML, already safe to send.
 func telegramMentions(configured []string) string {
 	parts := make([]string, 0, len(configured))
 	for _, name := range configured {
@@ -54,7 +52,7 @@ func restoreMentions(saved []tgMention) {
 	tgMentions = append([]tgMention(nil), saved...)
 }
 
-// addMention records someone, or updates the name they are shown by. It says if anything changed.
+// addMention records or renames someone, and says if anything changed.
 func addMention(id int64, name string) bool {
 	if id == 0 {
 		return false
@@ -75,7 +73,6 @@ func addMention(id int64, name string) bool {
 	return true
 }
 
-// saveMentions writes the ping list out so it survives a restart.
 func (c *Config) saveMentions() {
 	if err := c.persistState(); err != nil {
 		l("could not save the telegram ping list:", err)

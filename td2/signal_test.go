@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// captured from Celestia mainnet, 3 Oct 2026: VersionTally for version 10, nobody had signalled yet
+// captured from Celestia mainnet, 3 Oct 2026: version 10, nobody had signalled
 func TestParseTallyAbsentVotingPowerIsZero(t *testing.T) {
 	b, err := hex.DecodeString("109ced96bc0118d49ce8e101")
 	if err != nil {
@@ -45,7 +45,7 @@ func TestParseTallyWithVotingPower(t *testing.T) {
 }
 
 func TestParseSignalUpgrade(t *testing.T) {
-	// the empty value from GetUpgrade is no upgrade, not an error
+	// the empty value from GetUpgrade is no upgrade
 	upgrade, err := parseSignalUpgrade(nil)
 	if upgrade != nil || err != nil {
 		t.Fatalf("empty response gave %+v, %v", upgrade, err)
@@ -155,7 +155,6 @@ func TestSignalAlarms(t *testing.T) {
 					t.Errorf("%q should have resolved", message)
 				}
 			}
-			// nothing is left once the condition stops holding
 			chain.stateMux.Lock()
 			chain.signal = signalState{Version: 11, Threshold: 670, Total: 1000}
 			chain.stateMux.Unlock()
@@ -176,7 +175,7 @@ func TestSignalAlarmIds(t *testing.T) {
 	for _, message := range []string{
 		signalStartMessage(10), signalMissingMessage(10), signalThresholdMessage(10),
 		signalUpgradeMessage(10, 1000), signalUpgradeSoonMessage(10, 1000), signalStartMessage(11),
-		// the same version rescheduled to another height
+		// same version rescheduled
 		signalUpgradeMessage(10, 2000), signalUpgradeSoonMessage(10, 2000),
 	} {
 		id := signalAlarmId(valInfo, message)
@@ -214,7 +213,6 @@ func signalNode(t *testing.T, codespace string, code int, queries *int) *rpchttp
 	return client
 }
 
-// a chain without x/signal is asked once, so signal_enabled can sit in alert_defaults for every chain
 func TestChainWithoutSignalIsAskedOnce(t *testing.T) {
 	queries := 0
 	client := signalNode(t, "sdk", 6, &queries)
@@ -226,7 +224,6 @@ func TestChainWithoutSignalIsAskedOnce(t *testing.T) {
 	}
 }
 
-// any other failure can pass, the chain is asked again next time
 func TestSignalFailureIsRetried(t *testing.T) {
 	for _, tc := range []struct {
 		codespace string
@@ -243,7 +240,7 @@ func TestSignalFailureIsRetried(t *testing.T) {
 	}
 }
 
-// rescheduling raises the new upgrade before resolving the old one, they must not go out under one dedup key
+// the new upgrade is raised before the old one resolves, they must not share a dedup key
 func TestRescheduledSignalUpgradeKeepsItsIncident(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Celestia", ChainId: "celestia", lastBlockNum: 100}

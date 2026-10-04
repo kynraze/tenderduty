@@ -296,8 +296,8 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 			continue
 		}
 		message := cc.govOpenMessage(p)
-		wanted[message], priority[message] = fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID), cc.Alerts.GovPriority
-		if voter != "" && time.Until(p.VotingEnd) <= time.Duration(cc.Alerts.GovRemindMinutes)*time.Minute {
+		wanted[message], priority[message] = fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID), cc.alertSettings().GovPriority
+		if voter != "" && time.Until(p.VotingEnd) <= time.Duration(cc.alertSettings().GovRemindMinutes)*time.Minute {
 			message = cc.govRemindMessage(p, valInfo.Moniker)
 			wanted[message], priority[message] = fmt.Sprintf("%sgovremind%d", valInfo.Valcons, p.ID), "critical"
 		}

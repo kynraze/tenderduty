@@ -17,7 +17,7 @@ import (
 func (cc *ChainConfig) newRpc() error {
 	// grab the first working endpoint
 	tryUrl := func(u string) (msg string, down, syncing bool) {
-		ctx, cancel := context.WithTimeout(td.context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(cc.context(), 10*time.Second)
 		defer cancel()
 		_, err := url.Parse(u)
 		if err != nil {
@@ -76,8 +76,8 @@ func (cc *ChainConfig) newRpc() error {
 	}
 	ordered = append(append(ordered, down...), last...)
 	for _, endpoint := range ordered {
-		if td.context().Err() != nil {
-			return td.context().Err()
+		if cc.context().Err() != nil {
+			return cc.context().Err()
 		}
 		if msg, failed, syncing := tryUrl(endpoint.Url); failed {
 			endpoint.markDown(msg, syncing)
@@ -86,7 +86,7 @@ func (cc *ChainConfig) newRpc() error {
 		endpoint.markHealthy()
 		return nil
 	}
-	if cc.PublicFallback {
+	if cc.publicFallbackEnabled() {
 		if node, ok := cc.publicFallback(tryUrl); ok {
 			l(cc.ChainId, "⛑ connected to public endpoint", node)
 			return nil
@@ -174,16 +174,16 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 			if err != nil {
 				l("❓ refreshing signing info for", cc.ValAddress, err)
 			}
-			if client := cc.clientSnapshot(); client != nil && (cc.Alerts.GovAlerts || cc.Alerts.UpgradeAlerts || cc.Alerts.SignalAlerts || cc.Alerts.FibreAlerts) {
-				ctx, cancel := context.WithTimeout(td.context(), 30*time.Second)
+			if client := cc.clientSnapshot(); client != nil && (cc.alertSettings().GovAlerts || cc.alertSettings().UpgradeAlerts || cc.alertSettings().SignalAlerts || cc.alertSettings().FibreAlerts) {
+				ctx, cancel := context.WithTimeout(cc.context(), 30*time.Second)
 				cc.refreshProposals(ctx, client)
-				if cc.Alerts.UpgradeAlerts {
+				if cc.alertSettings().UpgradeAlerts {
 					cc.refreshUpgrade(ctx, client)
 				}
-				if cc.Alerts.SignalAlerts {
+				if cc.alertSettings().SignalAlerts {
 					cc.refreshSignal(ctx, client)
 				}
-				if cc.Alerts.FibreAlerts {
+				if cc.alertSettings().FibreAlerts {
 					cc.refreshFibre(ctx, client)
 				}
 				cancel()

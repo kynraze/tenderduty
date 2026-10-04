@@ -545,6 +545,11 @@ func (msg *alertMsg) card() alertCard {
 func (msg *alertMsg) cardFrom(body string) alertCard {
 	icon, state := msg.header()
 	c := alertCard{Icon: icon, State: state, Extra: msg.extra}
+	if msg.transient && strings.HasPrefix(body, "Config reload failed\n") {
+		c.Title = "Previous configuration is still running"
+		c.Fields = noteFields(strings.Split(strings.TrimPrefix(body, "Config reload failed\n"), "\n"))
+		return c
+	}
 	lines := strings.Split(body, "\n")
 	p, ok := msg.parts(lines[0], lines[1:], state)
 	if !ok || len(p.ident)+len(p.state) == 0 && p.title == "" {

@@ -60,6 +60,8 @@ func (cc *ChainConfig) isMonitoring() bool {
 }
 
 func (c *Config) healthStatus() dash.HealthStatus {
+	c.chainsMux.RLock()
+	defer c.chainsMux.RUnlock()
 	status := dash.HealthStatus{Alive: c.context().Err() == nil, Validators: len(c.Chains)}
 	networks := make(map[string]bool)
 	for _, chain := range c.Chains {

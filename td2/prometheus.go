@@ -41,6 +41,7 @@ const (
 )
 
 type promUpdate struct {
+	remove   bool
 	metric   metricType
 	counter  float64
 	name     string
@@ -52,6 +53,12 @@ type promUpdate struct {
 type metrics map[metricType]*prometheus.GaugeVec
 
 func (m metrics) setStat(update *promUpdate) {
+	if update.remove {
+		for _, gauge := range m {
+			gauge.DeletePartialMatch(prometheus.Labels{"name": update.name})
+		}
+		return
+	}
 	lbls := map[string]string{
 		"name":     update.name,
 		"chain_id": update.chainId,

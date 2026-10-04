@@ -24,7 +24,7 @@ const (
 // subscriptions in the order they are requested, the request id is the index + 1.
 var subscriptions = []string{QueryNewBlock, QueryVote, QueryNewRound}
 
-// roundsId is the subscription id for NewRound, only needed for missed proposals so a node refusing it isn't fatal.
+// roundsId is the NewRound subscription; optional, a node refusing it isn't fatal.
 const roundsId = 3
 
 // StatusType represents the various possible end states. Prevote and Precommit are special cases, where the node
@@ -37,7 +37,7 @@ const (
 	StatusPrecommit
 	StatusSigned
 	StatusProposed
-	// StatusMissedProposal is a signed block the validator was supposed to propose, but another validator did.
+	// signed, but another validator proposed in our place
 	StatusMissedProposal
 )
 
@@ -82,7 +82,7 @@ func (wsr WsReply) Value() []byte {
 // WsRun is our main entrypoint for the websocket listener. In the Run loop it will block, and if it exits force a
 // renegotiation for a new client.
 func (cc *ChainConfig) WsRun() {
-	ctx, cancel := context.WithCancel(td.context())
+	ctx, cancel := context.WithCancel(cc.context())
 	client := cc.clientSnapshot()
 	info, _ := cc.validatorState()
 	if client == nil || len(info.Conspub) != 20 {
@@ -182,7 +182,6 @@ func (cc *ChainConfig) WsRun() {
 // lower height (testnet reset, genesis restart) instead of an endpoint that is a few blocks behind.
 const heightReset = 1000
 
-// maxProposalMisses bounds the missed proposal times kept for the alert window.
 const maxProposalMisses = 1000
 
 type signingTracker struct {
@@ -191,7 +190,7 @@ type signingTracker struct {
 	finalized int64
 }
 
-// consume returns the final status for a height, if the validator missed proposing it, and whether it is final.
+// consume returns the status, whether a proposal was missed, and whether the height is final.
 func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool, bool) {
 	if update.Final && update.Height > 0 && update.Height+heightReset < tracker.finalized {
 		l("⚠️ block height went from", tracker.finalized, "to", update.Height, "- assuming the chain was reset")
@@ -322,10 +321,12 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			if missedProposal {
 				l(info.Moniker, "missed proposing block", update.Height, "on", cc.ChainId)
 			}
-			// on the first block of a connection, read every height in the history we have no data for from the node
+			// on connect, backfill heights with no data from the node's history
 			if client := cc.clientSnapshot(); !backfilled && client != nil {
 				backfilled = true
-				go cc.backfill(ctx, client.Remote(), cc.emptyHeights())
+				heights := cc.emptyHeights()
+				cc.workers.Add(1)
+				td.startWorker(func() { defer cc.workers.Done(); cc.backfill(ctx, client.Remote(), heights) })
 			}
 			if td.EnableDash {
 				td.sendUpdate(cc.dashboardStatus())
@@ -386,7 +387,6 @@ func (rb rawBlock) find(val string) bool {
 	return false
 }
 
-// rawRound is a trimmed down version of the NewRound event.
 type rawRound struct {
 	Height   stringInt64     `json:"height"`
 	Round    json.RawMessage `json:"round"` // a number, but some versions send a string
@@ -401,7 +401,7 @@ func (r rawRound) first() bool {
 
 // handleBlocks consumes the channel for new blocks and when it sees one sends a status update. It's also
 // responsible for stalled chain detection and will shutdown the client if there are no blocks for a minute.
-// Rounds are watched here too, a block we were the round 0 proposer for but someone else made is a missed proposal.
+// Rounds are watched too: a block we were the round 0 proposer for but someone else made is a missed proposal.
 func handleBlocks(ctx context.Context, blocks, rounds chan *WsReply, results chan StatusUpdate, address string) error {
 	live := time.NewTicker(time.Minute)
 	defer live.Stop()

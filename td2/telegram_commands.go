@@ -1,9 +1,9 @@
 package tenderduty
 
 import (
+	"context"
 	"fmt"
 	"html"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,13 +18,14 @@ const telegramMessageLimit = 4000
 // commandAllowed says if a message may command tenderduty: it has to come from the configured chat, and in a group or
 // channel from one of the admins.
 func (c *Config) commandAllowed(chatId int64, chatType string, fromId int64) bool {
-	if strconv.FormatInt(chatId, 10) != strings.TrimSpace(c.Telegram.Channel) {
+	telegram := c.settings().Telegram
+	if strconv.FormatInt(chatId, 10) != strings.TrimSpace(telegram.Channel) {
 		return false
 	}
 	if chatType == "private" {
 		return true
 	}
-	for _, admin := range c.Telegram.Admins {
+	for _, admin := range telegram.Admins {
 		if admin == fromId && fromId != 0 {
 			return true
 		}
@@ -115,6 +116,9 @@ func (c *Config) statusSummary() string {
 		c.chainsMux.RLock()
 		cc := c.Chains[name]
 		c.chainsMux.RUnlock()
+		if cc == nil {
+			continue
+		}
 		info, _ := cc.validatorState()
 		dot, label := cc.chainState(name, info)
 		rank := map[string]int{"🔴": 0, "🟡": 1, "⚪": 2, "🟢": 3}[dot]
@@ -229,26 +233,33 @@ func splitMessage(text string) []string {
 // telegramCommands reads commands sent to the bot by long polling, no port needs to be open. The bot can't be read by
 // anything else at the same time, telegram only allows one reader.
 func (c *Config) telegramCommands() {
-	client := notificationClient{ctx: c.ctx, client: &http.Client{Timeout: 60 * time.Second}}
+	c.telegramCommandsContext(c.context())
+}
+
+func (c *Config) telegramCommandsContext(ctx context.Context) {
+	client := newNotificationClient(ctx, 60*time.Second)
 	var bot *tgbotapi.BotAPI
 	for bot == nil {
 		var err error
-		if bot, err = tgbotapi.NewBotAPIWithClient(c.Telegram.ApiKey, tgbotapi.APIEndpoint, client); err != nil {
+		if bot, err = tgbotapi.NewBotAPIWithClient(c.settings().Telegram.ApiKey, tgbotapi.APIEndpoint, client); err != nil {
 			l("telegram commands:", err)
-			if !waitContext(c.ctx, time.Minute) {
+			if !waitContext(ctx, time.Minute) {
 				return
 			}
 		}
 	}
 	l("📨 reading commands sent to the telegram bot")
 	offset := 0
-	for c.ctx.Err() == nil {
+	for ctx.Err() == nil {
 		updates, err := bot.GetUpdates(tgbotapi.UpdateConfig{Offset: offset, Timeout: 30, AllowedUpdates: []string{"message", "channel_post"}})
 		if err != nil {
-			if !waitContext(c.ctx, 10*time.Second) {
+			if !waitContext(ctx, 10*time.Second) {
 				return
 			}
 			continue
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		for _, update := range updates {
 			offset = update.UpdateID + 1

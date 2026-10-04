@@ -1,0 +1,8 @@
+# Keep heading
+chain_id: test-1
+alerts:
+  fibre_enabled: false # Keep inline
+  telegram:
+    min_severity: critical
+  consecutive_missed: 5
+extra_info: Operator

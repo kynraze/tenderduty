@@ -14,13 +14,12 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// upgradePlan is the upgrade x/upgrade has scheduled.
 type upgradePlan struct {
 	Name   string
 	Height int64
 }
 
-// getUpgradePlan reads the scheduled upgrade, nil when there is none.
+// getUpgradePlan returns nil when none is scheduled.
 func getUpgradePlan(ctx context.Context, client *rpchttp.HTTP) (*upgradePlan, error) {
 	resp, err := client.ABCIQuery(ctx, "/cosmos.upgrade.v1beta1.Query/CurrentPlan", nil)
 	if err != nil {
@@ -45,7 +44,7 @@ func parsePlan(b []byte) (*upgradePlan, error) {
 			case num == 1 && typ == protowire.BytesType:
 				plan.Name = string(value)
 			case num == 3 && typ == protowire.VarintType:
-				// the height comes from a node's answer, a bogus one would wrap around to a negative height
+				// a bogus height would wrap negative
 				if varint > math.MaxInt64 {
 					return fmt.Errorf("upgrade height %d is out of range", varint)
 				}
@@ -60,7 +59,7 @@ func parsePlan(b []byte) (*upgradePlan, error) {
 	return plan, err
 }
 
-// thousands writes a height with commas, 12,345,678.
+// thousands writes a height as 12,345,678.
 func thousands(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	for i := len(s) - 3; i > 0; i -= 3 {
@@ -69,7 +68,7 @@ func thousands(n int64) string {
 	return s
 }
 
-// the messages are the alarms' keys, the estimated time is looked up when a message is sent since it moves
+// the messages are the alarms' keys, the estimated time is added when sent since it moves
 func upgradeMessage(plan *upgradePlan) string {
 	return fmt.Sprintf("Upgrade %s at height %s", plan.Name, thousands(plan.Height))
 }
@@ -87,10 +86,10 @@ func messageHeight(message string) string {
 	return ""
 }
 
-// upgradeETAs and upgradeOutcomes hold, by chain name and height, when an upgrade should happen and how it went.
+// upgradeETAs and upgradeOutcomes are keyed chain@height.
 var upgradeETAs, upgradeOutcomes sync.Map
 
-// upgradeTimeLeft is the estimated time line for an upgrade message, empty when the block time isn't known yet.
+// upgradeTimeLeft is the estimated time line, empty until the block time is known.
 func upgradeTimeLeft(chain, message string) string {
 	eta, ok := upgradeETAs.Load(chain + "@" + messageHeight(message))
 	if !ok {
@@ -110,7 +109,6 @@ func upgradeResolvedLabel(chain, message string) (icon, label string) {
 	return "✅", "Upgraded"
 }
 
-// refreshUpgrade reads the scheduled upgrade and estimates when it happens from the chain's block time.
 func (cc *ChainConfig) refreshUpgrade(ctx context.Context, client *rpchttp.HTTP) {
 	plan, err := getUpgradePlan(ctx, client)
 	if err != nil {
@@ -133,8 +131,7 @@ func (cc *ChainConfig) refreshUpgrade(ctx context.Context, client *rpchttp.HTTP)
 	}
 }
 
-// upgradeAlarms keeps an alarm while an upgrade is scheduled, and a reminder when it is close. Like governance the
-// wanted alarms are worked out each time and compared with the active ones.
+// upgradeAlarms keeps an alarm while an upgrade is scheduled and a reminder when it is close.
 func (cc *ChainConfig) upgradeAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	plan, loaded, height := cc.upgrade, cc.upgradeLoaded, cc.lastBlockNum
@@ -146,8 +143,8 @@ func (cc *ChainConfig) upgradeAlarms(valInfo *ValInfo, reconcile bool) {
 	priority := make(map[string]string)
 	if plan != nil && height < plan.Height {
 		message := upgradeMessage(plan)
-		wanted[message], priority[message] = fmt.Sprintf("%supgrade%d", valInfo.Valcons, plan.Height), cc.Alerts.UpgradePriority
-		if eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, plan.Height)); ok && time.Until(eta.(time.Time)) <= time.Duration(cc.Alerts.UpgradeRemindMinutes)*time.Minute {
+		wanted[message], priority[message] = fmt.Sprintf("%supgrade%d", valInfo.Valcons, plan.Height), cc.alertSettings().UpgradePriority
+		if eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, plan.Height)); ok && time.Until(eta.(time.Time)) <= time.Duration(cc.alertSettings().UpgradeRemindMinutes)*time.Minute {
 			message = upgradeSoonMessage(plan)
 			wanted[message], priority[message] = fmt.Sprintf("%supgradesoon%d", valInfo.Valcons, plan.Height), "critical"
 		}
@@ -159,7 +156,7 @@ func (cc *ChainConfig) upgradeAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
-	// an upgrade's alarm and its reminder clear together once it happens or is cancelled, the reminder says it
+	// alarm and reminder clear together, the reminder announces it
 	reminded := make(map[string]bool)
 	for message := range active {
 		if _, ok := wanted[message]; !ok && strings.HasSuffix(message, " is close") {

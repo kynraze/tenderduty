@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// QuietHoursConfig holds back alerts below a severity during part of the day, they go out when it ends if they are
-// still active.
+// QuietHoursConfig holds back alerts below MinSeverity during part of the day, they go out when it ends if still active.
 type QuietHoursConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	Start       string `yaml:"start"`    // "23:00"
@@ -22,7 +21,6 @@ type QuietHoursConfig struct {
 	start, end int // minutes after midnight
 }
 
-// heldAlert is an alarm raised during quiet hours that wasn't sent yet.
 type heldAlert struct {
 	chain, message, severity, id string
 }
@@ -32,11 +30,10 @@ var (
 	held    = make(map[string]heldAlert) // by chain and message
 )
 
-// offsetZone matches a fixed offset from UTC, for anyone who doesn't know their IANA name.
+// offsetZone matches a fixed offset like UTC+7.
 var offsetZone = regexp.MustCompile(`^(?i:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?$`)
 
-// loadTimezone takes an IANA name like Europe/Berlin, which follows daylight saving, or a fixed offset like UTC+7,
-// which does not. Empty is UTC.
+// loadTimezone takes an IANA name (follows daylight saving) or a fixed offset like UTC+7. Empty is UTC.
 func loadTimezone(name string) (*time.Location, error) {
 	name = strings.TrimSpace(name)
 	if location, err := time.LoadLocation(name); err == nil {
@@ -61,7 +58,6 @@ func loadTimezone(name string) (*time.Location, error) {
 	return time.FixedZone(strings.ToUpper(name), seconds), nil
 }
 
-// parse checks the settings and readies them, quiet hours stay off when they don't make sense.
 func (q *QuietHoursConfig) parse() error {
 	if !q.Enabled {
 		return nil
@@ -89,7 +85,7 @@ func (q *QuietHoursConfig) parse() error {
 	return nil
 }
 
-// active says if now is in quiet hours, a window past midnight like 23:00 to 07:00 wraps around.
+// active handles a window that wraps past midnight, like 23:00 to 07:00.
 func (q *QuietHoursConfig) active(now time.Time) bool {
 	if !q.Enabled || q.location == nil {
 		return false
@@ -102,17 +98,16 @@ func (q *QuietHoursConfig) active(now time.Time) bool {
 	return minute >= q.start || minute < q.end
 }
 
-// holds says if an alert waits for quiet hours to end, a recovery is never held.
+// holds is false for a recovery, it is never held.
 func (q *QuietHoursConfig) holds(severity string, resolved bool, now time.Time) bool {
 	return !resolved && q.active(now) && severityRank(severity) < severityRank(q.MinSeverity)
 }
 
-// holdsAlert says if an alert waits for quiet hours to end.
 func (c *Config) holdsAlert(chain, severity string, resolved bool, now time.Time) bool {
-	return c.QuietHours.holds(severity, resolved, now)
+	quiet := c.settings().QuietHours
+	return quiet.holds(severity, resolved, now)
 }
 
-// releaseHeld sends the held alerts that no longer wait and are still active.
 func (c *Config) releaseHeld() {
 	now := time.Now()
 	heldMux.Lock()

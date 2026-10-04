@@ -22,7 +22,18 @@ func Run(configFile, stateFile, chainConfigDirectory string, password *string) e
 }
 
 func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory string, password *string) error {
-	var err error
+	if dir := filepath.Dir(stateFile); dir != "." {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(dir, 0750); err != nil {
+				return fmt.Errorf("state directory %s does not exist and could not be created (%w); create it or pass -state", dir, err)
+			}
+		}
+	}
+	releasePID, err := acquirePID(stateFile)
+	if err != nil {
+		return err
+	}
+	defer releasePID()
 	td, err = loadConfig(configFile, stateFile, chainConfigDirectory, password)
 	if err != nil {
 		return err
@@ -38,7 +49,10 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	}
 	log.Println("tenderduty config is valid, starting with", len(td.Chains), "chains")
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	if hup := reloadSignal(); hup != nil {
+		signal.Notify(signals, hup)
+	}
 	defer signal.Stop(signals)
 	failures := make(chan error, 3)
 	td.startWorker(func() {
@@ -63,9 +77,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 			}
 		}
 	})
-	if on(td.Telegram.Enabled) && td.Telegram.Commands {
-		td.startWorker(td.telegramCommands)
-	}
+	td.restartCommands()
 	if td.EnableDash {
 		td.startWorker(func() {
 			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus); err != nil {
@@ -109,50 +121,27 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 		})
 	}
 	td.pingHealthcheck()
-	for _, chain := range td.Chains {
-		if chain.PublicFallback {
-			td.startWorker(func() {
-				for {
-					if err := refreshRegistry(td.ctx); err != nil {
-						l("could not refresh registry paths:", err)
-					}
-					if !waitContext(td.ctx, 12*time.Hour) {
-						return
-					}
-				}
-			})
-			break
-		}
-	}
-	for name, chain := range td.Chains {
-		name, chain := name, chain
-		td.startWorker(chain.watch)
-		td.startWorker(func() { chain.monitorHealth(td.ctx, name) })
-		td.startWorker(func() {
-			for td.ctx.Err() == nil {
-				if err := chain.newRpc(); err != nil {
-					l(chain.ChainId, err)
-					if !waitContext(td.ctx, 5*time.Second) {
-						return
-					}
-					continue
-				}
-				if err := chain.GetValInfo(true); err != nil {
-					l(chain.ChainId, err)
-					info, _ := chain.validatorState()
-					if len(info.Conspub) != 20 || info.Valcons == "" {
-						if !waitContext(td.ctx, 5*time.Second) {
-							return
-						}
-						continue
-					}
-				}
-				chain.WsRun()
-				if !waitContext(td.ctx, 5*time.Second) {
-					return
+	td.startWorker(func() {
+		for {
+			// A reload can enable fallback on a previously private chain.
+			td.chainsMux.RLock()
+			fallback := false
+			for _, chain := range td.Chains {
+				fallback = fallback || chain.publicFallbackEnabled()
+			}
+			td.chainsMux.RUnlock()
+			if fallback {
+				if err := refreshRegistry(td.ctx); err != nil {
+					l("could not refresh registry paths:", err)
 				}
 			}
-		})
+			if !waitContext(td.ctx, 30*time.Minute) {
+				return
+			}
+		}
+	})
+	for name, chain := range td.Chains {
+		td.startChain(name, chain)
 	}
 	td.startWorker(func() {
 		ticker := time.NewTicker(time.Minute)
@@ -168,10 +157,20 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 			}
 		}
 	})
-	select {
-	case <-signals:
-	case err = <-failures:
-	case <-td.ctx.Done():
+running:
+	for {
+		select {
+		case sig := <-signals:
+			if sig == reloadSignal() {
+				_ = td.reload(configFile, chainConfigDirectory, password)
+				continue
+			}
+			break running
+		case err = <-failures:
+			break running
+		case <-td.ctx.Done():
+			break running
+		}
 	}
 	td.cancel()
 	stopped := make(chan struct{})
