@@ -538,6 +538,9 @@ func raisedParts(msg *alertMsg, first string, rest []string, state string) (card
 
 // card is the notification as a card, worked out from the alert's summary.
 func (msg *alertMsg) card() alertCard {
+	if msg.group != nil {
+		return msg.group.card(msg)
+	}
 	return msg.cardFrom(msg.summary())
 }
 

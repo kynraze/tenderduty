@@ -40,6 +40,8 @@ type alertMsg struct {
 	lasted time.Duration
 	// quiet is a recovery another one of the same event announces: chats don't get it, pagerduty still resolves it.
 	quiet bool
+	// several nodes of one server, see group_alerts.go
+	group *groupCard
 
 	tgChannel  string
 	tgKey      string
@@ -53,8 +55,19 @@ type alertMsg struct {
 	slkMentions string
 }
 
-// summary is the message as people read it, a "Severity: x" line some alarms carry is shown in the header instead.
+// heading is the chain, or the server for a group.
+func (msg *alertMsg) heading() string {
+	if msg.group != nil {
+		return msg.group.heading()
+	}
+	return msg.chain
+}
+
+// summary drops the "Severity: x" line some alarms carry, the header shows it.
 func (msg *alertMsg) summary() string {
+	if msg.group != nil {
+		return msg.group.summary(msg)
+	}
 	if msg.resolved {
 		if r, ok := storedResolution(msg.chain, msg.message); ok {
 			return r.text
@@ -193,6 +206,7 @@ type alarmCache struct {
 	PendingRecoveries map[string]*pendingRecovery     `json:"pending_recoveries,omitempty"`
 	Outbox            []queuedNotification            `json:"outbox,omitempty"`
 	NextNotification  uint64                          `json:"next_notification,omitempty"`
+	Groups            map[string]*notifyGroup         `json:"groups,omitempty"`
 	flappingAlarms    map[string]map[string]time.Time
 	inFlight          map[notifyDest]map[string]bool
 	notifyMux         sync.RWMutex
@@ -322,6 +336,8 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 		return
 	}
 	whichMap[key] = time.Now()
+	// re-sent alarm leaves its old group
+	alarms.forgetMember(dest, key)
 	if dest == pd {
 		if alarms.flappingAlarms[msg.chain] == nil {
 			alarms.flappingAlarms[msg.chain] = make(map[string]time.Time)
@@ -398,6 +414,11 @@ func notifySlack(msg *alertMsg) (err error) {
 	if msg.quiet {
 		return nil
 	}
+	return postSlack(msg)
+}
+
+// postSlack skips the sent-tracking, a grouped message covers several alarms.
+func postSlack(msg *alertMsg) (err error) {
 	data, err := json.Marshal(buildSlackMessage(msg))
 	if err != nil {
 		return
@@ -473,7 +494,7 @@ func buildSlackMessage(msg *alertMsg) *SlackMessage {
 		Text: message,
 		Attachments: []Attachment{
 			{
-				Title:    strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.chain, state, msg.slkMentions)),
+				Title:    strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.heading(), state, msg.slkMentions)),
 				Color:    color,
 				Text:     slackTitle(card),
 				Fields:   card.slackFields(),
@@ -495,6 +516,10 @@ func notifyDiscord(msg *alertMsg) (err error) {
 	if msg.quiet {
 		return nil
 	}
+	return postDiscord(msg)
+}
+
+func postDiscord(msg *alertMsg) (err error) {
 	discPost := buildDiscordMessage(msg)
 	client := &http.Client{Timeout: 10 * time.Second}
 	data, err := json.MarshalIndent(discPost, "", "  ")
@@ -542,9 +567,8 @@ type DiscordEmbed struct {
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 	card := msg.card()
-	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", card.Icon, msg.chain, card.State, msg.discMentions))
-	// plain puts everything in one message, no embed and no colour bar down the side. The blank line stands in for
-	// the embed, otherwise the header and the alert read as one block.
+	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", card.Icon, msg.heading(), card.State, msg.discMentions))
+	// plain is one message with no embed, the blank line separates header and alert
 	if msg.discStyle == "plain" {
 		lines := card.markdownLines()
 		if card.Extra != "" {
@@ -573,7 +597,11 @@ func notifyTg(msg *alertMsg) (err error) {
 	if msg.quiet {
 		return nil
 	}
-	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, notificationClient{ctx: msg.context(), client: &http.Client{Timeout: 10 * time.Second}})
+	return postTg(msg)
+}
+
+func postTg(msg *alertMsg) (err error) {
+	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, newNotificationClient(msg.context(), 10*time.Second))
 	if err != nil {
 		l("notify telegram:", err)
 		return
@@ -596,8 +624,7 @@ var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 // Everything that comes from a message or the config is escaped, telegram refuses a whole message over a stray <.
 func buildTelegramMessage(msg *alertMsg) string {
 	card := msg.card()
-	// telegram has no embed either, so the header gets the same blank line under it
-	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.chain), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
+	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.heading()), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
 	if msg.extra != "" {
 		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}

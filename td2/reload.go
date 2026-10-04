@@ -376,6 +376,10 @@ func (c *Config) applyReload(next *Config) chainDiff {
 		chain.settingsVersion++
 		chain.stateMux.Unlock()
 	}
+	// server labels do not need a restart
+	for _, name := range append(append([]string(nil), diff.Updated...), diff.Unchanged...) {
+		c.Chains[name].adoptServers(next.Chains[name])
+	}
 	c.settingsMux.Lock()
 	c.liveSettings = next
 	if oldSettings.NodeDownMin != next.NodeDownMin || oldSettings.NodeDownSeverity != next.NodeDownSeverity ||

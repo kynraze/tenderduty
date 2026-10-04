@@ -13,7 +13,9 @@ type queuedNotification struct {
 	Sequence    uint64     `json:"sequence"`
 	Destination notifyDest `json:"destination"`
 	pendingRecovery
-	Resolved bool      `json:"resolved"`
+	Resolved bool `json:"resolved"`
+	// Queued is what a node down alert waits from, for others on its server
+	Queued   time.Time `json:"queued,omitempty"`
 	snapshot *alertMsg // credentials kept only in memory, for removed chains
 }
 
@@ -27,7 +29,7 @@ func (a *alarmCache) enqueue(msg *alertMsg) {
 		if !enabled {
 			continue
 		}
-		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, snapshot: msg}
+		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, Queued: time.Now(), snapshot: msg}
 		var last *queuedNotification
 		for i := range a.Outbox {
 			if a.Outbox[i].workerKey() == item.workerKey() {
@@ -150,9 +152,14 @@ func (c *Config) runNotifications() {
 func (c *Config) queuedHead(key string) (queuedNotification, bool, bool) {
 	alarms.notifyMux.RLock()
 	defer alarms.notifyMux.RUnlock()
+	return alarms.headOf(key)
+}
+
+// headOf is a worker's next notification, and whether to skip it (raised and recovered unsent). notifyMux held.
+func (a *alarmCache) headOf(key string) (queuedNotification, bool, bool) {
 	var head *queuedNotification
-	for i := range alarms.Outbox {
-		item := &alarms.Outbox[i]
+	for i := range a.Outbox {
+		item := &a.Outbox[i]
 		if item.workerKey() != key {
 			continue
 		}
@@ -160,7 +167,7 @@ func (c *Config) queuedHead(key string) (queuedNotification, bool, bool) {
 			head = item
 			continue
 		}
-		if !head.Resolved && item.Resolved && !alarms.sentTo(head.Destination, head.Chain+"\x00"+head.Message, head.Message) {
+		if !head.Resolved && item.Resolved && !a.sentTo(head.Destination, head.Chain+"\x00"+head.Message, head.Message) {
 			return *head, true, true
 		}
 		break
@@ -196,6 +203,13 @@ func (c *Config) deliverQueue(key string) {
 				l("⚠️ could not save notification queue, sending anyway", err)
 			}
 		}
+		// wait for the group, then read the head again
+		if d := c.groupDelay(item); d > 0 && !skip {
+			if !waitContext(c.context(), d) {
+				return
+			}
+			continue
+		}
 		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
 		orphan := false
 		if r, ok := storedResolution(item.Chain, item.Message); ok {
@@ -214,22 +228,28 @@ func (c *Config) deliverQueue(key string) {
 		if !skip {
 			msg.ordered = true
 			msg.ctx = c.deliveryCtx
-			switch item.Destination {
-			case pd:
-				if msg.pd {
-					err = notifyPagerduty(msg)
-				}
-			case tg:
-				if msg.tg {
-					err = notifyTg(msg)
-				}
-			case di:
-				if msg.disc {
-					err = notifyDiscord(msg)
-				}
-			case slk:
-				if msg.slk {
-					err = notifySlack(msg)
+			grouped := false
+			if !orphan {
+				grouped, err = c.deliverGrouped(item, msg)
+			}
+			if !grouped {
+				switch item.Destination {
+				case pd:
+					if msg.pd {
+						err = notifyPagerduty(msg)
+					}
+				case tg:
+					if msg.tg {
+						err = notifyTg(msg)
+					}
+				case di:
+					if msg.disc {
+						err = notifyDiscord(msg)
+					}
+				case slk:
+					if msg.slk {
+						err = notifySlack(msg)
+					}
 				}
 			}
 		}

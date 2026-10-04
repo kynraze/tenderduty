@@ -45,6 +45,11 @@ type Config struct {
 	deliveryCtx    context.Context
 	deliveryCancel context.CancelFunc
 
+	// one chat message per server when several of its nodes go down together
+	GroupNodeAlerts bool `yaml:"group_node_alerts"`
+	// how long a node down alert waits for others on its server
+	GroupWaitSeconds int `yaml:"group_wait_seconds"`
+
 	// EnableDash enables the web dashboard
 	EnableDash bool `yaml:"enable_dashboard"`
 	// Listen is the URL for the dashboard to listen on, must be a valid/parsable URL
@@ -439,6 +444,12 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 	}
 	if c.NodeDownSeverity == "" {
 		c.NodeDownSeverity = "critical"
+	}
+	if c.GroupWaitSeconds == 0 {
+		c.GroupWaitSeconds = defaultGroupWaitSeconds
+	} else if c.GroupWaitSeconds < minGroupWaitSeconds {
+		c.GroupWaitSeconds = minGroupWaitSeconds
+		problems = append(problems, fmt.Sprintf("warning: 'group_wait_seconds' must be at least %d, using %d", minGroupWaitSeconds, minGroupWaitSeconds))
 	}
 
 	for k, v := range c.Chains {
@@ -968,6 +979,10 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 			for _, alrm := range saved.Alarms.AllAlarms {
 				clearStale(alrm, "dashboard", on(c.Pagerduty.Enabled), staleHours)
 			}
+		}
+		if saved.Alarms.Groups != nil {
+			alarms.Groups = saved.Alarms.Groups
+			alarms.pruneGroups()
 		}
 	}
 
