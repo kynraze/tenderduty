@@ -8,6 +8,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,6 +54,24 @@ type promUpdate struct {
 
 type metrics map[metricType]*prometheus.GaugeVec
 
+// endpointLabel drops the userinfo and query of a node URL, they can hold credentials.
+func endpointLabel(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		raw, _, _ = strings.Cut(raw, "?")
+		raw, _, _ = strings.Cut(raw, "#")
+		if i := strings.LastIndex(raw, "@"); i >= 0 {
+			raw = raw[i+1:]
+		}
+		return raw
+	}
+	if u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" {
+		return raw
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
+}
+
 func (m metrics) setStat(update *promUpdate) {
 	if update.remove {
 		for _, gauge := range m {
@@ -67,7 +87,7 @@ func (m metrics) setStat(update *promUpdate) {
 	promMux.RLock()
 	defer promMux.RUnlock()
 	if update.metric == metricNodeLagSeconds || update.metric == metricNodeDownSeconds {
-		lbls["endpoint"] = update.endpoint
+		lbls["endpoint"] = endpointLabel(update.endpoint)
 	}
 	m[update.metric].With(lbls).Set(update.counter)
 }
@@ -75,6 +95,16 @@ func (m metrics) setStat(update *promUpdate) {
 func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	fibre := &fibreCollector{config: td}
+	if err := prometheus.Register(fibre); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(fibre)
+	raw := &fibreRawCollector{config: td}
+	if err := prometheus.Register(raw); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(raw)
 	// attributes used to uniquely identify each chain
 	var chainLabels = []string{"name", "chain_id", "moniker"}
 	var hostLabels = []string{"name", "chain_id", "moniker", "endpoint"}

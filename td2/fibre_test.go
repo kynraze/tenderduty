@@ -143,7 +143,7 @@ func fibreChain() *ChainConfig {
 	return &ChainConfig{ChainId: "celestia", valInfo: &ValInfo{Valcons: "celestiavalcons1test"}}
 }
 
-// a chain without x/valaddr is asked once, so fibre_enabled can sit in alert_defaults for every chain
+// fibre_enabled can sit in alert_defaults for every chain
 func TestChainWithoutFibreIsAskedOnce(t *testing.T) {
 	queries := 0
 	client := signalNode(t, "sdk", 6, &queries)
@@ -155,7 +155,7 @@ func TestChainWithoutFibreIsAskedOnce(t *testing.T) {
 	}
 }
 
-// any other failure is asked again and leaves what was stored alone, a flaky node must not raise or clear alarms
+// a flaky node must not raise or clear alarms
 func TestFibreFailureIsRetried(t *testing.T) {
 	for _, tc := range []struct {
 		codespace string
@@ -173,7 +173,7 @@ func TestFibreFailureIsRetried(t *testing.T) {
 	}
 }
 
-// a Fibre host the way Fibre builds it: a self-signed certificate with the extension binding its TLS key to the validator
+// self-signed, with the extension binding its TLS key to the validator, as Fibre builds it
 func fibreCertificateFor(t *testing.T, consKey ed25519.PrivateKey, chainID string, withExtension bool) tls.Certificate {
 	t.Helper()
 	tlsPub, tlsPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -217,7 +217,7 @@ func fibreCertificateFor(t *testing.T, consKey ed25519.PrivateKey, chainID strin
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: tlsPriv}
 }
 
-// serveFibre answers TLS 1.3 handshakes with h2 on a local port until the test ends
+// TLS 1.3 with h2 on a local port
 func serveFibre(t *testing.T, cert tls.Certificate) string {
 	t.Helper()
 	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"}})
@@ -439,7 +439,7 @@ func TestFibreAlarmIds(t *testing.T) {
 	}
 }
 
-// a changed host raises the new host's alarm before resolving the old one, they must not go out under one dedup key
+// the new host's alarm is raised before the old one resolves; they must not share a dedup key
 func TestChangedFibreHostKeepsItsIncident(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -508,8 +508,7 @@ func TestFibreAlertsShowWhy(t *testing.T) {
 	}
 }
 
-// the Fibre state isn't saved, so after a restart a host that is still down looks like it only just went down. The
-// alarms restored from the state file must stay until the host answers, not read "Fibre up" and come back minutes later.
+// The state isn't saved, so after a restart a down host looks new: restored alarms must stay until it answers.
 func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 	dead := closedPort(t)
 	for _, tc := range []struct {
@@ -603,7 +602,6 @@ func TestFibreDialReason(t *testing.T) {
 	}
 }
 
-// a host that stops answering proves nothing about its identity: the failed check stays until the host answers again
 func TestFibreIdentityKeptWhileHostIsDown(t *testing.T) {
 	c := auditConfig(t)
 	c.NodeDownMin = 5
@@ -658,7 +656,6 @@ func TestFibreIdentityKeptWhileHostIsDown(t *testing.T) {
 	}
 }
 
-// a host alarm cleared because the host was replaced or the registration went away doesn't say the host came back
 func TestReplacedFibreHostIsNotCalledUp(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

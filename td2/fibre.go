@@ -19,25 +19,23 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// fibreState is what the last check found about the validator's Fibre provider.
 type fibreState struct {
 	Registered    bool
 	Host          string
 	Reachable     bool
-	KeyKnown      bool // without the consensus key the identity can't be checked
+	KeyKnown      bool // the identity can't be checked without the consensus key
 	IdentityOK    bool
 	IdentityError string
-	DownSince     time.Time // when the host was first seen unreachable, zero while it answers
+	DownSince     time.Time // zero while the host answers
 	DownReason    string    // why the last handshake failed
 	NoKeyLogged   bool
 }
 
-// fibreDialReason is a failed handshake in the operator's terms, the cause decides what to look at.
 func fibreDialReason(err error) string {
 	var netErr net.Error
 	var dnsErr *net.DNSError
 	switch {
-	// before the timeout case, a lookup that times out is a DNS problem, not the host
+	// before the timeout case: a lookup timeout is DNS, not the host
 	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
 		return "DNS lookup failed, " + dnsErr.Name + " does not resolve"
 	case errors.As(err, &dnsErr):
@@ -52,14 +50,13 @@ func fibreDialReason(err error) string {
 	return err.Error()
 }
 
-// fibreCertOID is the extension Fibre puts its signed TLS key binding in.
+// Extension carrying Fibre's signed TLS key binding.
 var fibreCertOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66463, 1, 1}
 
-// fibreClockSkew is the slack Fibre's own verifier allows on the certificate's validity.
+// Slack Fibre's own verifier allows on certificate validity.
 const fibreClockSkew = 5 * time.Minute
 
-// parseFibreProvider reads QueryFibreProviderInfoResponse{info: {host: 1}, found: 2}. Protobuf leaves out false, so a
-// validator that isn't registered has no found field in the bytes and it reads as false.
+// QueryFibreProviderInfoResponse{info: {host: 1}, found: 2}. Protobuf omits false, so an unregistered validator has no found field.
 func parseFibreProvider(b []byte) (host string, found bool, err error) {
 	err = eachField(b, func(num protowire.Number, typ protowire.Type, value []byte, varint uint64) error {
 		switch {
@@ -78,24 +75,23 @@ func parseFibreProvider(b []byte) (host string, found bool, err error) {
 	return
 }
 
-// What Fibre assigns, from celestia-app fibre/protocol_params.go DefaultProtocolParams (protocol v0, these are not chain
-// params). The minimum of 148 rows is derived there from MaxValidatorCount 100 and 100 bits of unique decoding security.
+// From celestia-app fibre/protocol_params.go DefaultProtocolParams (protocol v0, not chain params).
+// The 148 minimum derives from MaxValidatorCount 100 and 100 bits of unique decoding security.
 const (
 	fibreOriginalRows = 4096
 	fibreMinRows      = 148
-	// the liveness threshold 1/3, a validator with a third of the stake gets every row
+	// liveness threshold 1/3: a third of the stake gets every row
 	fibreLivenessNum = 1
 	fibreLivenessDen = 3
 )
 
-// fibreRows is how many of the 4096 rows Fibre assigns a validator, the way celestia-app's Set.AssignedRows does:
-// ceil(4096 * power * 3 / total), at least 148 and at most 4096. minimum is that the 148 raised it. A validator with no
-// power, or outside the active set, is assigned nothing.
+// Mirrors celestia-app's Set.AssignedRows: ceil(4096 * power * 3 / total) clamped to 148..4096, 0 without power.
+// minimum reports that the 148 floor applied.
 func fibreRows(power, total int64) (rows int, minimum bool) {
 	if power <= 0 || total <= 0 {
 		return 0, false
 	}
-	// a share over 100% can't be, and would not fit the quotient below
+	// a share over 100% would overflow the quotient below
 	power = min(power, total)
 	hi, lo := bits.Mul64(uint64(power), fibreOriginalRows*fibreLivenessDen)
 	quo, rem := bits.Div64(hi, lo, uint64(total)*fibreLivenessNum)
@@ -109,8 +105,7 @@ func fibreRows(power, total int64) (rows int, minimum bool) {
 	return min(rows, fibreOriginalRows), minimum
 }
 
-// fibreBudget is the most data Fibre keeps for rows of the 4096, fullStake * rows / 4096 as Fibre's deriveBudget works it
-// out. The product can pass 64 bits, so it is done in 128.
+// fullStake * rows / 4096 as Fibre's deriveBudget; the product can pass 64 bits, so 128-bit math.
 func fibreBudget(fullStake int64, rows int) int64 {
 	if fullStake <= 0 || rows <= 0 {
 		return 0
@@ -120,7 +115,7 @@ func fibreBudget(fullStake int64, rows int) int64 {
 	return int64(quo)
 }
 
-// parseFibreFullStake reads QueryParamsResponse{params: {full_stake_storage_budget: 5}}, 0 when it isn't in the bytes.
+// QueryParamsResponse{params: {full_stake_storage_budget: 5}}; 0 when absent.
 func parseFibreFullStake(b []byte) (int64, error) {
 	var stake uint64
 	err := eachField(b, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
@@ -140,8 +135,7 @@ func parseFibreFullStake(b []byte) (int64, error) {
 	return int64(stake), err
 }
 
-// refreshFibreParams reads the budget Fibre derives from. A failure keeps the last value and is logged once, until a
-// read works again: it says nothing about Fibre itself, so it never touches an alarm.
+// A failure keeps the last value, is logged once and never touches an alarm.
 func (cc *ChainConfig) refreshFibreParams(ctx context.Context, client *rpchttp.HTTP) {
 	value, err := abciQuery(ctx, client, "/celestia.fibre.v1.Query/Params", nil)
 	var stake int64
@@ -175,16 +169,14 @@ func getFibreProvider(ctx context.Context, client *rpchttp.HTTP, valcons string)
 	return parseFibreProvider(value)
 }
 
-// fibreCertificate completes a TLS handshake with the host and returns the certificate it presents. Fibre serves gRPC
-// over TLS 1.3 only, with no plaintext port and no health endpoint, so a finished handshake is what reachable means.
+// Fibre serves gRPC over TLS 1.3 only, with no health endpoint: a finished handshake is what reachable means.
 func fibreCertificate(ctx context.Context, host string) (*x509.Certificate, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: 10 * time.Second},
 		Config: &tls.Config{
 			NextProtos: []string{"h2"},
 			MinVersion: tls.VersionTLS13,
-			// Fibre's certificate is self-signed by design, so it can't be verified the usual way. verifyFibreIdentity checks it
-			// against the consensus key from the chain instead.
+			// self-signed by design; verifyFibreIdentity checks it against the consensus key
 			InsecureSkipVerify: true, //#nosec G402 -- identity is verified against the validator's consensus key
 		},
 	}
@@ -200,8 +192,7 @@ func fibreCertificate(ctx context.Context, host string) (*x509.Certificate, erro
 	return certs[0], nil
 }
 
-// verifyFibreIdentity does what Fibre's own verifier does (celestia-app fibre/internal/tlsid): the certificate carries
-// a payload binding its TLS key to a validity window, signed with the validator's consensus key.
+// As Fibre's verifier (celestia-app fibre/internal/tlsid): a payload binding the TLS key to a validity window, signed by the consensus key.
 func verifyFibreIdentity(cert *x509.Certificate, consKey []byte, chainID string, now time.Time) error {
 	var value []byte
 	for _, ext := range cert.Extensions {
@@ -250,8 +241,7 @@ func verifyFibreIdentity(cert *x509.Certificate, consKey []byte, chainID string,
 	return nil
 }
 
-// refreshFibre checks the validator's Fibre registration and host. The host is dialed from wherever tenderduty runs, so
-// what it proves is what the outside world can reach. A chain without x/valaddr is logged once and not asked again.
+// The host is dialed from where tenderduty runs. A chain without x/valaddr is logged once and not asked again.
 func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 	cc.stateMux.RLock()
 	unsupported := cc.fibreUnsupported
@@ -271,7 +261,7 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 		l(cc.ChainId, "has no x/valaddr, not watching Fibre")
 		return
 	}
-	// a flaky node must not raise or clear Fibre alarms
+	// a flaky node must not raise or clear alarms
 	if err != nil {
 		l(cc.ChainId, "could not read the Fibre provider:", err)
 		return
@@ -294,7 +284,7 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 				if !previous.DownSince.IsZero() {
 					state.DownSince = previous.DownSince
 				}
-				// a host that doesn't answer proves nothing about its identity, the last check stands until it answers
+				// an unreachable host proves nothing: the last identity check stands
 				state.KeyKnown, state.IdentityOK, state.IdentityError = previous.KeyKnown, previous.IdentityOK, previous.IdentityError
 			}
 		} else {
@@ -313,6 +303,9 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 	cc.stateMux.Lock()
 	cc.fibre, cc.fibreLoaded = state, true
 	cc.stateMux.Unlock()
+	if cc.alertSettings().FibreAlerts {
+		td.fibreData().recordReach(cc.name, state)
+	}
 }
 
 const (
@@ -322,7 +315,7 @@ const (
 	fibreIdentityInfix       = " does not prove it belongs to this validator on "
 )
 
-// the messages are the alarms' keys, so the stored identity error is not in them
+// messages are alarm keys, so the identity error is not in them
 func fibreNotRegisteredMessage(chainID string) string {
 	return fibreNotRegisteredPrefix + chainID
 }
@@ -344,9 +337,8 @@ func isFibreIdentity(message string) bool {
 	return strings.HasPrefix(message, fibreHostPrefix) && strings.Contains(message, fibreIdentityInfix)
 }
 
-// fibreAlarmId is the alarm's id, from its message so alarms restored from a saved state resolve with the same one. The
-// host is in the two host ids: the new host's alarm is raised before the old one is resolved and both go out as the
-// pagerduty dedup key, so sharing one would close the incident just raised.
+// Derived from the message so restored alarms resolve with the same id. Host-specific, or a new host's alarm would share
+// a pagerduty dedup key with the old one being resolved.
 func fibreAlarmId(valInfo *ValInfo, message string) string {
 	switch {
 	case strings.HasPrefix(message, fibreNotRegisteredPrefix):
@@ -357,7 +349,6 @@ func fibreAlarmId(valInfo *ValInfo, message string) string {
 	return valInfo.Valcons + "fibredown" + fibreMessageHost(message)
 }
 
-// fibreMessageHost is the host a down or identity message is about.
 func fibreMessageHost(message string) string {
 	host := strings.TrimPrefix(message, fibreHostPrefix)
 	if isFibreIdentity(message) {
@@ -368,8 +359,6 @@ func fibreMessageHost(message string) string {
 	return host
 }
 
-// fibreResolution is why a Fibre alarm cleared: registered, back up, verified, or the host was replaced or dropped
-// from the registry, which is not the host getting better.
 func (cc *ChainConfig) fibreResolution(message string, state fibreState, moniker string) resolution {
 	if strings.HasPrefix(message, fibreNotRegisteredPrefix) {
 		return resolution{"✅", "Fibre registered", fmt.Sprintf("%s is a registered Fibre provider on %s at %s", moniker, cc.ChainId, state.Host)}
@@ -388,7 +377,6 @@ func (cc *ChainConfig) fibreResolution(message string, state fibreState, moniker
 	return resolution{"ℹ️", "Not checked", fmt.Sprintf("Fibre at %s is no longer checked, the validator's consensus key isn't known", host)}
 }
 
-// fibreLabel is the header of a Fibre notification.
 func fibreLabel(msg *alertMsg) (icon, state string) {
 	switch {
 	case strings.HasPrefix(msg.message, fibreNotRegisteredPrefix):
@@ -408,7 +396,7 @@ func fibreLabel(msg *alertMsg) (icon, state string) {
 	return "🚨", "Fibre down"
 }
 
-// fibreDetail is why the chain's Fibre host is down or failed the identity check, for the second line of that alert.
+// Second line of a down or identity alert.
 func fibreDetail(chain, message string) string {
 	td.chainsMux.RLock()
 	cc := td.Chains[chain]
@@ -427,8 +415,7 @@ func fibreDetail(chain, message string) string {
 	return cc.fibre.DownReason
 }
 
-// fibreAlarms keeps the Fibre alarms the way signalAlarms does: the wanted ones are worked out each time and compared
-// with the active ones.
+// Like signalAlarms: the wanted set is recomputed and compared with the active one.
 func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	state, loaded := cc.fibre, cc.fibreLoaded
@@ -447,20 +434,17 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	if !state.Registered {
 		want(fibreNotRegisteredMessage(cc.ChainId))
 	} else {
-		// an alarm already raised stays while the host doesn't answer: the grace period is for raising one, and the
-		// state behind it isn't saved, so after a restart the host looks like it only just went down
+		// a raised alarm stays while the host is down: DownSince isn't saved, so a restart makes it look new
 		down, identity := fibreDownMessage(state.Host, cc.ChainId), fibreIdentityMessage(state.Host, cc.ChainId)
-		if !state.Reachable && (active[down] || !state.DownSince.IsZero() && time.Since(state.DownSince) >= time.Duration(td.NodeDownMin)*time.Minute) {
+		if !state.Reachable && (active[down] || !state.DownSince.IsZero() && time.Since(state.DownSince) >= time.Duration(td.settings().NodeDownMin)*time.Minute) {
 			want(down)
 		}
-		// refreshFibre carries the last identity check over while the host is down, a restart loses it
+		// refreshFibre carries the identity check over while the host is down; a restart loses it
 		if state.KeyKnown && !state.IdentityOK || !state.Reachable && active[identity] {
 			want(identity)
 		}
 	}
-	// what cleared goes out before what is new, so "registered" reads before the problem found on the new host. The
-	// ids differ by host, so no new incident shares a dedup key with one being resolved.
-	// the old host's down and identity alarms clear together when it moves or is dropped, with the same news
+	// resolutions go out before new alarms; the old host's alarms clear together with one message
 	said := make(map[string]bool)
 	for message := range active {
 		if _, ok := wanted[message]; !ok && isFibreMessage(message) {
@@ -478,7 +462,7 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	for message, id := range wanted {
 		if !active[message] || reconcile {
 			id := id
-			td.alert(cc.name, message, cc.Alerts.FibrePriority, false, &id)
+			td.alert(cc.name, message, cc.alertSettings().FibrePriority, false, &id)
 		}
 	}
 }

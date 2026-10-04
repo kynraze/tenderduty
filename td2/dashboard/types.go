@@ -42,23 +42,21 @@ type ChainStatus struct {
 
 	Blocks []int `json:"blocks"`
 
-	// Fibre is there only for a chain whose Fibre is watched
 	Fibre *FibreStatus `json:"fibre,omitempty"`
 }
 
-// FibreStatus is a validator's Fibre provider: what the chain says about it, and what Fibre reports of itself.
 type FibreStatus struct {
-	Registered    bool   `json:"registered"`
-	Host          string `json:"host,omitempty"`
-	Reachable     bool   `json:"reachable"`
-	DownSince     int64  `json:"down_since,omitempty"` // unix seconds
-	DownReason    string `json:"down_reason,omitempty"`
-	Identity      string `json:"identity"` // verified, failed or unchecked
-	IdentityError string `json:"identity_error,omitempty"`
-	Version       string `json:"version,omitempty"`
+	Resources     map[string]float64 `json:"resources,omitempty"`
+	Registered    bool               `json:"registered"`
+	Host          string             `json:"host,omitempty"`
+	Reachable     bool               `json:"reachable"`
+	DownSince     int64              `json:"down_since,omitempty"` // unix seconds
+	DownReason    string             `json:"down_reason,omitempty"`
+	Identity      string             `json:"identity"` // verified, failed or unchecked
+	IdentityError string             `json:"identity_error,omitempty"`
+	Version       string             `json:"version,omitempty"`
 
-	// the share of the rows, and the budget the chain derives from it. A budget of 0 is none: not in the active set, or
-	// the chain's parameter not read yet.
+	// ChainBudget 0 is none: not in the active set, or the parameter not read yet.
 	InActiveSet    bool    `json:"in_active_set"`
 	Rows           int     `json:"rows"`
 	TotalRows      int     `json:"total_rows"`
@@ -66,7 +64,7 @@ type FibreStatus struct {
 	MinimumApplies bool    `json:"minimum_applies"`
 	ChainBudget    int64   `json:"chain_budget,omitempty"`
 
-	// Fibre's own report, with MetricsReceived. A reported budget of 0 is --unlimited-budget.
+	// Reported by Fibre itself. A budget of 0 is --unlimited-budget.
 	MetricsReceived   bool  `json:"metrics_received"`
 	MetricsAt         int64 `json:"metrics_at,omitempty"`
 	BudgetReported    bool  `json:"budget_reported"`
@@ -82,8 +80,7 @@ type FibreStatus struct {
 	Last24h FibreWindow `json:"last_24h"`
 }
 
-// FibreWindow is what Fibre did over a stretch of time. Seconds is how much of it tenderduty has seen, the history is in
-// memory so after a restart the 24 hours are shorter. An average or share is left out when nothing was measured.
+// Seconds is the part of the window seen, short after a restart. A nil average or share was not measured.
 type FibreWindow struct {
 	Seconds          int64    `json:"seconds"`
 	UploadsOK        int64    `json:"uploads_ok"`

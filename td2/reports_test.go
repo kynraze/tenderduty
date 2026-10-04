@@ -439,6 +439,41 @@ func TestReportVotesSurviveRestartAndJobIdentity(t *testing.T) {
 	}
 }
 
+func TestReportFibreUsesPersistedPeriodHistograms(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	st := c.fibreData()
+	st.now = func() time.Time { return now }
+	st.hours["Chain"] = make(map[int64]*fibreHour)
+	for i := 1; i <= 2; i++ {
+		at := now.Add(-time.Duration(i) * time.Hour).Unix()
+		buckets := []uint64{50, 0, 0}
+		if i == 2 {
+			buckets = []uint64{0, 50, 0}
+		}
+		st.hours["Chain"][at] = &fibreHour{
+			Time: at, Exports: 1, Checks: 10, Reachable: 9,
+			Counts: map[string]float64{"uploads_ok": 10, "uploads_failed": 0, "signatures_ok": 50, "signatures_fast": 50},
+			Extra: &fibreExtra{Histograms: map[string]fibreHistogram{
+				"sign":   {Bounds: []float64{.001, .01}, Buckets: buckets, Count: 50},
+				"upload": {Bounds: []float64{.01, .1}, Buckets: []uint64{0, 50, 0}, Count: 50},
+			}},
+		}
+	}
+	lines := strings.Join(c.reportFibre("Chain", now.Add(-24*time.Hour), now, false), "\n")
+	for _, want := range []string{"20 shards stored", "0 failed", "100% under 10 ms", "p95 9.1 ms", "90.0% reachable"} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("missing %s: %s", want, lines)
+		}
+	}
+	copy := &Config{}
+	copy.fibreData().now = func() time.Time { return now }
+	copy.fibreData().restoreHours(st.savedHours())
+	if got := strings.Join(copy.reportFibre("Chain", now.Add(-24*time.Hour), now, false), "\n"); got != lines {
+		t.Fatalf("Fibre changed on restart: %s", got)
+	}
+}
+
 func TestReportQueuedDeliveryRetry(t *testing.T) {
 	c := auditConfig(t)
 	var requests atomic.Int64

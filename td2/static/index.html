@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="style.css">
   <script src="appearance.js" defer></script>
   <script src="status.js" defer></script>
+  <script src="fibre.js" defer></script>
 </head>
 <body>
   <div class="app">
@@ -17,6 +18,7 @@
       <nav class="nav" aria-label="Main navigation">
         <a class="active" href="#overview" aria-current="page">Overview</a>
         <a href="#activity" id="activity-nav">Activity</a>
+        <a href="#fibre" id="fibre-nav" hidden>Fibre</a>
       </nav>
       <div class="side-bottom">
         <strong id="monitor-state">Connecting to monitor</strong>
@@ -92,6 +94,13 @@
         </div>
       </section>
     </main>
+    <main id="fibre" hidden aria-labelledby="fibre-heading">
+      <header class="top"><div><div class="eyebrow">Provider operations</div><h1 id="fibre-heading">Fibre</h1><p>Uploads, signing and storage alongside the chain's provider checks.</p></div><button type="button" id="fibre-customize">Customize panels</button></header>
+      <div class="fibre-controls"><label id="fibre-chain-label">Chain <select id="fibre-chain"></select></label><div class="tools" id="fibre-ranges" role="group" aria-label="History range"></div></div>
+      <div id="fibre-facts" class="detail-facts"></div>
+      <p id="fibre-message" role="status"></p>
+      <div id="fibre-panels" class="fibre-panels"></div>
+    </main>
   </div>
 
   <dialog id="chain-dialog" aria-labelledby="detail-heading">
@@ -124,6 +133,7 @@
     <p id="appearance-error" class="appearance-error" role="alert" hidden></p>
     <div class="appearance-actions"><button type="button" id="appearance-reset">Reset</button><div><button type="button" id="appearance-cancel">Cancel</button><button type="button" id="appearance-apply">Apply</button></div></div>
   </dialog>
+  <dialog id="fibre-layout" aria-labelledby="fibre-layout-heading"><div class="dialog-head"><div><h2 id="fibre-layout-heading">Customize Fibre panels</h2><p>Drag to reorder, or use the up and down buttons.</p></div><button type="button" id="fibre-layout-close">Close</button></div><label>Default range <select id="fibre-default-range"><option>1h</option><option>24h</option><option>7d</option><option>30d</option></select></label><div id="fibre-layout-list"></div><button type="button" id="fibre-layout-reset">Reset to default</button><p class="footnote">Changes save automatically in this browser.</p></dialog>
   <p id="appearance-feedback" class="sr-only" role="status"></p>
 </body>
 </html>

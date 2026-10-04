@@ -2,7 +2,7 @@ package dash
 
 import "sync"
 
-// broadcaster sends each message to every websocket client, a client that can't keep up misses it.
+// broadcaster sends to every websocket client; a client that can't keep up misses messages.
 type broadcaster struct {
 	mux       sync.Mutex
 	listeners map[chan []byte]struct{}
@@ -20,7 +20,7 @@ func (b *broadcaster) send(msg []byte) {
 	}
 }
 
-// listen returns the client's channel and a func to stop listening. The channel closes with the broadcaster.
+// listen's channel closes with the broadcaster.
 func (b *broadcaster) listen() (<-chan []byte, func()) {
 	b.mux.Lock()
 	defer b.mux.Unlock()

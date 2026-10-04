@@ -335,6 +335,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				row.Lines = append(row.Lines, line)
 			}
 		}
+		row.Fibre = c.reportFibre(name, start, now, weekly)
 		if total.Watched < span.Seconds()-60 {
 			row.Lines = append(row.Lines, "Watched "+reportWatchedDuration(time.Duration(total.Watched)*time.Second)+" of "+reportWatchedDuration(span))
 		}
@@ -358,6 +359,81 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		result.Header[0] += " · Watched " + reportWatchedDuration(time.Duration(watched)*time.Second) + " of " + reportWatchedDuration(span)
 	}
 	return result
+}
+
+// Persisted rollups for both periods, so daily reports survive a restart.
+func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []string {
+	st := c.fibreData()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	counts := make(map[string]float64)
+	var extra *fibreExtra
+	var latest *fibreHour
+	checks, reachable, exports := int64(0), int64(0), int64(0)
+	for at, h := range st.hours[chain] {
+		if at < start.Truncate(time.Hour).Unix() || at >= end.Unix() {
+			continue
+		}
+		addFibreValues(counts, h.Counts)
+		extra = mergeFibreExtra(extra, h.Extra)
+		checks += h.Checks
+		reachable += h.Reachable
+		exports += h.Exports
+		if latest == nil || h.Time > latest.Time {
+			latest = h
+		}
+	}
+	if exports == 0 {
+		return nil
+	}
+	lines := make([]string, 0, 4)
+	if stored, known := counts["uploads_ok"]; known {
+		line := "🧵 Fibre: " + thousands(int64(stored)) + " shards stored"
+		if failed, known := counts["uploads_failed"]; known {
+			line += " · " + compactReportNumber(failed) + " failed"
+		}
+		if weekly && checks > 0 {
+			line += fmt.Sprintf(" · %.1f%% reachable", 100*float64(reachable)/float64(checks))
+		}
+		lines = append(lines, line)
+	}
+	if n := counts["signatures_ok"]; n > 0 {
+		line := "✍️ Signing: "
+		if fast, known := counts["signatures_fast"]; known {
+			line += fmt.Sprintf("%.0f%% under 10 ms", 100*fast/n)
+		}
+		if extra != nil {
+			if p95 := extra.Histograms["sign"].quantile(.95); p95 != nil {
+				line += fmt.Sprintf(" · p95 %.1f ms", *p95*1000)
+			}
+		}
+		if line != "✍️ Signing: " {
+			lines = append(lines, line)
+		}
+	}
+	line := "📡 "
+	if !weekly && checks > 0 {
+		line += fmt.Sprintf("%.1f%% reachable", 100*float64(reachable)/float64(checks))
+	}
+	if extra != nil {
+		if p95 := extra.Histograms["upload"].quantile(.95); p95 != nil {
+			if line != "📡 " {
+				line += " · "
+			}
+			line += fmt.Sprintf("upload p95 %.0f ms", *p95*1000)
+		}
+	}
+	if line != "📡 " {
+		if weekly && len(lines) > 1 {
+			lines[len(lines)-1] += " · " + strings.TrimPrefix(line, "📡 ")
+		} else {
+			lines = append(lines, line)
+		}
+	}
+	if !weekly && latest != nil && latest.Occupancy != nil && latest.Budget != nil && *latest.Budget > 0 {
+		lines = append(lines, fmt.Sprintf("🗃 %.1f of %.1f GiB (%.0f%%)", float64(*latest.Occupancy)/(1<<30), float64(*latest.Budget)/(1<<30), 100*float64(*latest.Occupancy)/float64(*latest.Budget)))
+	}
+	return lines
 }
 
 var reportBoldTime = regexp.MustCompile(`((?:\d+d )?(?:\d+h )?\d+[dhm]) left|~((?:\d+d )?(?:\d+h )?\d+[dhm])$`)

@@ -81,7 +81,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	td.startWorker(td.runReports)
 	if td.EnableDash {
 		td.startWorker(func() {
-			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus); err != nil {
+			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory); err != nil {
 				failures <- err
 			}
 		})
@@ -223,7 +223,7 @@ func saveState(stateFile string) error {
 
 	alarms.notifyMux.RLock()
 	sequence := alarms.NextNotification
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals, TgMentions: mentionSnapshot(), Reports: td.savedReports(time.Now())})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals, TgMentions: mentionSnapshot(), FibreRollups: td.fibreData().savedHours(), Reports: td.savedReports(time.Now())})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

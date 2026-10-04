@@ -11,26 +11,27 @@ import (
 	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 )
 
-// fibreReport is everything the status shows about a chain's Fibre, gathered once for telegram and the dashboard: what
-// the chain says (registration, host, stake share and the budget it gives) and what Fibre reports of itself.
 type fibreReport struct {
 	Now     time.Time
-	Pending bool // not checked yet, the first check runs within a minute of the start
+	Pending bool // not checked yet
 	State   fibreState
 
-	ShareKnown  bool // the validator set was read, without it there is no share to tell
+	ShareKnown  bool // the validator set was read
 	InActiveSet bool
 	Rows        int
 	Minimum     bool  // the 148 rows minimum raised the share
-	Budget      int64 // what the chain gives the validator, 0 when it has no rows or the parameter isn't read
+	Budget      int64 // 0 when no rows or the parameter isn't read
 
 	Metrics fibreSnapshot // Found is false when nothing was received for the chain
 }
 
-// fibreReport is nil for a chain whose Fibre isn't watched: fibre_enabled is off, x/valaddr is missing, or it hasn't
-// been checked yet.
+// nil when Fibre isn't watched: fibre_enabled off or x/valaddr missing.
 func (cc *ChainConfig) fibreReport(now time.Time) *fibreReport {
-	if !cc.Alerts.FibreAlerts {
+	return cc.fibreReportFrom(now, td.fibreData())
+}
+
+func (cc *ChainConfig) fibreReportFrom(now time.Time, store *fibreStore) *fibreReport {
+	if !cc.alertSettings().FibreAlerts {
 		return nil
 	}
 	cc.stateMux.RLock()
@@ -39,7 +40,7 @@ func (cc *ChainConfig) fibreReport(now time.Time) *fibreReport {
 	if unsupported {
 		return nil
 	}
-	// right after a start the section says so, a missing one reads as Fibre not being watched
+	// right after start: pending, not absent
 	if !loaded {
 		return &fibreReport{Now: now, Pending: true}
 	}
@@ -52,11 +53,10 @@ func (cc *ChainConfig) fibreReport(now time.Time) *fibreReport {
 		r.InActiveSet = r.Rows > 0
 		r.Budget = fibreBudget(fullStake, r.Rows)
 	}
-	r.Metrics = td.fibreData().snapshot(cc.name)
+	r.Metrics = store.snapshot(cc.name)
 	return r
 }
 
-// humanBinary writes a size in binary units, the chain's parameter is 2 TiB: 74 GiB or 1.5 TiB.
 func humanBinary(n int64) string {
 	value, unit := float64(n), 0
 	for value >= 1024 && unit < 4 {
@@ -67,12 +67,12 @@ func humanBinary(n int64) string {
 	return text + " " + []string{"B", "KiB", "MiB", "GiB", "TiB"}[unit]
 }
 
-// share is a percentage with no trailing zeros: 3.61%, 75%, 100%.
+// no trailing zeros: 3.61%, 75%, 100%.
 func share(value float64) string {
 	return strings.TrimSuffix(strings.TrimRight(strconv.FormatFloat(value, 'f', 2, 64), "0"), ".") + "%"
 }
 
-// percent is part of whole, and a little that rounds to nothing still shows as some.
+// a tiny nonzero part shows as <0.01%, not 0%.
 func percent(part, whole int64) string {
 	value := 100 * float64(part) / float64(whole)
 	if part > 0 && value < 0.01 {
@@ -85,8 +85,7 @@ func ago(now, then time.Time) string {
 	return shortDuration(max(now.Sub(then), 0)) + " ago"
 }
 
-// identity is whether the host proved it belongs to the validator: verified, failed, or unchecked for a host that never
-// answered or a validator whose consensus key isn't known.
+// unchecked: the host never answered or the consensus key isn't known.
 func (s fibreState) identity() string {
 	switch {
 	case !s.Registered || !s.KeyKnown:
@@ -97,8 +96,6 @@ func (s fibreState) identity() string {
 	return "verified"
 }
 
-// telegramLines are the Fibre section of /status <chain>, a labelled line for each thing with a dot where it can be
-// good or bad: the provider, the share and budget, and with metrics what Fibre did lately and how it is doing.
 func (r *fibreReport) telegramLines() []string {
 	if r.Pending {
 		return []string{"🧵 <b>Fibre</b>", "⏳ Not checked yet, the first check runs within a minute"}
@@ -213,7 +210,7 @@ func (r *fibreReport) telegramLines() []string {
 	return append(lines, statusField("📨", "Metrics", ago(r.Now, m.LastReceived)))
 }
 
-// avgMs is an average in milliseconds, left out when nothing was measured.
+// avgMs is in milliseconds, nil when nothing was measured.
 func avgMs(seconds float64, n int64) *float64 {
 	if n <= 0 {
 		return nil
@@ -240,7 +237,6 @@ func fibreWindowStatus(s fibreSummary) dash.FibreWindow {
 	return w
 }
 
-// dashboard is the report as the dashboard gets it.
 func (r *fibreReport) dashboard() *dash.FibreStatus {
 	if r.Pending {
 		return nil
@@ -248,7 +244,8 @@ func (r *fibreReport) dashboard() *dash.FibreStatus {
 	s, m := r.State, r.Metrics
 	f := &dash.FibreStatus{
 		Registered: s.Registered, Host: s.Host, Reachable: s.Reachable, DownReason: s.DownReason,
-		Identity: s.identity(), IdentityError: s.IdentityError, Version: m.Version,
+		Resources: m.Resources,
+		Identity:  s.identity(), IdentityError: s.IdentityError, Version: m.Version,
 		InActiveSet: r.InActiveSet, Rows: r.Rows, TotalRows: fibreOriginalRows, MinimumApplies: r.Minimum, ChainBudget: r.Budget,
 		MetricsReceived: m.Found, BudgetReported: m.HaveBudget, FibreBudget: m.Budget, Unlimited: m.HaveBudget && m.Budget == 0,
 		OccupancyKnown: m.HaveOccupancy, Occupancy: m.Occupancy, UploadsInFlight: m.UploadsNow, DownloadsInFlight: m.DownloadsNow,

@@ -137,7 +137,7 @@ func TestParseFibreFullStake(t *testing.T) {
 	}
 }
 
-// a node answering each query path with its own value, or an error when the answer says so
+// answers each query path with its own value or error
 func pathNode(t *testing.T, answer func(path string) (value []byte, codespace string, code int)) *rpchttp.HTTP {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +163,7 @@ func pathNode(t *testing.T, answer func(path string) (value []byte, codespace st
 	return client
 }
 
-// the budget is read with the provider, a failure keeps the last one and says nothing about Fibre
+// a failure keeps the last value and says nothing about Fibre
 func TestRefreshFibreReadsTheParams(t *testing.T) {
 	paramsOK, paramsCode, paramsSpace := true, 0, ""
 	paramsValue := fibreParamsResponse(2<<40, true)

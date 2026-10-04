@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// what the status keeps of Fibre's counters, as the running totals a sender exports
+// running totals as a sender exports them
 type statusTotals struct {
 	uploadsA, uploadsB, uploadsFailed int64 // successful uploads of two sizes, and the failed ones
 	uploadSecA, uploadSecB, failedSec float64
@@ -30,7 +30,7 @@ func durationPoint(n int64, seconds float64, attrs ...interface{}) *metricsv1.Hi
 	return &metricsv1.HistogramDataPoint{Attributes: kvs(attrs...), Count: uint64(n), Sum: proto.Float64(seconds), BucketCounts: []uint64{uint64(n), 0}}
 }
 
-// upDown is an UpDownCounter: a sum that isn't monotonic, cumulative, its value is the number now
+// a non-monotonic cumulative sum; the value is the number now
 func (f *fibreFeed) upDown(name string, now int64) *metricsv1.Metric {
 	return &metricsv1.Metric{Name: "fibre.server." + name, Data: &metricsv1.Metric_Sum{Sum: &metricsv1.Sum{
 		AggregationTemporality: f.temporality(),
@@ -38,7 +38,6 @@ func (f *fibreFeed) upDown(name string, now int64) *metricsv1.Metric {
 	}}}
 }
 
-// statusData is f's export with the metrics the status shows added
 func (f *fibreFeed) statusData(v statusTotals) *metricsv1.MetricsData {
 	data := f.data()
 	bounds := []float64{1}
@@ -114,7 +113,7 @@ func TestFibreMetricsStatusCounters(t *testing.T) {
 		t.Fatalf("in flight %d and %d", snap.UploadsNow, snap.DownloadsNow)
 	}
 
-	// growth is the difference, and in flight is the value now: it went down and that isn't a restart
+	// growth is the difference, in flight is the value now; a drop isn't a restart
 	r.advance(time.Minute)
 	second := first
 	second.uploadsA, second.uploadSecA, second.uploadBytes = 18, 0.36, 30<<20
@@ -133,7 +132,7 @@ func TestFibreMetricsStatusCounters(t *testing.T) {
 		t.Fatalf("in flight is %d and %d, it is the last value", snap.UploadsNow, snap.DownloadsNow)
 	}
 
-	// a restart: a new start time and lower totals are all new, the seconds with them, and nothing goes negative
+	// restart: a new start time and lower totals are all new, seconds too, nothing negative
 	r.advance(time.Minute)
 	f.start = uint64(r.clock.now.Add(-10 * time.Second).UnixNano())
 	third := statusTotals{uploadsA: 2, uploadSecA: 0.06, uploadBytes: 2 << 20, putOK: 1, putSec: 0.02, signOK: 4, signFast: 4, signSec: 0.008}
@@ -151,7 +150,7 @@ func TestFibreMetricsStatusCounters(t *testing.T) {
 		t.Fatalf("in flight after the restart is %d", snap.UploadsNow)
 	}
 
-	// the same series with a sum that went down under the same start time: the count grew, the seconds can't be negative
+	// same start time, sum went down: the count grew, the seconds can't be negative
 	r.advance(time.Minute)
 	third.uploadsA, third.uploadSecA = 3, 0.01
 	f.r.c.ingestFibreMetrics(f.statusData(third))
@@ -170,7 +169,7 @@ func TestFibreMetricsStatusFirstExportIsABaseline(t *testing.T) {
 	if !snap.Ten.Sum.empty() || !snap.Day.Sum.empty() {
 		t.Fatalf("what Fibre did before tenderduty started counted: %+v", snap.Day.Sum)
 	}
-	// the number in flight is a value, there is nothing to baseline
+	// in flight is a value, nothing to baseline
 	if snap.UploadsNow != 2 {
 		t.Fatalf("in flight is %d", snap.UploadsNow)
 	}
@@ -213,7 +212,7 @@ func TestFibreMetricsStatusWindows(t *testing.T) {
 	}
 }
 
-// past fibreMaxDeltas the older history is merged, not cut: the day still covers every export and loses no count
+// past fibreMaxDeltas the older history is merged, not cut: no count is lost
 func TestFibreMetricsStatusCoversWhatIsKept(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -238,8 +237,6 @@ func TestFibreMetricsStatusCoversWhatIsKept(t *testing.T) {
 	}
 }
 
-// a series is a set of labels, the upload size among them: one that stops coming is forgotten after a day, so a
-// long run doesn't keep every size it ever saw
 func TestFibreMetricsSeriesThatStopAreForgotten(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -297,7 +294,7 @@ func TestFibreMetricsStatusUpDownCounters(t *testing.T) {
 	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", &metricsv1.Metric{Name: "fibre.server.upload_shard.in_flight"}))
 }
 
-// the alarms' fixtures also carry the new metrics: 9 uploads of 1 MiB at 20ms, a failed one, 2 in flight
+// the alarm fixtures carry these too: 9 uploads of 1 MiB at 20ms, a failed one, 2 in flight
 func TestFibreMetricsStatusFixtures(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"

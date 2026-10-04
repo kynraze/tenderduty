@@ -13,8 +13,7 @@ const statusNames = {
     '-1': 'unobserved'
 }
 let filter = 'all'
-// the height drawn for each chain and when it moved, the newest block animates for a moment after that. The table is
-// redrawn on every update, so a redraw continues the animation where it was instead of starting it over.
+// drawn height per chain and when it moved; a redraw continues the new-block animation instead of restarting it
 const drawnHeights = new Map()
 const newBlockMs = 700
 
@@ -127,6 +126,7 @@ function setStatus(update) {
     }
     setConnection(socket && socket.readyState === WebSocket.OPEN)
     render()
+    document.dispatchEvent(new CustomEvent("fibre-state", { detail: [...chains.values()] }))
 }
 
 function renderSummary() {
@@ -257,7 +257,7 @@ function msText(value) {
     return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
 }
 
-// what Fibre did in a window, one entry for each fact: its label and the text for that window
+// what Fibre did in a window: a label and the text for each fact
 const fibreWindowFacts = [
     ['Uploads ok / failed / rejected', w => `${number(w.uploads_ok)} / ${number(w.uploads_failed)} / ${number(w.uploads_rejected)}`],
     ['Data received', w => bytesText(w.bytes_received)],
@@ -321,7 +321,6 @@ function appendFact(container, label, values) {
     container.appendChild(item)
 }
 
-// fillFibre draws the Fibre section of the chain dialog, it is there only for a chain whose Fibre is watched
 function fillFibre(chain) {
     const section = document.getElementById('detail-fibre')
     section.hidden = !chain.fibre
@@ -353,7 +352,7 @@ function fillFibre(chain) {
         : 'Figures are what Fibre reported to tenderduty.'
 }
 
-// fillDetail draws the chain dialog, render() calls it again while the dialog is open so it stays live
+// render() redraws it while the dialog is open
 function fillDetail(name) {
     const chain = chains.get(name)
     if (!chain) return false
@@ -479,6 +478,7 @@ document.addEventListener('visibilitychange', () => {
 setInterval(() => {
     setConnection(socket && socket.readyState === WebSocket.OPEN)
     render()
+    document.dispatchEvent(new CustomEvent("fibre-state", { detail: [...chains.values()] }))
 }, 30000)
 loadInitial()
 connect()

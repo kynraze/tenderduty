@@ -12,9 +12,8 @@ import (
 
 const statusHost = "fibre.example.com:7980"
 
-// statusRig is a registered validator on Mocha with 0.296% of the stake, so the minimum of 148 rows applies. With metrics
-// it has been exporting for 10 minutes: 42 uploads, 49 of 50 signatures fast, 12 MiB stored of the 74 GiB budget, the
-// last upload 18 seconds ago and the last export 34 seconds ago.
+// A registered validator on Mocha with 0.296% of the stake (the 148 minimum applies). With metrics, exporting for 10
+// minutes: 42 uploads, 49 of 50 signatures fast, 12 MiB of the 74 GiB budget, last upload 18s ago, last export 34s ago.
 func statusRig(t *testing.T, metrics bool, tweak func(f *fibreFeed)) *fibreRig {
 	t.Helper()
 	r := newFibreRig(t)
@@ -130,7 +129,7 @@ func TestFibreStatusText(t *testing.T) {
 	}
 }
 
-// telegramHTML fails a reply telegram would refuse whole: a < or & that isn't one of its tags or an entity.
+// fails on a < or & that isn't a telegram tag or entity
 func telegramHTML(t *testing.T, reply string) {
 	t.Helper()
 	text := regexp.MustCompile(`</?(?:b|i|code)>`).ReplaceAllString(reply, "")
@@ -290,7 +289,6 @@ func TestFibreStatusJSON(t *testing.T) {
 		}
 	}
 
-	// without metrics the chain's side is there and the windows are empty
 	r = statusRig(t, false, nil)
 	f = r.cc.dashboardStatus().Fibre
 	if f == nil || f.MetricsReceived || f.Rows != 148 || f.ChainBudget != 79_456_894_976 || f.Last10m.Seconds != 0 || f.Last24h.UploadsOK != 0 {

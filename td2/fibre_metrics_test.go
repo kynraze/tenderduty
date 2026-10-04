@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -29,7 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// the two exports captured from otlpmetrichttp and sdk/metric, the libraries Fibre uses, with Fibre's metrics
+// exports captured from otlpmetrichttp and sdk/metric, the libraries Fibre uses
 func fibreFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "fibre", name))
@@ -39,12 +40,11 @@ func fibreFixture(t *testing.T, name string) []byte {
 	return b
 }
 
-// a fake clock for the store, the fixtures' own start time is what the first export is measured against
+// the fixtures' start time is what the first export is measured against
 type fibreClock struct{ now time.Time }
 
 func (f *fibreClock) Now() time.Time { return f.now }
 
-// fibreRig is a chain with Fibre alerts, a receiver store on a fake clock and the helpers to drive them.
 type fibreRig struct {
 	t     *testing.T
 	c     *Config
@@ -59,7 +59,7 @@ func newFibreRig(t *testing.T) *fibreRig {
 	c := auditConfig(t)
 	c.NodeDownMin = 3
 	c.FibreMetrics.Listen = "127.0.0.1:4318"
-	// stage 1 has already looked: the chain has Fibre, so silence from it means something
+	// the provider check has run: the chain has Fibre, so silence means something
 	cc := &ChainConfig{name: "Chain", ChainId: "celestia", valInfo: &ValInfo{Valcons: "valcons1", Moniker: "Kynraze"},
 		fibreLoaded: true, fibre: fibreState{Registered: true, Host: "1.2.3.4:7980", Reachable: true}}
 	cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
@@ -73,7 +73,7 @@ func newFibreRig(t *testing.T) *fibreRig {
 
 func (r *fibreRig) advance(d time.Duration) { r.clock.now = r.clock.now.Add(d) }
 
-// a sender that exports every minute, it started at the rig's clock when it was made
+// exports every minute, starting at the rig's clock
 type fibreFeed struct {
 	r                       *fibreRig
 	instance                string
@@ -91,7 +91,6 @@ type fibreFeed struct {
 	last                    []int64
 }
 
-// counters are the running totals the feed exports.
 func (f *fibreFeed) counters() []*int64 {
 	return []*int64{&f.rejected, &f.signFast, &f.signSlow, &f.signFailed, &f.put, &f.get, &f.prune, &f.timeout, &f.throttled, &f.err, &f.backendOK, &f.ignoredOutcomes}
 }
@@ -148,7 +147,7 @@ func gauge(name string, v int64) *metricsv1.Metric {
 	}}}
 }
 
-// plain is a duration series with every observation in the first bucket, only its count matters
+// every observation in the first bucket; only the count matters
 func plain(n int64, attrs ...interface{}) *metricsv1.HistogramDataPoint {
 	return &metricsv1.HistogramDataPoint{Attributes: kvs(attrs...), Count: uint64(n), BucketCounts: []uint64{uint64(n), 0}}
 }
@@ -204,7 +203,7 @@ func resourceData(instance, service string, metrics ...*metricsv1.Metric) *metri
 	}}}
 }
 
-// send is one export from the sender, the counters are the running totals unless the feed reports deltas
+// counters are running totals unless the feed reports deltas
 func (f *fibreFeed) send() {
 	f.r.t.Helper()
 	if f.delta {
@@ -226,7 +225,6 @@ func (f *fibreFeed) send() {
 	f.r.c.ingestFibreMetrics(f.data())
 }
 
-// run sends one export a minute for n minutes
 func (f *fibreFeed) run(minutes int) {
 	for i := 0; i < minutes; i++ {
 		f.r.advance(time.Minute)
@@ -234,7 +232,6 @@ func (f *fibreFeed) run(minutes int) {
 	}
 }
 
-// alarms runs the alarm loop once and returns what it sent
 func (r *fibreRig) alarms() []*alertMsg {
 	r.t.Helper()
 	r.cc.fibreMetricsAlarms(r.vi, false)
@@ -249,7 +246,6 @@ func (r *fibreRig) active(message string) bool { return alarmIsActive("Chain", m
 
 func (r *fibreRig) msg(kind string) string { return r.cc.fibreMetricsMessage(kind) }
 
-// raised asserts the alarm went out exactly once, with its second line, label and id
 func (r *fibreRig) raised(sent []*alertMsg, kind, detail, icon, label string) {
 	r.t.Helper()
 	if len(sent) != 1 || sent[0].resolved || sent[0].message != r.msg(kind) {
@@ -521,7 +517,9 @@ func TestFibreMetricsIgnoresWhatIsNotFibre(t *testing.T) {
 	if w := r.st.snapshot("Chain").Window; w.rejected != 5 {
 		t.Fatalf("window is %+v, only the Fibre at fibre-host-1 counts", w)
 	}
-	if len(r.st.senders) != 1 || !r.st.ignored["fibre-host-9"] || r.st.ignored["someone-else"] {
+	_, strangerNoted := r.st.ignored["fibre-host-9"]
+	_, otherNoted := r.st.ignored["someone-else"]
+	if len(r.st.senders) != 1 || !strangerNoted || otherNoted {
 		t.Fatalf("senders %d, ignored %v", len(r.st.senders), r.st.ignored)
 	}
 	r.c.ingestFibreMetrics(stranger)
@@ -683,7 +681,6 @@ func TestFibreReceiverGzip(t *testing.T) {
 	}
 }
 
-// unreadable fails the test if anything reads it
 type unreadable struct{ t *testing.T }
 
 func (u unreadable) Read([]byte) (int, error) {
@@ -734,6 +731,20 @@ func TestFibreReceiverTokenIsChecked(t *testing.T) {
 	}
 }
 
+func TestFibreReceiverAllowWithoutTokenStillChecksToken(t *testing.T) {
+	r := newFibreRig(t)
+	r.c.FibreMetrics = FibreMetricsConfig{Listen: "0.0.0.0:4318", Token: "secret", AllowWithoutToken: true}
+	server := fibreServer(t, r.c)
+	body := fibreFixture(t, "export1.pb")
+	if got := post(t, server.URL+"/v1/metrics", bytes.NewReader(body), protobufHeader).StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("without a token answered %d, want 401", got)
+	}
+	headers := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": "Bearer secret"}
+	if got := post(t, server.URL+"/v1/metrics", bytes.NewReader(body), headers).StatusCode; got != http.StatusOK {
+		t.Fatalf("with the token answered %d, want 200", got)
+	}
+}
+
 func TestFibreReceiverSizeLimits(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -743,33 +754,68 @@ func TestFibreReceiverSizeLimits(t *testing.T) {
 
 	// one byte over as received, with a Content-Length
 	if got := post(t, url, bytes.NewReader(make([]byte, fibreMaxBody+1)), protobufHeader).StatusCode; got != 413 {
-		t.Errorf("a body over 4 MiB answered %d, want 413", got)
+		t.Errorf("a body over 1 MiB answered %d, want 413", got)
 	}
 	// and with no Content-Length at all, a chunked body can't get past the reader's limit
 	chunked := io.MultiReader(bytes.NewReader(make([]byte, fibreMaxBody+1)))
 	if got := post(t, url, chunked, protobufHeader).StatusCode; got != 413 {
-		t.Errorf("a chunked body over 4 MiB answered %d, want 413", got)
+		t.Errorf("a chunked body over 1 MiB answered %d, want 413", got)
 	}
-	// a small gzip that inflates past 16 MiB
+	// a small gzip that inflates past 4 MiB
 	bomb := gz(t, make([]byte, fibreMaxUnzipped+1))
 	if len(bomb) > fibreMaxBody {
 		t.Fatalf("the test's gzip is %d bytes", len(bomb))
 	}
 	if got := post(t, url, bytes.NewReader(bomb), gzipped).StatusCode; got != 413 {
-		t.Errorf("a body over 16 MiB unzipped answered %d, want 413", got)
+		t.Errorf("a body over 4 MiB unzipped answered %d, want 413", got)
 	}
 	// exactly at the limit isn't over it: zeros aren't a valid request, but the size gate lets it through to the parser
 	atLimit := gz(t, make([]byte, fibreMaxUnzipped))
 	if got := post(t, url, bytes.NewReader(atLimit), gzipped).StatusCode; got == 413 {
-		t.Errorf("a body of exactly 16 MiB unzipped was refused as too big")
+		t.Errorf("a body of exactly 4 MiB unzipped was refused as too big")
 	}
-	// gzip bigger than 4 MiB as received, however it would unzip
+	// gzip bigger than 1 MiB as received, however it would unzip
 	noise := make([]byte, fibreMaxBody+1024)
 	if _, err := rand.Read(noise); err != nil {
 		t.Fatal(err)
 	}
 	if got := post(t, url, io.MultiReader(bytes.NewReader(gz(t, noise))), gzipped).StatusCode; got != 413 {
-		t.Errorf("a gzip body over 4 MiB as received answered %d, want 413", got)
+		t.Errorf("a gzip body over 1 MiB as received answered %d, want 413", got)
+	}
+}
+
+func TestFibreOversizeMessageAndRateLimit(t *testing.T) {
+	for name, tc := range map[string]struct {
+		size     int64
+		unzipped bool
+		want     string
+	}{
+		"known size":   {1363149, false, "Fibre export of 1.3 MiB is over the 1 MiB limit"},
+		"unknown size": {-1, false, "Fibre export is over the 1 MiB limit"},
+		"unzipped":     {-1, true, "Fibre export is over the 4 MiB limit once decompressed"},
+	} {
+		if got := fibreOversizeMessage(tc.size, tc.unzipped); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+	st := newFibreStore()
+	now := time.Unix(1000, 0)
+	st.now = func() time.Time { return now }
+	if !st.noteOversized("10.0.0.1") || st.noteOversized("10.0.0.1") {
+		t.Fatal("a sender is logged once, then not again")
+	}
+	if !st.noteOversized("10.0.0.2") {
+		t.Error("another sender is logged on its own")
+	}
+	now = now.Add(61 * time.Minute)
+	if !st.noteOversized("10.0.0.1") {
+		t.Error("a sender is logged again after an hour")
+	}
+	for i := 0; i < 2*fibreMaxIgnored; i++ {
+		st.noteOversized(fmt.Sprintf("sender-%d", i))
+	}
+	if len(st.oversized) > fibreMaxIgnored {
+		t.Errorf("%d senders remembered, cap is %d", len(st.oversized), fibreMaxIgnored)
 	}
 }
 
@@ -892,8 +938,7 @@ func TestFibreReceiverServesPlainHTTP(t *testing.T) {
 	}
 }
 
-// fibre_enabled can sit in alert_defaults for every chain: one stage 1 found has no x/valaddr has no Fibre to hear
-// from, so it never reads "silent", and an alarm restored for it clears as no longer watched
+// fibre_enabled can sit in alert_defaults for every chain; one without x/valaddr never reads "silent"
 func TestNoMetricsAlarmsOnAChainWithoutFibre(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.fibreLoaded, r.cc.fibreUnsupported = false, true
@@ -909,8 +954,7 @@ func TestNoMetricsAlarmsOnAChainWithoutFibre(t *testing.T) {
 	r.quiet(r.alarms(), "nothing more for a chain without Fibre")
 }
 
-// silence only means something once stage 1 has seen the chain has Fibre, a small node_down_alert_minutes must not
-// beat its first check
+// silence waits for the provider check: a small node_down_alert_minutes must not beat it
 func TestSilentWaitsForStageOne(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.fibreLoaded = false
@@ -1205,7 +1249,7 @@ func TestFibreAdaptiveWindow(t *testing.T) {
 	})
 }
 
-// only is what the alarm loop sent for one kind, a rule's test shouldn't care about the others
+// the sent alerts of one kind
 func (r *fibreRig) only(sent []*alertMsg, kind string) []*alertMsg {
 	var out []*alertMsg
 	for _, a := range sent {
@@ -1489,8 +1533,7 @@ func TestFibreIdleAlarm(t *testing.T) {
 	r.quiet(r.alarms(), "no last_success_timestamp")
 }
 
-// the alarms come back from the state file and the metrics don't: nothing may clear until this process has seen
-// evidence, the lesson of TestRestartKeepsFibreAlarmsWhileTheHostIsDown
+// alarms are restored from the state file, metrics are not: nothing clears until this process has seen evidence
 func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -1512,7 +1555,6 @@ func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 			}
 		}
 	}
-	// clearedKinds is what went out, every one a resolved notification
 	clearedKinds := func(when string, sent []*alertMsg) []string {
 		t.Helper()
 		var kinds []string
@@ -1769,8 +1811,8 @@ func TestValidateFibreMetrics(t *testing.T) {
 		{name: "ipv6 loopback", listen: "[::1]:4318", chains: [][2]interface{}{one}},
 		{name: "localhost", listen: "localhost:4318", chains: [][2]interface{}{one}},
 		{name: "LOCALHOST", listen: "LOCALHOST:4318", chains: [][2]interface{}{one}},
-		{name: "a private address with a token", listen: "10.0.0.5:4318", token: "t", chains: [][2]interface{}{one}},
-		{name: "everywhere with a token", listen: ":4318", token: "t", chains: [][2]interface{}{one}},
+		{name: "a private address with a token", listen: "10.0.0.5:4318", token: "t", chains: [][2]interface{}{one}, warning: "cleartext"},
+		{name: "everywhere with a token", listen: ":4318", token: "t", chains: [][2]interface{}{one}, warning: "cleartext"},
 		{name: "a private address", listen: "10.0.0.5:4318", chains: [][2]interface{}{one}, fatal: "healthy"},
 		{name: "all interfaces", listen: "0.0.0.0:4318", chains: [][2]interface{}{one}, fatal: "without a token"},
 		{name: "no host is every interface", listen: ":4318", chains: [][2]interface{}{one}, fatal: "without a token"},
@@ -1864,13 +1906,43 @@ func TestValidateFibreMetrics(t *testing.T) {
 	})
 }
 
+func TestValidateFibreMetricsAllowWithoutToken(t *testing.T) {
+	for _, listen := range []string{"0.0.0.0:4318", "10.0.0.5:4318", ":4318", "[::]:4318", "example.com:4318", "127.0.0.1:4318"} {
+		for _, token := range []string{"", "secret"} {
+			t.Run(listen+"/"+token, func(t *testing.T) {
+				c := fibreValidateConfig(listen, token, [2]interface{}{true, ""})
+				c.FibreMetrics.AllowWithoutToken = true
+				fatal, problems := validateFibreMetrics(c)
+				if fatal {
+					t.Fatalf("fatal: %v", problems)
+				}
+				want := "warning: fibre_metrics listens on " + listen + " without a token; make sure a firewall lets only Fibre's IP reach it"
+				found := false
+				for _, problem := range problems {
+					if problem == want {
+						found = true
+					} else if strings.Contains(problem, "without a token") {
+						t.Fatalf("unexpected missing-token warning: %q", problem)
+					}
+				}
+				if expected := token == "" && listen != "127.0.0.1:4318"; found != expected {
+					t.Fatalf("missing-token warning %v, want %v: %v", found, expected, problems)
+				}
+				if token != "" && listen != "127.0.0.1:4318" && !strings.Contains(strings.Join(problems, "\n"), "cleartext") {
+					t.Fatalf("cleartext warning missing: %v", problems)
+				}
+			})
+		}
+	}
+}
+
 func TestFibreMetricsConfigLoads(t *testing.T) {
 	c := &Config{}
-	yaml := "fibre_metrics:\n  listen: 127.0.0.1:4318\n  token: abc\n  tls_cert: /c.pem\n  tls_key: /k.pem\nalert_defaults:\n  fibre_instance: host\n  fibre_storage_percent: 80\n  fibre_idle_minutes: 15\n"
+	yaml := "fibre_metrics:\n  listen: 127.0.0.1:4318\n  token: abc\n  allow_without_token: yes\n  tls_cert: /c.pem\n  tls_key: /k.pem\nalert_defaults:\n  fibre_instance: host\n  fibre_storage_percent: 80\n  fibre_idle_minutes: 15\n"
 	if err := unmarshalConfig("test", []byte(yaml), c, &Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if c.FibreMetrics != (FibreMetricsConfig{Listen: "127.0.0.1:4318", Token: "abc", TLSCert: "/c.pem", TLSKey: "/k.pem"}) {
+	if c.FibreMetrics != (FibreMetricsConfig{Listen: "127.0.0.1:4318", Token: "abc", AllowWithoutToken: true, TLSCert: "/c.pem", TLSKey: "/k.pem"}) {
 		t.Fatalf("loaded %+v", c.FibreMetrics)
 	}
 	if a := c.AlertDefaults; a.FibreInstance != "host" || a.FibreStoragePercent != 80 || a.FibreIdleMinutes != 15 {

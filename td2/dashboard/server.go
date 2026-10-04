@@ -20,18 +20,37 @@ var (
 	rex     = regexp.MustCompile(`(?:https?|tcp|wss?)://[^\s]+`)
 )
 
-const logLength = 256
+const (
+	logLength = 256
+	// websocket clients at once, the rest get a 503
+	maxWebsocketClients = 256
+)
+
+// limitClients answers 503 once limit requests are in flight, for handlers that stay open.
+func limitClients(limit int, next http.HandlerFunc) http.HandlerFunc {
+	slots := make(chan struct{}, limit)
+	return func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+			next(writer, request)
+		default:
+			http.Error(writer, "too many clients", http.StatusServiceUnavailable)
+		}
+	}
+}
 
 func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	copy := *status
 	copy.Blocks = append([]int(nil), status.Blocks...)
 	if hideLogs {
 		copy.LastError = rex.ReplaceAllString(copy.LastError, "-redacted-")
+		copy.Fibre = copy.Fibre.withoutDetails()
 	}
 	return &copy
 }
 
-func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus) error {
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre ...func(string, string) (FibreHistory, error)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var err error
@@ -77,7 +96,11 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 				// try to catch any accidental rpc endpoint leaks
 				u = statusSnapshot(u, hideLogs)
 				statusMux.Lock() // probably unnecessary
-				status[u.Name] = u
+				if u.MsgType == "remove" {
+					delete(status, u.Name)
+				} else {
+					status[u.Name] = u
+				}
 				result := make([]*ChainStatus, 0)
 				for k := range status {
 					result = append(result, status[k])
@@ -127,10 +150,17 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	upgrader.EnableCompression = true
 
 	mux := http.NewServeMux()
+	if len(fibre) > 0 {
+		provider := fibre[0]
+		if hideLogs {
+			provider = hideFibreDetails(provider)
+		}
+		mux.HandleFunc("/fibre", FibreHandler(provider))
+	}
 	for _, path := range []string{"/health", "/ready"} {
 		mux.HandleFunc(path, healthHandler(health, path == "/ready"))
 	}
-	mux.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/ws", limitClients(maxWebsocketClients, func(writer http.ResponseWriter, request *http.Request) {
 		c, err := upgrader.Upgrade(writer, request, nil)
 		if err != nil {
 			return
@@ -145,7 +175,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 				return
 			}
 		}
-	})
+	}))
 
 	mux.HandleFunc("/logsenabled", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -171,11 +201,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	})
 
 	mux.Handle("/", &CacheHandler{})
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
-		ReadHeaderTimeout: 3 * time.Second,
-	}
+	server := newServer(port, mux)
 	serverDone := make(chan struct{})
 	defer close(serverDone)
 	go func() {
@@ -191,6 +217,17 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 		return nil
 	}
 	return err
+}
+
+func newServer(port string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
+		ReadHeaderTimeout: 3 * time.Second,
+		// a hijacked websocket is not bound by these
+		ReadTimeout: 15 * time.Second,
+		IdleTimeout: 60 * time.Second,
+	}
 }
 
 func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc {
@@ -209,7 +246,7 @@ func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc 
 type CacheHandler struct{}
 
 func (ch CacheHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	// the files are small, always revalidate so an upgrade never mixes old scripts with new markup
+	// revalidate always so an upgrade never mixes old scripts with new markup
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Powered-By", "https://github.com/kynraze/tenderduty")
 	http.FileServer(http.FS(rootDir)).ServeHTTP(writer, request)

@@ -91,7 +91,7 @@ type Config struct {
 	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
 
 	fibreOnce  sync.Once
-	fibreStore *fibreStore // what Fibre exported, memory only
+	fibreStore *fibreStore // recent exports and persisted hourly aggregates
 
 	settingsMux     sync.RWMutex
 	liveSettings    *Config
@@ -110,15 +110,16 @@ type Config struct {
 // savedState is dumped to a JSON file at exit time, and is loaded at start. If successful it will prevent
 // duplicate alerts, and will show old blocks in the dashboard.
 type savedState struct {
-	Heights     map[string]int64                `json:"heights,omitempty"`
-	Alarms      *alarmCache                     `json:"alarms"`
-	Blocks      map[string][]int                `json:"blocks"`
-	LastBlocks  map[string]time.Time            `json:"last_blocks"`
-	NodesDown   map[string]map[string]time.Time `json:"nodes_down"`
-	Consecutive map[string]float64              `json:"consecutive_missed,omitempty"`
-	Proposals   map[string][]time.Time          `json:"missed_proposals,omitempty"`
-	TgMentions  []tgMention                     `json:"telegram_mentions,omitempty"`
-	Reports     *reportHistory                  `json:"reports,omitempty"`
+	Heights      map[string]int64                `json:"heights,omitempty"`
+	Alarms       *alarmCache                     `json:"alarms"`
+	Blocks       map[string][]int                `json:"blocks"`
+	LastBlocks   map[string]time.Time            `json:"last_blocks"`
+	NodesDown    map[string]map[string]time.Time `json:"nodes_down"`
+	Consecutive  map[string]float64              `json:"consecutive_missed,omitempty"`
+	Proposals    map[string][]time.Time          `json:"missed_proposals,omitempty"`
+	TgMentions   []tgMention                     `json:"telegram_mentions,omitempty"`
+	Reports      *reportHistory                  `json:"reports,omitempty"`
+	FibreRollups json.RawMessage                 `json:"fibre_rollups,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -945,6 +946,13 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	}
 	c.restoreReports(saved.Reports, time.Now())
 	restoreMentions(saved.TgMentions)
+	c.fibreData().restoreHours(saved.FibreRollups)
+	for name := range c.fibreData().hours {
+		cc := c.Chains[name]
+		if cc == nil || !cc.Alerts.FibreAlerts {
+			delete(c.fibreData().hours, name)
+		}
+	}
 	for k, misses := range saved.Proposals {
 		if c.Chains[k] != nil {
 			c.Chains[k].proposalMisses = misses
