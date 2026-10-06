@@ -47,7 +47,7 @@ type Config struct {
 
 	// one chat message per server when several of its nodes go down together
 	GroupNodeAlerts bool `yaml:"group_node_alerts"`
-	// how long a node down alert waits for others on its server
+	// seconds to wait for other down nodes on the server
 	GroupWaitSeconds int `yaml:"group_wait_seconds"`
 
 	// EnableDash enables the web dashboard
@@ -79,7 +79,7 @@ type Config struct {
 	Slack SlackConfig `yaml:"slack"`
 	// Healthcheck information
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
-	// QuietHours holds back less severe alerts
+	// QuietHours delays alerts below its minimum severity.
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
 	Reports    ReportsConfig    `yaml:"reports"`
 
@@ -87,7 +87,7 @@ type Config struct {
 	reportData reportHistory
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
-	// FibreMetrics receives the OTLP metrics a Fibre server exports
+	// FibreMetrics receives Fibre OTLP exports.
 	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
 
 	fibreOnce  sync.Once
@@ -99,8 +99,7 @@ type Config struct {
 	commandsCancel  context.CancelFunc
 	commandsDone    chan struct{}
 
-	chainsMux sync.RWMutex // prevents concurrent map access for Chains
-	// found while loading, before validation
+	chainsMux             sync.RWMutex // prevents concurrent map access for Chains
 	configWarnings        []string
 	chainDirectoryPresent bool
 	// Chains has settings for each validator to monitor. The map's name does not need to match the chain-id.
@@ -110,16 +109,22 @@ type Config struct {
 // savedState is dumped to a JSON file at exit time, and is loaded at start. If successful it will prevent
 // duplicate alerts, and will show old blocks in the dashboard.
 type savedState struct {
-	Heights      map[string]int64                `json:"heights,omitempty"`
-	Alarms       *alarmCache                     `json:"alarms"`
-	Blocks       map[string][]int                `json:"blocks"`
-	LastBlocks   map[string]time.Time            `json:"last_blocks"`
-	NodesDown    map[string]map[string]time.Time `json:"nodes_down"`
-	Consecutive  map[string]float64              `json:"consecutive_missed,omitempty"`
-	Proposals    map[string][]time.Time          `json:"missed_proposals,omitempty"`
-	TgMentions   []tgMention                     `json:"telegram_mentions,omitempty"`
-	Reports      *reportHistory                  `json:"reports,omitempty"`
-	FibreRollups json.RawMessage                 `json:"fibre_rollups,omitempty"`
+	Heights        map[string]int64                `json:"heights,omitempty"`
+	Alarms         *alarmCache                     `json:"alarms"`
+	Blocks         map[string][]int                `json:"blocks"`
+	LastBlocks     map[string]time.Time            `json:"last_blocks"`
+	NodesDown      map[string]map[string]time.Time `json:"nodes_down"`
+	Slashes        map[string]slashDetails         `json:"slashes,omitempty"`
+	JailedSince    map[string]time.Time            `json:"jailed_since,omitempty"`
+	Consecutive    map[string]float64              `json:"consecutive_missed,omitempty"`
+	Proposals      map[string][]time.Time          `json:"missed_proposals,omitempty"`
+	TgMentions     []tgMention                     `json:"telegram_mentions,omitempty"`
+	Reports        *reportHistory                  `json:"reports,omitempty"`
+	FibreMinutes   json.RawMessage                 `json:"fibre_minutes,omitempty"`
+	FibreTenmin    json.RawMessage                 `json:"fibre_tenmin,omitempty"`
+	FibreEndorsing json.RawMessage                 `json:"fibre_endorsing,omitempty"`
+	FibreMissed    json.RawMessage                 `json:"fibre_missed,omitempty"`
+	FibreRollups   json.RawMessage                 `json:"fibre_rollups,omitempty"`
 }
 
 // ChainConfig represents a validator to be monitored on a chain, it is somewhat of a misnomer since multiple
@@ -139,6 +144,10 @@ type ChainConfig struct {
 	rpcSkip         string
 	monitoring      bool
 	monitoringSince time.Time
+	jailedSince     time.Time
+	slash           slashDetails
+	slashMux        sync.Mutex
+	slashSearchDone bool
 	valInfo         *ValInfo // recent validator state, only refreshed every few minutes
 	lastValInfo     *ValInfo // use for detecting newly-jailed/tombstone
 	blocksResults   []int
@@ -162,6 +171,15 @@ type ChainConfig struct {
 	upgrade             *upgradePlan // nil when none is scheduled
 	upgradeLoaded       bool
 	signal              signalState // x/signal's tally for the next app version
+	signalReadFailed    bool
+	upgradeReadFailed   bool
+	signalRPCFailed     bool
+	signalWatch         signalUpgrade
+	signalWatchReady    bool
+	signalLast          signalUpgrade // last scheduled upgrade, kept past its height to explain stopped nodes
+	signalStoppedHeight int64
+	signalWatchHeight   int64
+	signalWatchSince    time.Time
 	signalLoaded        bool
 	signalUnsupported   bool // no x/signal, not asked again
 	fibre               fibreState
@@ -169,6 +187,8 @@ type ChainConfig struct {
 	fibreUnsupported    bool  // no x/valaddr, not asked again
 	fibreFullStake      int64 // x/fibre's full_stake_storage_budget, 0 until read
 	fibreParamsFailing  bool  // last read failed, logged once per streak
+
+	fibreEndorsements fibreEndorsementWatcher
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -219,65 +239,67 @@ func (cc *ChainConfig) mkUpdate(t metricType, v float64, node string) *promUpdat
 
 // AlertConfig defines the type of alerts to send for a ChainConfig
 type AlertConfig struct {
+	// MissedBlocksAlerts follows missing blocks through jail risk and inactivity.
+	MissedBlocksAlerts bool `yaml:"missed_blocks_enabled"`
+
 	// How many minutes to wait before alerting that no new blocks have been seen
 	Stalled int `yaml:"stalled_minutes"`
 	// Whether to alert when no new blocks are seen
 	StalledAlerts bool `yaml:"stalled_enabled"`
 
-	// How many missed blocks are acceptable before alerting
+	// ConsecutiveMissed is the missed-block count that starts the first stage.
 	ConsecutiveMissed int `yaml:"consecutive_missed"`
-	// Tag for pagerduty to set the alert priority
+	// ConsecutivePriority is ignored; stage severities are fixed.
 	ConsecutivePriority string `yaml:"consecutive_priority"`
-	// Whether to alert on consecutive missed blocks
+	// ConsecutiveAlerts enables the first missed-block stage.
 	ConsecutiveAlerts bool `yaml:"consecutive_enabled"`
 
-	// Window is how many blocks missed as a percentage of the slashing window to trigger an alert
-	Window int `yaml:"percentage_missed"`
-	// PercentagePriority is a tag for pagerduty to route on priority
+	// Window and percentage_* settings are ignored; use jail_risk_percent.
+	Window             int    `yaml:"percentage_missed"`
 	PercentagePriority string `yaml:"percentage_priority"`
-	// PercentageAlerts is whether to alert on percentage based misses
-	PercentageAlerts bool `yaml:"percentage_enabled"`
+	PercentageAlerts   bool   `yaml:"percentage_enabled"`
 
-	// missed proposals within ProposalMinutes that trigger an alert
-	ProposalMissed   int    `yaml:"proposal_missed"`
-	ProposalMinutes  int    `yaml:"proposal_minutes"`
-	ProposalPriority string `yaml:"proposal_priority"`
-	ProposalAlerts   bool   `yaml:"proposal_enabled"`
+	// ProposalMissed is the threshold within ProposalMinutes.
+	ProposalMissed   int    `yaml:"missed_proposal_count"`
+	ProposalMinutes  int    `yaml:"missed_proposal_minutes"`
+	ProposalSeverity string `yaml:"missed_proposal_severity"`
+	ProposalAlerts   bool   `yaml:"missed_proposal_enabled"`
 
-	// percent of the misses allowed before jailing
+	// JailRiskPercent is the percentage of allowed misses before alerting.
 	JailRiskPercent int `yaml:"jail_risk_percent"`
-	// minutes before the estimated time
+	// UpgradeRemindMinutes is minutes before the estimated upgrade time.
 	UpgradeRemindMinutes int `yaml:"upgrade_remind_minutes"`
-	// reminders are critical
-	UpgradePriority string `yaml:"upgrade_priority"`
-	UpgradeAlerts   bool   `yaml:"upgrade_enabled"`
+	// UpgradeAlerts watches x/upgrade and x/signal.
+	UpgradeAlerts bool `yaml:"upgrade_enabled"`
 
-	// voting power that must have signalled before alerting
+	// SignalPercent is the signalled voting power percentage before alerting.
 	SignalPercent int `yaml:"signal_percent"`
-	// minutes before a signalled upgrade's estimated time
-	SignalRemindMinutes int `yaml:"signal_remind_minutes"`
-	// signalling and unsignalled alerts, the rest are critical
-	SignalPriority string `yaml:"signal_priority"`
-	SignalAlerts   bool   `yaml:"signal_enabled"`
-	FibrePriority  string `yaml:"fibre_priority"`
-	FibreAlerts    bool   `yaml:"fibre_enabled"`
-	// service.instance.id Fibre reports, picks this chain's metrics when several chains alert
+	// SignalRemindPercent is the critical reminder threshold before scheduling.
+	SignalRemindPercent int `yaml:"signal_remind_percent"`
+	// SignalRemindMinutes is minutes before the estimated signalled upgrade.
+	SignalRemindMinutes int    `yaml:"signal_remind_minutes"`
+	FibreSeverity       string `yaml:"fibre_severity"`
+	FibreAlerts         bool   `yaml:"fibre_enabled"`
+	// FibreInstance selects metrics by service.instance.id.
 	FibreInstance string `yaml:"fibre_instance"`
-	// percent of Fibre's storage budget used before alerting, 0 is off
+	// FibreStoragePercent is the budget percentage before alerting; zero disables it.
 	FibreStoragePercent int `yaml:"fibre_storage_percent"`
-	// alerts when no upload was stored for this long, 0 is off
-	FibreIdleMinutes int `yaml:"fibre_idle_minutes"`
+	// FibreIdleMinutes is minutes without a successful upload; zero disables it.
+	FibreIdleMinutes        int  `yaml:"fibre_idle_minutes"`
+	FibreEndorsementAlert   bool `yaml:"fibre_endorsement_alert"`
+	FibreEndorsementBlobs   int  `yaml:"fibre_endorsement_blobs"`
+	FibreEndorsementMinutes int  `yaml:"fibre_endorsement_minutes"`
 
-	// minutes before voting ends to remind when not voted
+	// GovRemindMinutes is minutes before voting ends to remind an unvoted validator.
 	GovRemindMinutes int `yaml:"gov_remind_minutes"`
-	// reminders are critical
-	GovPriority string `yaml:"gov_priority"`
+	// GovEarlyRemindPercent is the percentage of voting time left; zero disables it.
+	GovEarlyRemindPercent int `yaml:"gov_early_remind_percent"`
+	// GovSeverity sets proposal-notice severity; reminders use warning or critical.
+	GovSeverity string `yaml:"gov_severity"`
 	GovAlerts   bool   `yaml:"gov_enabled"`
 
-	// alert if missing every block would jail the validator within this many minutes
-	JailRiskMinutes  int    `yaml:"jail_risk_minutes"`
-	JailRiskPriority string `yaml:"jail_risk_priority"`
-	JailRiskAlerts   bool   `yaml:"jail_risk_enabled"`
+	// JailRiskMinutes alerts when missing every block would jail within this many minutes.
+	JailRiskMinutes int `yaml:"jail_risk_minutes"`
 
 	// AlertIfInactive decides if tenderduty send an alert if the validator is not in the active set?
 	AlertIfInactive bool `yaml:"alert_if_inactive"`
@@ -307,7 +329,7 @@ type AlertConfig struct {
 
 // FibreMetricsConfig is the OTLP/HTTP listener for Fibre metrics.
 type FibreMetricsConfig struct {
-	// Listen is host:port, empty is off
+	// Listen is host:port; empty disables the receiver.
 	Listen string `yaml:"listen"`
 	// sent as Authorization: Bearer <token> when set
 	Token             string `yaml:"token"`
@@ -324,15 +346,19 @@ type NodeConfig struct {
 	stateMux    sync.RWMutex
 	Url         string `yaml:"url"`
 	AlertIfDown bool   `yaml:"alert_if_down"`
-	// machine this node runs on, nodes sharing one are alerted together
+	// Server groups alerts for nodes on the same machine.
 	Server string `yaml:"server"`
 
-	down      bool
-	wasDown   bool
-	syncing   bool
-	checked   bool
-	lastMsg   string
-	downSince time.Time
+	down            bool
+	wasDown         bool
+	syncing         bool
+	checked         bool
+	lastMsg         string
+	downSince       time.Time
+	downHeight      int64
+	binaryVersion   string
+	binaryReadable  bool
+	binaryCheckedAt time.Time
 }
 
 // PDConfig is the information required to send alerts to PagerDuty
@@ -340,7 +366,7 @@ type PDConfig struct {
 	Enabled         *bool  `yaml:"enabled"`
 	ApiKey          string `yaml:"api_key"`
 	DefaultSeverity string `yaml:"default_severity"`
-	// drops alerts below this severity (info, warning, error, critical), empty sends all
+	// MinSeverity drops lower severities; empty sends all.
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -351,7 +377,7 @@ type DiscordConfig struct {
 	Mentions []string `yaml:"mentions"`
 	// "embed" or "plain" (one message, no colour bar)
 	Style string `yaml:"style"`
-	// drops alerts below this severity (info, warning, error, critical), empty sends all
+	// MinSeverity drops lower severities; empty sends all.
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -361,10 +387,10 @@ type TeleConfig struct {
 	ApiKey   string   `yaml:"api_key"`
 	Channel  string   `yaml:"channel"`
 	Mentions []string `yaml:"mentions"`
-	// answer /status in the channel, in a group only for Admins
+	// Commands enables chat commands, restricted to Admins in groups.
 	Commands bool    `yaml:"commands"`
 	Admins   []int64 `yaml:"admins"`
-	// drops alerts below this severity (info, warning, error, critical), empty sends all
+	// MinSeverity drops lower severities; empty sends all.
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -373,7 +399,7 @@ type SlackConfig struct {
 	Enabled  *bool    `yaml:"enabled"`
 	Webhook  string   `yaml:"webhook"`
 	Mentions []string `yaml:"mentions"`
-	// drops alerts below this severity (info, warning, error, critical), empty sends all
+	// MinSeverity drops lower severities; empty sends all.
 	MinSeverity string `yaml:"min_severity"`
 }
 
@@ -492,36 +518,30 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		// a zero threshold would alert all the time, use the example config's values
 		if v.Alerts.StalledAlerts && v.Alerts.Stalled < 1 {
 			v.Alerts.Stalled = 10
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive stalled_minutes, using 10", k))
 		}
-		if v.Alerts.ConsecutiveAlerts && v.Alerts.ConsecutiveMissed < 1 {
+		if v.Alerts.consecutiveEnabled() && v.Alerts.ConsecutiveMissed < 1 {
 			v.Alerts.ConsecutiveMissed = 5
-			problems = append(problems, fmt.Sprintf("warning: %s has no positive consecutive_missed, using 5", k))
 		}
-		if v.Alerts.PercentageAlerts && (v.Alerts.Window < 1 || v.Alerts.Window > 100) {
-			v.Alerts.Window = 10
-			problems = append(problems, fmt.Sprintf("warning: %s percentage_missed is not between 1 and 100, using 10", k))
-		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed == 0 {
+		if v.Alerts.ProposalMissed == 0 {
 			v.Alerts.ProposalMissed = 3
 		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMissed < 0 {
+		if v.Alerts.ProposalMissed < 0 {
 			v.Alerts.ProposalMissed = 3
-			problems = append(problems, fmt.Sprintf("warning: %s proposal_missed can't be negative, using 3", k))
+			problems = append(problems, fmt.Sprintf("warning: %s missed_proposal_count can't be negative, using 3", k))
 		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes == 0 {
+		if v.Alerts.ProposalMinutes == 0 {
 			v.Alerts.ProposalMinutes = 60
 		}
-		if v.Alerts.ProposalAlerts && v.Alerts.ProposalMinutes < 0 {
+		if v.Alerts.ProposalMinutes < 0 {
 			v.Alerts.ProposalMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s proposal_minutes can't be negative, using 60", k))
+			problems = append(problems, fmt.Sprintf("warning: %s missed_proposal_minutes can't be negative, using 60", k))
 		}
-		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskPercent == 0 {
-			v.Alerts.JailRiskPercent = 50
+		if v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskPercent == 0 {
+			v.Alerts.JailRiskPercent = 90
 		}
-		if v.Alerts.JailRiskAlerts && (v.Alerts.JailRiskPercent < 1 || v.Alerts.JailRiskPercent > 100) {
-			v.Alerts.JailRiskPercent = 50
-			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 50", k))
+		if v.Alerts.jailRiskEnabled() && (v.Alerts.JailRiskPercent < 1 || v.Alerts.JailRiskPercent > 100) {
+			v.Alerts.JailRiskPercent = 90
+			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_percent is not between 1 and 100, using 90", k))
 		}
 		if v.Alerts.UpgradeAlerts && v.Alerts.UpgradeRemindMinutes == 0 {
 			v.Alerts.UpgradeRemindMinutes = 60
@@ -530,17 +550,24 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.UpgradeRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s upgrade_remind_minutes can't be negative, using 60", k))
 		}
-		if v.Alerts.SignalAlerts && v.Alerts.SignalPercent == 0 {
-			v.Alerts.SignalPercent = 10
+		if v.Alerts.UpgradeAlerts && v.Alerts.SignalPercent == 0 {
+			v.Alerts.SignalPercent = 5
 		}
-		if v.Alerts.SignalAlerts && (v.Alerts.SignalPercent < 0 || v.Alerts.SignalPercent > 100) {
-			v.Alerts.SignalPercent = 10
-			problems = append(problems, fmt.Sprintf("warning: %s signal_percent is not between 0 and 100, using 10", k))
+		if v.Alerts.UpgradeAlerts && (v.Alerts.SignalPercent < 0 || v.Alerts.SignalPercent > 100) {
+			v.Alerts.SignalPercent = 5
+			problems = append(problems, fmt.Sprintf("warning: %s signal_percent is not between 0 and 100, using 5", k))
 		}
-		if v.Alerts.SignalAlerts && v.Alerts.SignalRemindMinutes == 0 {
+		if v.Alerts.UpgradeAlerts && v.Alerts.SignalRemindPercent == 0 {
+			v.Alerts.SignalRemindPercent = 66
+		}
+		if v.Alerts.UpgradeAlerts && (v.Alerts.SignalRemindPercent < 0 || v.Alerts.SignalRemindPercent > 100) {
+			v.Alerts.SignalRemindPercent = 66
+			problems = append(problems, fmt.Sprintf("warning: %s signal_remind_percent is not between 0 and 100, using 66", k))
+		}
+		if v.Alerts.UpgradeAlerts && v.Alerts.SignalRemindMinutes == 0 {
 			v.Alerts.SignalRemindMinutes = 60
 		}
-		if v.Alerts.SignalAlerts && v.Alerts.SignalRemindMinutes < 0 {
+		if v.Alerts.UpgradeAlerts && v.Alerts.SignalRemindMinutes < 0 {
 			v.Alerts.SignalRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s signal_remind_minutes can't be negative, using 60", k))
 		}
@@ -548,9 +575,26 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.FibreStoragePercent = 0
 			problems = append(problems, fmt.Sprintf("warning: %s fibre_storage_percent is not between 0 and 100, the storage full alert is off", k))
 		}
+		// warn only on negative values; unset uses the default
+		if v.Alerts.FibreEndorsementBlobs < 1 {
+			if v.Alerts.FibreEndorsementBlobs < 0 {
+				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_blobs must be at least 1, using 20", k))
+			}
+			v.Alerts.FibreEndorsementBlobs = 20
+		}
+		if v.Alerts.FibreEndorsementMinutes < 1 {
+			if v.Alerts.FibreEndorsementMinutes < 0 {
+				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_minutes must be at least 1, using 30", k))
+			}
+			v.Alerts.FibreEndorsementMinutes = 30
+		}
 		if v.Alerts.FibreAlerts && v.Alerts.FibreIdleMinutes < 0 {
 			v.Alerts.FibreIdleMinutes = 0
 			problems = append(problems, fmt.Sprintf("warning: %s fibre_idle_minutes can't be negative, using 0", k))
+		}
+		if v.Alerts.GovEarlyRemindPercent < 0 || v.Alerts.GovEarlyRemindPercent > 99 {
+			v.Alerts.GovEarlyRemindPercent = 25
+			problems = append(problems, fmt.Sprintf("warning: %s gov_early_remind_percent must be between 0 and 99, using 25", k))
 		}
 		if v.Alerts.GovAlerts && v.Alerts.GovRemindMinutes == 0 {
 			v.Alerts.GovRemindMinutes = 60
@@ -559,10 +603,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.GovRemindMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s gov_remind_minutes can't be negative, using 60", k))
 		}
-		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes == 0 {
+		if v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskMinutes == 0 {
 			v.Alerts.JailRiskMinutes = 60
 		}
-		if v.Alerts.JailRiskAlerts && v.Alerts.JailRiskMinutes < 0 {
+		if v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskMinutes < 0 {
 			v.Alerts.JailRiskMinutes = 60
 			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_minutes can't be negative, using 60", k))
 		}
@@ -652,29 +696,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if pdOn && v.Alerts.Pagerduty.ApiKey == "" {
 			problems = append(problems, fmt.Sprintf("warning: %s pagerduty alerts need an API key, they will not be sent", k))
 		}
-		if v.Alerts.ConsecutivePriority == "" {
-			v.Alerts.ConsecutivePriority = "critical"
+		if v.Alerts.ProposalSeverity == "" {
+			v.Alerts.ProposalSeverity = "warning"
 		}
-		if v.Alerts.PercentagePriority == "" {
-			v.Alerts.PercentagePriority = "warning"
+		if v.Alerts.FibreSeverity == "" {
+			v.Alerts.FibreSeverity = "warning"
 		}
-		if v.Alerts.ProposalPriority == "" {
-			v.Alerts.ProposalPriority = "warning"
-		}
-		if v.Alerts.UpgradePriority == "" {
-			v.Alerts.UpgradePriority = "warning"
-		}
-		if v.Alerts.SignalPriority == "" {
-			v.Alerts.SignalPriority = "warning"
-		}
-		if v.Alerts.FibrePriority == "" {
-			v.Alerts.FibrePriority = "warning"
-		}
-		if v.Alerts.GovPriority == "" {
-			v.Alerts.GovPriority = "info"
-		}
-		if v.Alerts.JailRiskPriority == "" {
-			v.Alerts.JailRiskPriority = "critical"
+		if v.Alerts.GovSeverity == "" {
+			v.Alerts.GovSeverity = "info"
 		}
 
 		if on(v.Alerts.Slack.Enabled) && !on(c.Slack.Enabled) {
@@ -689,7 +718,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if on(v.Alerts.Telegram.Enabled) && !on(c.Telegram.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for telegram alerts, but it is not enabled", k))
 		}
-		if !v.Alerts.ConsecutiveAlerts && !v.Alerts.PercentageAlerts && !v.Alerts.ProposalAlerts && !v.Alerts.JailRiskAlerts && !v.Alerts.GovAlerts && !v.Alerts.UpgradeAlerts && !v.Alerts.SignalAlerts && !v.Alerts.FibreAlerts && !v.Alerts.AlertIfInactive && !v.Alerts.AlertIfNoServers && !v.Alerts.StalledAlerts {
+		if len(enabledAlertFamilies(v.Alerts)) == 0 {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
 		if !pdOn && !discOn && !tgOn && !slackOn {
@@ -737,7 +766,13 @@ func unmarshalConfig(name string, data []byte, out, check interface{}) error {
 		return err
 	}
 	if err := decodeConfig(data, check); err != nil {
-		l("⚠️", name, "has settings that are not understood and will be ignored:", err)
+		warnings := unknownConfigWarnings(data, check)
+		for _, warning := range warnings {
+			l("⚠️ " + name + ": " + strings.TrimPrefix(warning, "warning: "))
+		}
+		for _, problem := range configDecodeProblems(err) {
+			l(name, "has settings that are not understood and will be ignored:", problem)
+		}
 	}
 	return nil
 }
@@ -774,7 +809,7 @@ func loadConfigMode(yamlFile, stateFile, chainConfigDirectory string, password *
 	return loadConfigOptions(yamlFile, stateFile, chainConfigDirectory, password, restore, false)
 }
 
-// loadConfigQuiet prints nothing, for the chain commands.
+// errNoChains means no chain configurations were loaded.
 var errNoChains = errors.New("no chains configured")
 
 func loadConfigQuiet(yamlFile, chainConfigDirectory string, password *string) (*Config, error) {
@@ -896,7 +931,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	if err != nil {
 		return nil, err
 	}
-	c.configWarnings = expanded
+	c.configWarnings = append(c.configWarnings, expanded...)
 	addDefaultPorts(c)
 
 	c.alertChan = make(chan *alertMsg, len(c.Chains)*4)
@@ -947,6 +982,27 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	c.restoreReports(saved.Reports, time.Now())
 	restoreMentions(saved.TgMentions)
 	c.fibreData().restoreHours(saved.FibreRollups)
+	c.fibreData().restoreEndorsing(saved.FibreEndorsing)
+	for name := range c.fibreData().endorsing {
+		if cc := c.Chains[name]; cc == nil || !cc.Alerts.FibreAlerts {
+			delete(c.fibreData().endorsing, name)
+		}
+	}
+	c.fibreData().restoreMissed(saved.FibreMissed)
+	for name := range c.fibreData().latestMissed {
+		if cc := c.Chains[name]; cc == nil || !cc.Alerts.FibreAlerts {
+			delete(c.fibreData().latestMissed, name)
+		}
+	}
+	c.fibreData().restoreShort(saved.FibreMinutes, "1h")
+	c.fibreData().restoreShort(saved.FibreTenmin, "24h")
+	for _, chains := range c.fibreData().short {
+		for name := range chains {
+			if cc := c.Chains[name]; cc == nil || !cc.Alerts.FibreAlerts {
+				delete(chains, name)
+			}
+		}
+	}
 	for name := range c.fibreData().hours {
 		cc := c.Chains[name]
 		if cc == nil || !cc.Alerts.FibreAlerts {
@@ -956,6 +1012,16 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	for k, misses := range saved.Proposals {
 		if c.Chains[k] != nil {
 			c.Chains[k].proposalMisses = misses
+		}
+	}
+	for name, detail := range saved.Slashes {
+		if cc := c.Chains[name]; cc != nil {
+			cc.slash = detail
+		}
+	}
+	for name, since := range saved.JailedSince {
+		if cc := c.Chains[name]; cc != nil {
+			cc.jailedSince = since
 		}
 	}
 	for k, observed := range saved.LastBlocks {
@@ -972,6 +1038,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	// restore alarm state to prevent duplicate alerts
 	if saved.Alarms != nil {
 		alarms.AlarmIDs = saved.Alarms.AlarmIDs
+		alarms.AlarmSeverities = saved.Alarms.AlarmSeverities
 		alarms.Outbox = saved.Alarms.Outbox
 		alarms.NextNotification = saved.Alarms.NextNotification
 		if saved.Alarms.PendingRecoveries != nil {
@@ -1043,6 +1110,9 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 		}
 	}
 
+	c.stateFile = ""
+	c.clearLegacySigningAlarms()
+	c.stateFile = stateFile
 	return c, nil
 }
 

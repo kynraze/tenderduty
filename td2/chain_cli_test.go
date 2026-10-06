@@ -24,7 +24,7 @@ func chainCommandFixture(t *testing.T) (ChainCommandOptions, string, []byte) {
 	if err := os.Mkdir(options.Directory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(options.ConfigFile, []byte("alert_defaults:\n  signal_enabled: yes\n"), 0600); err != nil {
+	if err := os.WriteFile(options.ConfigFile, []byte("alert_defaults:\n  upgrade_enabled: yes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	filename := filepath.Join(options.Directory, "Celestia.yml")
@@ -216,7 +216,7 @@ func TestChainList(t *testing.T) {
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "NAME ") || !strings.HasPrefix(lines[1], "Celestia ") || strings.Contains(output.String(), "Reading Chain Config File") {
 		t.Fatalf("output is not only the table: %q", output.String())
 	}
-	for _, want := range []string{"chain-1", "celestiavaloper1test", "signal", filename} {
+	for _, want := range []string{"chain-1", "celestiavaloper1test", "missed_blocks,stalled,no_servers,gov,upgrade", filename} {
 		if !strings.Contains(lines[1], want) {
 			t.Fatalf("missing %q: %s", want, output.String())
 		}
@@ -326,5 +326,46 @@ func TestDeprecatedPublicFallbackFlagStillParses(t *testing.T) {
 	err := ChainCommand(context.Background(), options, []string{"add", "celestiavaloper1test", "--public-fallback"}, strings.NewReader(""), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "--node is required") {
 		t.Fatalf("--public-fallback not parsed: %v", err)
+	}
+}
+
+func TestChainSetDisablesDefaultAlerts(t *testing.T) {
+	options, _, _ := chainCommandFixture(t)
+	var output bytes.Buffer
+	if err := ChainCommand(context.Background(), options, []string{"list"}, strings.NewReader(""), &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range []string{"gov", "upgrade"} {
+		if !strings.Contains(output.String(), group) {
+			t.Fatalf("default %s missing from list: %s", group, output.String())
+		}
+	}
+	output.Reset()
+	if err := ChainCommand(context.Background(), options, []string{"set", "Celestia", "alerts.gov_enabled=no", "alerts.upgrade_enabled=no"}, strings.NewReader(""), &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"gov_enabled", "upgrade_enabled"} {
+		if !strings.Contains(output.String(), "alerts."+key+": unset -> no\n") {
+			t.Fatalf("missing setting change for %s: %s", key, output.String())
+		}
+	}
+	c, err := loadConfigQuiet(options.ConfigFile, options.Directory, options.Password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.cancel()
+	defer c.deliveryCancel()
+	a := c.Chains["Celestia"].alertSettings()
+	if a.GovAlerts || a.UpgradeAlerts {
+		t.Fatalf("disabled alerts returned after loading: %+v", a)
+	}
+	output.Reset()
+	if err := ChainCommand(context.Background(), options, []string{"list"}, strings.NewReader(""), &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range []string{"gov", "upgrade"} {
+		if strings.Contains(output.String(), group) {
+			t.Fatalf("disabled %s still in list: %s", group, output.String())
+		}
 	}
 }

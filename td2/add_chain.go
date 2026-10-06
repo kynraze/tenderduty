@@ -40,9 +40,9 @@ type addChainFetchers struct {
 	validator      func(context.Context, string, string) (*ValInfo, error)
 	registry       func(context.Context, string) (string, error)
 	selectRegistry func(context.Context, string, string, string) (string, error)
-	// stakingToken is the validator's multistaking token as a label, "" when it has none.
+	// stakingToken is the multistaking token label, empty when absent.
 	stakingToken func(ctx context.Context, node, valoper string) (string, error)
-	// valoperPrefix is only asked once a validator was not found; "" when unknown.
+	// valoperPrefix is asked after a failed lookup, empty when unknown.
 	valoperPrefix func(ctx context.Context, node, chainID string) string
 }
 
@@ -56,7 +56,7 @@ func badChainFileName(name string) bool {
 
 func isControl(r rune) bool { return r < 32 || r == 127 || r >= 0x80 && r <= 0x9f }
 
-// stripControl removes terminal control characters from text a node or registry supplied.
+// stripControl removes terminal control characters from node or registry text.
 func stripControl(text string) string {
 	return strings.Map(func(r rune) rune {
 		if isControl(r) {
@@ -66,7 +66,7 @@ func stripControl(text string) string {
 	}, text)
 }
 
-// rootCause drops the wrapping ("post failed: Post ...: dial tcp ...") and keeps the reason.
+// rootCause removes error wrappers.
 func rootCause(err error) string {
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout() {
@@ -151,7 +151,7 @@ func registryValoperPrefix(ctx context.Context, node, chainID string) string {
 	return prefix
 }
 
-// AddChain writes a standalone chain file, never shared configuration.
+// AddChain writes a standalone chain file.
 func AddChain(ctx context.Context, options AddChainOptions, output io.Writer) error {
 	return addChain(ctx, options, output, addChainFetchers{
 		status: func(ctx context.Context, node string) (addChainStatus, error) {
@@ -361,6 +361,12 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 	if err != nil {
 		return err
 	}
+	fibreExample := status.ChainID == "celestia" || strings.HasPrefix(status.ChainID, "mocha-") ||
+		strings.HasPrefix(status.ChainID, "arabica-") || options.RegistryChain == "celestia" ||
+		strings.HasPrefix(options.RegistryChain, "celestiatestnet")
+	if fibreExample {
+		data = append(data, []byte("\n# alerts:\n#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md\n#   fibre_severity: critical\n")...)
+	}
 	if options.ConfigFile != "" {
 		password := options.Password
 		if password == nil {
@@ -381,6 +387,13 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 		return writeError(filename, err)
 	}
 	fmt.Fprintf(output, "Added %s: %s\n", name, filename)
+	if fibreExample {
+		quoted := name
+		if strings.ContainsAny(name, " \t") {
+			quoted = `"` + name + `"`
+		}
+		fmt.Fprintf(output, "Fibre: tenderduty chain set %s alerts.fibre_enabled=yes (see docs/fibre.md)\n", quoted)
+	}
 	if notInRegistry {
 		quoted := name
 		if strings.ContainsAny(name, " \t") {
@@ -391,7 +404,7 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 	return nil
 }
 
-// existingChainError points a second validator on the same chain to --to.
+// existingChainError suggests --to for another validator on the same chain.
 func existingChainError(ctx context.Context, options AddChainOptions, name, filename, chainID, node string, fetch addChainFetchers) error {
 	plain := fmt.Errorf("%s already exists; add --force to replace it", filename)
 	data, err := os.ReadFile(filename)
@@ -430,7 +443,7 @@ func existingChainError(ctx context.Context, options AddChainOptions, name, file
 	return fmt.Errorf("%s already watches %s (%s); to add this validator to it: tenderduty chain add %s --node %s --to %s, or --force to replace the file", filename, stripControl(chainID), who, options.Valoper, options.Node, quoted)
 }
 
-// The node supplies the chain ID even when networks share a prefix; --chain never picks a public node.
+// The node supplies the chain ID; --chain does not select a public node.
 func selectedRegistryName(ctx context.Context, name, chainID, address string) (string, error) {
 	if name == "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
 		return "", fmt.Errorf("--chain must be a registry entry name")

@@ -1,0 +1,18 @@
+---
+# The file name is the label: Celestia.yml is "Celestia".
+
+# Checked against the RPC node when connecting.
+chain_id: celestia
+valoper_address: celestiavaloper1xxxxxxx...
+# Public RPC is only a backup.
+public_fallback: no
+
+# Upgrades and version signalling are on by default. Nodes with alert_if_down are checked for the new version.
+# alerts:
+#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md
+#   fibre_severity: critical
+
+# RPC nodes, tried in order.
+nodes:
+  - url: http://YOUR_CELESTIA_NODE:26657
+    alert_if_down: yes

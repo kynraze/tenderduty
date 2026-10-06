@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	// FROM scratch image has no zoneinfo
@@ -24,6 +26,9 @@ var defaultConfig []byte
 //go:embed examples/chains.d/Osmosis.yml
 var defaultChainConfig []byte
 
+//go:embed examples/chains.d/Celestia.yml
+var defaultCelestiaConfig []byte
+
 const topHelpText = `Tenderduty monitors Tendermint validators and alerts when they miss blocks, get jailed or a node goes down.
 
 Usage:
@@ -31,6 +36,7 @@ Usage:
   tenderduty [command]
 
 Available Commands:
+  start       Run tenderduty (the same as no command)
   chain       Add, change, remove or list chains
   reload      Reload a running tenderduty
   help        Help about any command
@@ -44,6 +50,7 @@ Flags:
   -state string              state file (default ".tenderduty-state.json", or <home>/.tenderduty-state.json)
   -example-config            print an example config.yml and exit
   -example-chain             print an example chains.d/<Chain>.yml and exit
+  -example-celestia          print an example chains.d/Celestia.yml with Fibre and exit
   -h, -help                  help for tenderduty
 
 Remote config (see docs/remote.md):
@@ -78,7 +85,7 @@ func (e *unknownCommandError) Error() string {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var home, configFile, chainConfigDirectory, stateFile, encryptedFile, password string
-	var dumpConfig, dumpChainConfig, encryptConfig, decryptConfig bool
+	var dumpConfig, dumpChainConfig, dumpCelestiaConfig, encryptConfig, decryptConfig bool
 	var addChain, node, name, registryChain string
 	var settings repeatedSettings
 	var publicFallback, force bool
@@ -93,6 +100,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags.StringVar(&chainConfigDirectory, "cc", "", "directory containing additional chain specific configurations")
 	flags.BoolVar(&dumpConfig, "example-config", false, "print an example config.yml with the shared settings and exit")
 	flags.BoolVar(&dumpChainConfig, "example-chain", false, "print an example chains.d/<Chain>.yml for one chain and exit")
+	flags.BoolVar(&dumpCelestiaConfig, "example-celestia", false, "print an example chains.d/Celestia.yml with Fibre and exit")
 	flags.BoolVar(&encryptConfig, "encrypt", false, "encrypt the file specified by -f to -encrypted-config")
 	flags.BoolVar(&decryptConfig, "decrypt", false, "decrypt the file specified by -encrypted-config to -f")
 	// deprecated, use `chain add`
@@ -120,6 +128,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	if dumpChainConfig {
 		fmt.Fprintln(stdout, string(defaultChainConfig))
+		return 0
+	}
+
+	if dumpCelestiaConfig {
+		fmt.Fprintln(stdout, string(defaultCelestiaConfig))
 		return 0
 	}
 
@@ -168,6 +181,20 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Home: home, ConfigFile: configFile, Directory: chainConfigDirectory, StateFile: stateFile, Password: &password,
 	}
 	rest := flags.Args()
+	if len(rest) > 0 && rest[0] == "start" {
+		// same as no command; flags may follow it
+		if err := flags.Parse(rest[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				_, _ = io.WriteString(stdout, topHelpText)
+				return 0
+			}
+			return finish(&td2.UsageError{Err: err, Usage: "Run 'tenderduty -h' for usage.\n"}, stderr)
+		}
+		if flags.NArg() != 0 {
+			return finish(&td2.UsageError{Err: td2.TakesError("start", "no arguments", flags.Args()), Usage: "Run 'tenderduty -h' for usage.\n"}, stderr)
+		}
+		rest = nil
+	}
 	if len(rest) > 0 {
 		var err error
 		switch rest[0] {
@@ -192,7 +219,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return finish(err, stderr)
 	}
+	searched := homeDir == "" && configFile == ""
 	configFile, chainConfigDirectory, stateFile = td2.ResolvePaths(homeDir, configFile, chainConfigDirectory, stateFile)
+	if err := missingConfig(configFile, searched); err != nil {
+		return finish(err, stderr)
+	}
 	err = td2.Run(configFile, stateFile, chainConfigDirectory, &password)
 	if err != nil {
 		//#nosec G706 -- local startup error
@@ -200,6 +231,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// missingConfig says where tenderduty looked and how to create a config.yml.
+func missingConfig(configFile string, searched bool) error {
+	if strings.HasPrefix(configFile, "http://") || strings.HasPrefix(configFile, "https://") {
+		return nil
+	}
+	if _, err := os.Stat(configFile); !os.IsNotExist(err) {
+		return nil
+	}
+	if searched && runtime.GOOS != "windows" {
+		dir, _ := os.Getwd()
+		return fmt.Errorf("no config.yml in %s or %s\nCreate one: tenderduty -example-config > config.yml (or %s), or pass -home or -f",
+			dir, filepath.Dir(td2.SystemConfigFile), td2.SystemConfigFile)
+	}
+	return fmt.Errorf("%s not found\nCreate one: tenderduty -example-config > %s", configFile, configFile)
 }
 
 // finish returns the exit code, printing usage for usage errors.
@@ -224,7 +271,7 @@ func reloadCommand(home, configFile, stateFile string, args []string, stdout io.
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&home, "home", home, "home directory")
 	flags.StringVar(&stateFile, "state", stateFile, "state file")
-	// accepted so one set of flags works for every command, a reload only signals the running process
+	// accepted by every command; reload only signals the running process
 	flags.StringVar(&configFile, "f", configFile, "config file")
 	flags.String("cc", "", "chain directory")
 	usageError := func(err error) error {
@@ -252,7 +299,7 @@ func reloadCommand(home, configFile, stateFile string, args []string, stdout io.
 func helpCommand(topic []string, stdout io.Writer) error {
 	text, ok := topHelpText, true
 	switch {
-	case len(topic) == 0 || topic[0] == "help" && len(topic) == 1:
+	case len(topic) == 0 || (topic[0] == "help" || topic[0] == "start") && len(topic) == 1:
 	case topic[0] == "chain":
 		if text, ok = td2.ChainHelp(topic[1:]); !ok {
 			return &unknownCommandError{name: topic[1], parent: "tenderduty chain"}

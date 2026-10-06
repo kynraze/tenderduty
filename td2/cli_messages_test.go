@@ -195,7 +195,6 @@ func TestAddChainReportsStatusAndPower(t *testing.T) {
 			t.Fatalf("got %q, want %q", output.String(), want)
 		}
 	}
-	// the valcons line stays between the two
 	fetch := addChainTestFetchers()
 	var output bytes.Buffer
 	options := AddChainOptions{Valoper: "celestiavalcons1test", Node: "https://rpc.example", Directory: t.TempDir()}
@@ -233,11 +232,9 @@ func TestAddChainStripsControlCharactersFromChainText(t *testing.T) {
 	if !strings.HasPrefix(output.String(), "Evil[31mPool on chain[2J-1: active, not jailed, voting power 5\n") || !strings.Contains(output.String(), "Could not read registry name: bad]0;title reply; using chain id\n") {
 		t.Fatalf("output = %q", output.String())
 	}
-	// the file name is built from the same text
 	if files, _ := os.ReadDir(options.Directory); len(files) != 1 || strings.ContainsAny(files[0].Name(), "\x1b\x07") {
 		t.Fatalf("files = %v", files)
 	}
-	// errors that carry node text are cleaned too
 	for name, change := range map[string]func(*addChainFetchers){
 		"node": func(f *addChainFetchers) {
 			f.status = func(context.Context, string) (addChainStatus, error) {
@@ -295,7 +292,6 @@ func TestChainSetPrintsTheDiffAndSkipsNoOps(t *testing.T) {
 	if output.String() != want || calls != 1 {
 		t.Fatalf("output = %q, reloads = %d", output.String(), calls)
 	}
-	// every key already has its value: say so, leave the file and the process alone
 	old := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	if err := os.Chtimes(filename, old, old); err != nil {
 		t.Fatal(err)
@@ -312,7 +308,6 @@ func TestChainSetPrintsTheDiffAndSkipsNoOps(t *testing.T) {
 	if output.String() != want || calls != 1 || !bytes.Equal(before, after) || !info.ModTime().Equal(old) {
 		t.Fatalf("output = %q, reloads = %d, rewritten = %t", output.String(), calls, !info.ModTime().Equal(old))
 	}
-	// a change next to a no-op still names both
 	output.Reset()
 	args = []string{"set", "Celestia", "alerts.consecutive_missed=9", "alerts.consecutive_missed=12", "extra_info=Operator"}
 	if err := ChainCommand(context.Background(), options, args, strings.NewReader(""), &output); err != nil {
@@ -363,7 +358,6 @@ func TestUnknownChainNamesTheChains(t *testing.T) {
 	if want := fmt.Sprintf("no chain %q in %s (chains: Celestia, Osmosis, c1, c2, c3 and 3 more); see tenderduty chain list", "Nope", options.Directory); err == nil || err.Error() != want {
 		t.Fatalf("got %v, want %q", err, want)
 	}
-	// nothing in the directory, nothing to list
 	empty := options
 	empty.Directory = t.TempDir()
 	err = ChainCommand(context.Background(), empty, []string{"set", "Nope", "extra_info=x"}, strings.NewReader(""), &bytes.Buffer{})
@@ -393,7 +387,7 @@ func TestChainListIsAnAlignedTable(t *testing.T) {
 		t.Fatalf("header = %q", lines[0])
 	}
 	column := strings.Index(lines[0], "CHAIN ID")
-	for i, want := range [][]string{{"Celestia", "chain-1", "celestiavaloper1test", "1", "no", "signal", filename}, {"Osmosis", "chain-two-2", "osmovaloper1abcd...uvwxyz", "1", "yes", "signal", otherFile}} {
+	for i, want := range [][]string{{"Celestia", "chain-1", "celestiavaloper1test", "1", "no", "missed_blocks,stalled,no_servers,gov,upgrade", filename}, {"Osmosis", "chain-two-2", "osmovaloper1abcd...uvwxyz", "1", "yes", "missed_blocks,stalled,no_servers,gov,upgrade", otherFile}} {
 		line := lines[i+1]
 		if got := strings.Fields(line); strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Fatalf("row %d = %v, want %v", i, got, want)

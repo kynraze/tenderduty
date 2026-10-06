@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -293,7 +292,6 @@ func ChainCommand(ctx context.Context, options ChainCommandOptions, args []strin
 		for _, change := range changes {
 			changed = changed || change.Changed
 		}
-		// the changes are printed once they are saved
 		printChanges := func() {
 			for _, change := range changes {
 				if change.Changed {
@@ -385,7 +383,7 @@ func standaloneChain(options ChainCommandOptions, name string) (string, error) {
 	return "", fmt.Errorf("no chain %q in %s%s; see tenderduty chain list", name, options.Directory, chainNames(options.Directory))
 }
 
-// chainNames is " (chains: A, B)" for the chain files in directory, up to 5 names, "" when there are none.
+// chainNames lists up to five chain files, empty when none exist.
 func chainNames(directory string) string {
 	entries, _ := os.ReadDir(directory)
 	var names []string
@@ -406,7 +404,7 @@ func chainNames(directory string) string {
 	return " (chains: " + strings.Join(names, ", ") + more + ")"
 }
 
-// onlyChain: name is the sole chain in config.yml and the chain directory; an unloadable config is left to the caller.
+// onlyChain finds the sole chain; the caller handles an unloadable config.
 func onlyChain(options ChainCommandOptions, name string) (bool, error) {
 	c, err := loadConfigQuiet(options.ConfigFile, options.Directory, options.Password)
 	if err != nil {
@@ -459,15 +457,7 @@ func listChains(options ChainCommandOptions, output io.Writer) error {
 		if len(address) > 24 {
 			address = address[:16] + "..." + address[len(address)-6:]
 		}
-		var groups []string
-		alerts := reflect.ValueOf(chain.Alerts)
-		for i := 0; i < alerts.NumField(); i++ {
-			field := alerts.Type().Field(i)
-			key := field.Tag.Get("yaml")
-			if alerts.Field(i).Kind() == reflect.Bool && strings.HasSuffix(key, "_enabled") && alerts.Field(i).Bool() {
-				groups = append(groups, strings.TrimSuffix(key, "_enabled"))
-			}
-		}
+		groups := enabledAlertFamilies(chain.Alerts)
 		source := sources[strings.SplitN(name, " / ", 2)[0]]
 		if source == "" {
 			source = options.ConfigFile
@@ -490,7 +480,7 @@ func writeChainFile(filename string, data []byte, mode os.FileMode, replace bool
 		return err
 	}
 	defer os.Remove(file.Name())
-	// the service may run as another user than the one editing: keep or inherit the owner
+	// keep the owner when the service runs as another user
 	mode, uid, gid := chainFileOwner(filename, replace, mode)
 	if err := chownTemp(file, uid, gid); err != nil {
 		_ = file.Close()
@@ -534,10 +524,31 @@ func TakesError(command, want string, args []string) error {
 	return fmt.Errorf("%s takes %s, got %d: %s", command, want, len(args), strings.Join(quoted, " "))
 }
 
-// writeError says which folder could not be written and how to fix it, not a temp file name.
+// writeError names the destination folder and how to fix it.
 func writeError(filename string, err error) error {
 	if errors.Is(err, os.ErrPermission) {
 		return fmt.Errorf("cannot write %s: permission denied; run as the owner of %s or with sudo", filename, filepath.Dir(filename))
 	}
 	return fmt.Errorf("cannot write %s: %w", filename, err)
+}
+
+func enabledAlertFamilies(a AlertConfig) []string {
+	var groups []string
+	for _, family := range []struct {
+		name string
+		on   bool
+	}{
+		{"missed_blocks", a.MissedBlocksAlerts},
+		{"stalled", a.StalledAlerts},
+		{"no_servers", a.AlertIfNoServers},
+		{"gov", a.GovAlerts},
+		{"upgrade", a.UpgradeAlerts},
+		{"missed_proposal", a.ProposalAlerts},
+		{"fibre", a.FibreAlerts},
+	} {
+		if family.on {
+			groups = append(groups, family.name)
+		}
+	}
+	return groups
 }

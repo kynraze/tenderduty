@@ -3,6 +3,8 @@ package tenderduty
 import (
 	"fmt"
 	"net/url"
+	"sort"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -76,6 +78,36 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 	if err != nil {
 		return err
 	}
+	ignored := make(map[string]bool)
+	percentage := false
+	inspect := func(settings yamlMap) {
+		for key := range settings {
+			name, ok := key.(string)
+			if !ok {
+				continue
+			}
+			if strings.HasPrefix(name, "percentage_") {
+				percentage = true
+			}
+			if name == "consecutive_priority" || name == "percentage_priority" {
+				ignored[name] = true
+			}
+		}
+	}
+	inspect(defaults)
+	defaults = mergeMaps(yamlMap{
+		"fibre_endorsement_alert":   false,
+		"fibre_endorsement_blobs":   20,
+		"fibre_endorsement_minutes": 30,
+		"gov_early_remind_percent":  25,
+		"gov_enabled":               true,
+		"upgrade_enabled":           true,
+		"missed_blocks_enabled":     true,
+		"consecutive_enabled":       true,
+		"alert_if_inactive":         true,
+		"stalled_enabled":           true,
+		"alert_if_no_servers":       true,
+	}, defaults)
 	chains, err := optionalMap(raw, "chains")
 	if err != nil {
 		return err
@@ -100,10 +132,8 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
+		inspect(overrides)
 		merged := mergeMaps(defaults, overrides)
-		if len(merged) == 0 {
-			continue
-		}
 		data, err := yaml.Marshal(merged)
 		if err != nil {
 			return err
@@ -111,6 +141,18 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 		if err := yaml.Unmarshal(data, &chain.Alerts); err != nil {
 			return fmt.Errorf("%s alerts: %w", name, err)
 		}
+		chain.Alerts.PercentageAlerts = false
+	}
+	if percentage {
+		c.configWarnings = append(c.configWarnings, "warning: percentage_* is replaced by jail_risk_percent, see docs/chains.md")
+	}
+	if len(ignored) > 0 {
+		names := make([]string, 0, len(ignored))
+		for name := range ignored {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		c.configWarnings = append(c.configWarnings, "warning: "+strings.Join(names, ", ")+" are ignored, the alert stages have a fixed severity, see docs/chains.md")
 	}
 	return nil
 }

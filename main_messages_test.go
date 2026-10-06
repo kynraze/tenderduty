@@ -21,7 +21,7 @@ func cliFixture(t *testing.T) (config, dir, state string) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config, []byte("alert_defaults:\n  signal_enabled: yes\n"), 0600); err != nil {
+	if err := os.WriteFile(config, []byte("alert_defaults:\n  upgrade_enabled: yes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	chain := "chain_id: chain-1\nvaloper_address: celestiavaloper1test\nnodes:\n  - url: https://rpc.example\n    alert_if_down: true\n"
@@ -105,5 +105,34 @@ func TestBareChainPrintsTheHelp(t *testing.T) {
 	code, stdout, stderr := runCLI("chain", "bogus")
 	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "Error: unknown chain command \"bogus\"\n") {
 		t.Fatalf("unknown subcommand: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}
+
+func TestMissingConfigSaysWhereItLooked(t *testing.T) {
+	empty := t.TempDir()
+	t.Chdir(empty)
+	t.Setenv(td2.HomeEnv, "")
+	t.Setenv("CONFIG", "")
+	system := filepath.Join(t.TempDir(), "etc")
+	saved := td2.SystemConfigFile
+	td2.SystemConfigFile = filepath.Join(system, "config.yml")
+	defer func() { td2.SystemConfigFile = saved }()
+	for _, args := range [][]string{nil, {"start"}} {
+		code, _, stderr := runCLI(args...)
+		want := "Error: no config.yml in " + empty + " or " + system + "\nCreate one: tenderduty -example-config > config.yml (or " + td2.SystemConfigFile + "), or pass -home or -f\n"
+		if runtime.GOOS == "windows" {
+			want = "Error: config.yml not found\nCreate one: tenderduty -example-config > config.yml\n"
+		}
+		if code != 1 || stderr != want {
+			t.Fatalf("%v: exit %d, stderr %q, want %q", args, code, stderr, want)
+		}
+	}
+	missing := filepath.Join(empty, "other.yml")
+	code, _, stderr := runCLI("start", "-f", missing)
+	if want := "Error: " + missing + " not found\nCreate one: tenderduty -example-config > " + missing + "\n"; code != 1 || stderr != want {
+		t.Fatalf("-f after start: exit %d, stderr %q", code, stderr)
+	}
+	if code, _, stderr := runCLI("start", "extra"); code != 1 || !strings.Contains(stderr, "start") {
+		t.Fatalf("start with an argument: exit %d, stderr %q", code, stderr)
 	}
 }

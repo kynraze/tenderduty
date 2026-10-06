@@ -241,3 +241,44 @@ func TestAddChainRegistrySelection(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAddChainCelestiaFibreHint(t *testing.T) {
+	for _, tc := range []struct {
+		chainID, registry string
+		want              bool
+	}{
+		{"celestia", "", true},
+		{"mocha-5", "", true},
+		{"arabica-11", "", true},
+		{"custom-1", "celestia", true},
+		{"custom-1", "celestiatestnet3", true},
+		{"osmosis-1", "", false},
+	} {
+		t.Run(tc.chainID+tc.registry, func(t *testing.T) {
+			fetch := addChainTestFetchers()
+			fetch.status = func(context.Context, string) (addChainStatus, error) {
+				return addChainStatus{ChainID: tc.chainID}, nil
+			}
+			fetch.selectRegistry = func(context.Context, string, string, string) (string, error) {
+				return "Celestia", nil
+			}
+			options := AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Name: "Example", RegistryChain: tc.registry, Directory: t.TempDir()}
+			var output bytes.Buffer
+			if err := addChain(context.Background(), options, &output, fetch); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(options.Directory, "Example.yml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			block := "# alerts:\n#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md\n#   fibre_severity: critical\n"
+			if got := strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), block); got != tc.want {
+				t.Fatalf("Fibre block = %v, want %v: %s", got, tc.want, data)
+			}
+			hint := "Fibre: tenderduty chain set Example alerts.fibre_enabled=yes (see docs/fibre.md)\n"
+			if got := strings.Contains(output.String(), hint); got != tc.want {
+				t.Fatalf("Fibre hint = %v, want %v: %s", got, tc.want, output.String())
+			}
+		})
+	}
+}

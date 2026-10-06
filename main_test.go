@@ -125,7 +125,7 @@ func homeFixture(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(home, "chains.d", "Homed.yml"), []byte(chain), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "config.yml"), []byte("alert_defaults:\n  signal_enabled: yes\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "config.yml"), []byte("alert_defaults:\n  upgrade_enabled: yes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return home
@@ -303,5 +303,19 @@ func TestReloadCLISystemLayout(t *testing.T) {
 				t.Fatalf("exit %d, stderr %q, want state %q", code, stderr, tc.wantState)
 			}
 		})
+	}
+}
+
+func TestExampleCelestia(t *testing.T) {
+	code, stdout, stderr := runCLI("-example-celestia")
+	if code != 0 || stderr != "" || stdout != string(defaultCelestiaConfig)+"\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "chain_id: celestia") || !strings.Contains(stdout, "#   fibre_enabled: yes") {
+		t.Fatalf("Celestia example is missing its chain or Fibre settings: %s", stdout)
+	}
+	code, stdout, stderr = runCLI("-example-chain")
+	if code != 0 || stderr != "" || stdout != string(defaultChainConfig)+"\n" {
+		t.Fatalf("Osmosis example: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 }
