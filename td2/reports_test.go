@@ -22,14 +22,17 @@ func reportFixture(weekly bool) periodReport {
 		Footer: "Watched 24h of 24h · Asia/Jakarta",
 		Rows: []reportRow{
 			{Name: "AtomOne", Moniker: "Kynraze", Dot: dotGreen, Lines: []string{
-				"✍️ 99.94% signed · 8 missed",
+				"✍️ 99.94% signed · 8 missed (3 late)",
+				"🧱 Proposed 17 of 17 turns",
 				"⚖️ 1.20M (+12.4K · +1.0%) · #72 ▲3",
 				"🤝 812 delegators (+5) · self 50K (=)",
 				"🔔 No alerts",
 				"🗳 #41 Community pool spend · 1d 4h left",
 			}},
 			{Name: "Mocha <test>", Moniker: "A&B", Dot: dotRed, Testnet: true, Lines: []string{
-				"✍️ 97.31% signed · 310 missed · 2 proposals",
+				"🚨 Jailed since 6 Oct 02:00",
+				"✍️ 97.31% signed · 310 missed (25 late, 1 prevote only)",
+				"🧱 Proposed 12 of 17 turns · 5 missed",
 				"⚖️ 1.10M (=) · #64 ▼2",
 				"🤝 3 delegators (=) · self unavailable",
 				"🔔 Missed blocks 42m",
@@ -47,9 +50,9 @@ func reportFixture(weekly bool) periodReport {
 		r.Header = []string{"📈 Weekly report · 28 Sep – 4 Oct", "3 incidents · 4 votes cast"}
 		r.Footer = "Watched 7d of 7d · Asia/Jakarta"
 		r.Rows[0].Summary = "99.95% ▲0.02 · #72 ▲3"
-		r.Rows[0].Lines = []string{"⚖️ +12.4K · +1.0% · 🤝 +5 · 🔔 0"}
+		r.Rows[0].Lines = []string{"⚖️ +12.4K · +1.0% · 🤝 +5 · 🔔 0 · 🧱 17/17"}
 		r.Rows[1].Summary = "97.60% ▲1.10 · #64 ▼2"
-		r.Rows[1].Lines = []string{"⚖️ = · 🤝 = · 🔔 3 · longest 1h 12m"}
+		r.Rows[1].Lines = []string{"🚨 Jailed since 6 Oct 02:00", "⚖️ = · 🤝 = · 🔔 3 · longest 1h 12m · 🧱 12/17"}
 		r.Rows[1].Fibre = []string{
 			"🧵 Fibre: 8,940 shards stored · 0 failed · 99.6% reachable",
 			"✍️ Signing: 100% under 10 ms · p95 0.9 ms · upload p95 26 ms",
@@ -104,6 +107,99 @@ func TestReportNumbersTrendsAndDots(t *testing.T) {
 		if got := reportDot(tc.active, tc.jailed, tc.signed, tc.known, tc.incidents, 95); got != tc.want {
 			t.Fatalf("dot %+v: %s", tc, got)
 		}
+	}
+}
+
+func TestReportMissedBreakdown(t *testing.T) {
+	c := &Config{}
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	for _, at := range []time.Time{now.Add(-2 * time.Hour), now.Add(-time.Hour)} {
+		for _, status := range []StatusType{Statusmissed, StatusPrecommit, StatusPrevote, StatusSigned, StatusProposed, StatusMissedProposal} {
+			c.recordReportBlock("Chain", at, status, status == StatusMissedProposal)
+		}
+	}
+	c.recordReportBlock("Chain", now.Add(-25*time.Hour), StatusPrecommit, false)
+	c.recordReportBlock("Chain", now, StatusPrevote, false)
+	total := reportTotals(c.reportData.Hours["Chain"], now.Add(-24*time.Hour), now)
+	if total.Missed != 6 || total.Late != 2 || total.PrevoteOnly != 2 || total.Signed != 6 || total.Proposed != 2 || total.MissedProps != 2 {
+		t.Fatalf("block totals: %+v", total)
+	}
+	if signed, known := reportSigned(total); !known || signed != 50 {
+		t.Fatalf("on-chain signing: %v, %v", signed, known)
+	}
+}
+
+func TestReportSigningAndProposerLines(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hour     reportHour
+		signing  string
+		proposer string
+		weekly   string
+	}{
+		{"no turns", reportHour{Signed: 9957, Missed: 43}, "✍️ 99.57% signed · 43 missed", "", ""},
+		{"late", reportHour{Signed: 9957, Missed: 43, Late: 25, Proposed: 17}, "✍️ 99.57% signed · 43 missed (25 late)", "🧱 Proposed 17 of 17 turns", " · 🧱 17/17"},
+		{"late and prevote", reportHour{Signed: 9957, Missed: 43, Late: 25, PrevoteOnly: 1, Proposed: 12, MissedProps: 5}, "✍️ 99.57% signed · 43 missed (25 late, 1 prevote only)", "🧱 Proposed 12 of 17 turns · 5 missed", " · 🧱 12/17"},
+		{"prevote only", reportHour{Signed: 9957, Missed: 43, PrevoteOnly: 1}, "✍️ 99.57% signed · 43 missed (1 prevote only)", "", ""},
+		{"missed turns", reportHour{Signed: 9957, Missed: 43, MissedProps: 5}, "✍️ 99.57% signed · 43 missed", "🧱 Proposed 0 of 5 turns · 5 missed", " · 🧱 0/5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := auditConfig(t)
+			now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+			c.Chains["Chain"] = &ChainConfig{name: "Chain", valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true}}
+			tc.hour.At = now.Add(-time.Hour)
+			c.reportData.Hours = map[string][]reportHour{"Chain": {tc.hour}}
+			row := c.buildReport(now, false, false, nil).Rows[0]
+			if row.Lines[0] != tc.signing {
+				t.Fatalf("signing: %s", row.Lines[0])
+			}
+			if tc.proposer != "" {
+				if row.Lines[1] != tc.proposer {
+					t.Fatalf("proposer: %s", row.Lines[1])
+				}
+			} else if strings.Contains(strings.Join(row.Lines, "\n"), "🧱") {
+				t.Fatal("proposer line without turns")
+			}
+			weekly := c.buildReport(now, true, false, nil).Rows[0]
+			// a short history adds a "Watched" line after it
+			if len(weekly.Lines) == 0 || (tc.weekly != "" && !strings.HasSuffix(weekly.Lines[0], tc.weekly)) || (tc.weekly == "" && strings.Contains(weekly.Lines[0], "🧱")) {
+				t.Fatalf("weekly lines: %v", weekly.Lines)
+			}
+		})
+	}
+}
+
+func TestReportOldHourState(t *testing.T) {
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	var state savedState
+	data := []byte(`{"reports":{"hours":{"Chain":[{"at":"2026-10-04T08:00:00Z","signed":9957,"missed":43,"proposed":12,"missed_props":5}]}}}`)
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{}
+	c.restoreReports(state.Reports, now)
+	total := reportTotals(c.reportData.Hours["Chain"], now.Add(-24*time.Hour), now)
+	if total.Signed != 9957 || total.Missed != 43 || total.Proposed != 12 || total.MissedProps != 5 || total.Late != 0 || total.PrevoteOnly != 0 {
+		t.Fatalf("old hour: %+v", total)
+	}
+	data, err := json.Marshal(c.savedReports(now))
+	if err != nil || strings.Contains(string(data), `"late"`) || strings.Contains(string(data), `"prevote_only"`) {
+		t.Fatalf("zero counters not omitted: %s, %v", data, err)
+	}
+	c.recordReportBlock("Chain", now.Add(-time.Hour), StatusPrecommit, false)
+	c.recordReportBlock("Chain", now.Add(-time.Hour), StatusPrevote, false)
+	data, err = json.Marshal(c.savedReports(now))
+	if err != nil || !strings.Contains(string(data), `"late":1`) || !strings.Contains(string(data), `"prevote_only":1`) {
+		t.Fatalf("new counters not saved: %s, %v", data, err)
+	}
+	var history reportHistory
+	if err := json.Unmarshal(data, &history); err != nil {
+		t.Fatal(err)
+	}
+	c.restoreReports(&history, now)
+	total = reportTotals(c.reportData.Hours["Chain"], now.Add(-24*time.Hour), now)
+	if total.Missed != 45 || total.Late != 1 || total.PrevoteOnly != 1 {
+		t.Fatalf("new counters not restored: %+v", total)
 	}
 }
 
@@ -264,36 +360,52 @@ func TestReportBuildTrends(t *testing.T) {
 }
 
 func TestReportDiscordLimitsAndSlack(t *testing.T) {
-	r := reportFixture(false)
-	for i := 0; i < 80; i++ {
-		r.Rows = append(r.Rows, reportRow{Name: fmt.Sprintf("%d @everyone *chain*", i), Dot: dotYellow, Testnet: i%2 == 0, Lines: []string{strings.Repeat("😀*", 900)}, Fibre: []string{"known"}})
-	}
-	messages := r.discord()
-	if len(messages) < 4 {
-		t.Fatal("report wasn't split")
-	}
-	for _, message := range messages {
-		if reportDiscordLen(message.Content) > discordContentLimit {
-			t.Fatal("content limit")
+	for _, weekly := range []bool{false, true} {
+		r := reportFixture(weekly)
+		for i := 0; i < 80; i++ {
+			r.Rows = append(r.Rows, reportRow{Name: fmt.Sprintf("%d @everyone *chain*", i), Dot: dotYellow, Testnet: i%2 == 0, Lines: []string{strings.Repeat("😀*", 900)}, Fibre: []string{"known"}})
 		}
-		total := 0
-		for _, embed := range message.Embeds {
-			total += reportDiscordLen(embed.Title) + reportDiscordLen(embed.Description)
-			if embed.Footer != nil {
-				total += reportDiscordLen(embed.Footer.Text)
+		messages := r.discord()
+		if len(messages) < 4 {
+			t.Fatal("report wasn't split")
+		}
+		for _, message := range messages {
+			if reportDiscordLen(message.Content) > discordContentLimit {
+				t.Fatal("content limit")
 			}
-			if len(embed.Fields) > discordFieldsLimit {
-				t.Fatal("field count limit")
-			}
-			for _, field := range embed.Fields {
-				if reportDiscordLen(field.Name) > discordNameLimit || reportDiscordLen(field.Value) > discordValueLimit {
-					t.Fatal("field size limit")
+			total := 0
+			for _, embed := range message.Embeds {
+				total += reportDiscordLen(embed.Title) + reportDiscordLen(embed.Description)
+				if embed.Footer != nil {
+					total += reportDiscordLen(embed.Footer.Text)
 				}
-				total += reportDiscordLen(field.Name) + reportDiscordLen(field.Value)
+				if len(embed.Fields) > discordFieldsLimit {
+					t.Fatal("field count limit")
+				}
+				for _, field := range embed.Fields {
+					if reportDiscordLen(field.Name) > discordNameLimit || reportDiscordLen(field.Value) > discordValueLimit {
+						t.Fatal("field size limit")
+					}
+					total += reportDiscordLen(field.Name) + reportDiscordLen(field.Value)
+				}
+			}
+			if total > discordEmbedLimit {
+				t.Fatalf("message embeds %d", total)
 			}
 		}
-		if total > discordEmbedLimit {
-			t.Fatalf("message embeds %d", total)
+		parts := reportParts(r, "telegram")
+		if len(parts) < 2 {
+			t.Fatal("Telegram report wasn't split")
+		}
+		for _, part := range parts {
+			var text string
+			if err := json.Unmarshal(part, &text); err != nil {
+				t.Fatal(err)
+			}
+			if len([]rune(text)) > telegramMessageLimit {
+				t.Fatal("Telegram message limit")
+			}
+			telegramHTML(t, text)
 		}
 	}
 	parts := reportParts(reportFixture(false), "discord")
@@ -532,5 +644,20 @@ func TestReportReloadAndSkippedOccurrence(t *testing.T) {
 	copy.reportTick(now)
 	if len(copy.reportData.Pending) != 0 || !copy.reportData.Last["daily"].Equal(want) {
 		t.Fatal("restart changed skipped occurrence")
+	}
+}
+
+func TestReportHeaderCountsIncidentsApart(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	for _, name := range []string{"Calm", "Eventful", "Scheduled"} {
+		c.Chains[name] = &ChainConfig{name: name, valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true}}
+	}
+	c.reportData.Incidents = []reportIncident{{Chain: "Eventful", Key: "missed blocks", Kind: "missed", Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour)}}
+	// a scheduled upgrade is a notice, it does not make the row red
+	alarms.AllAlarms["Scheduled"] = map[string]time.Time{"Upgrade v4.0.0 at height 1000": now}
+	report := c.buildReport(now, false, false, nil)
+	if got := report.Header[1]; got != "🟢 2 healthy · 🟡 1 had incidents" {
+		t.Fatalf("header %q", got)
 	}
 }

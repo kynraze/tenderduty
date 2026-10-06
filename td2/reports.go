@@ -84,7 +84,7 @@ func (r ReportsConfig) validate(fallback string) error {
 	return nil
 }
 
-// Latest local occurrence, yesterday's included across midnight.
+// Latest local report time, including yesterday across midnight.
 func reportDue(now, last time.Time, schedule string, weekly bool, loc *time.Location) (time.Time, bool, bool) {
 	if schedule == "" {
 		return time.Time{}, false, false
@@ -113,6 +113,8 @@ type reportHour struct {
 	At          time.Time `json:"at"`
 	Signed      int64     `json:"signed,omitempty"`
 	Missed      int64     `json:"missed,omitempty"`
+	Late        int64     `json:"late,omitempty"`
+	PrevoteOnly int64     `json:"prevote_only,omitempty"`
 	Proposed    int64     `json:"proposed,omitempty"`
 	MissedProps int64     `json:"missed_props,omitempty"`
 	Watched     float64   `json:"watched,omitempty"`
@@ -189,6 +191,12 @@ func (c *Config) recordReportBlock(chain string, now time.Time, status StatusTyp
 	case StatusSigned, StatusProposed, StatusMissedProposal:
 		h.Signed++
 	}
+	if status == StatusPrecommit {
+		h.Late++
+	}
+	if status == StatusPrevote {
+		h.PrevoteOnly++
+	}
 	if status == StatusProposed {
 		h.Proposed++
 	}
@@ -229,7 +237,7 @@ func (cc *ChainConfig) reportWatchingLocked(now time.Time) {
 func reportAlarmKind(chain, message string) string {
 	first, _, _ := strings.Cut(message, "\n")
 	switch {
-	case cardMissed.MatchString(first), percentageMissed.MatchString(first):
+	case strings.Contains(first, " is missing blocks on "), cardMissed.MatchString(first), percentageMissed.MatchString(first):
 		return "Missed blocks"
 	case cardNodeDown.MatchString(first):
 		return "RPC node down"
@@ -239,6 +247,12 @@ func reportAlarmKind(chain, message string) string {
 		return "RPC endpoints down"
 	case proposalsMissed.MatchString(first):
 		return "Missed proposals"
+	case strings.Contains(first, " is close to jail on "):
+		return "Jail risk"
+	case cardJailed.MatchString(first), canUnjail.MatchString(first):
+		return "Jailed"
+	case cardInactive.MatchString(first), cardLegacyInactive.MatchString(first), strings.Contains(first, " is tombstoned on "):
+		return "Inactive"
 	case jailRisk.MatchString(first), cardJailSoon.MatchString(first):
 		return "Jail risk"
 	}
@@ -361,6 +375,8 @@ func reportTotals(hours []reportHour, start, end time.Time) reportHour {
 		}
 		total.Signed += h.Signed
 		total.Missed += h.Missed
+		total.Late += h.Late
+		total.PrevoteOnly += h.PrevoteOnly
 		total.Proposed += h.Proposed
 		total.MissedProps += h.MissedProps
 		total.Watched += h.Watched
@@ -403,7 +419,6 @@ func (cc *ChainConfig) reportStake(now time.Time) reportSnapshot {
 	if power, err := getVotingPower(ctx, client.Remote(), info.Conspub); err == nil && len(info.Conspub) > 0 {
 		s.Power, s.Total, s.Rank, s.ActiveSet = &power.power, &power.total, &power.rank, &power.size
 	}
-	// Count only: one delegation plus the total count.
 	request := staking.QueryValidatorDelegationsRequest{ValidatorAddr: cc.ValAddress, Pagination: &query.PageRequest{Limit: 1, CountTotal: true}}
 	if b, err := request.Marshal(); err == nil {
 		if response, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/ValidatorDelegations", b); err == nil && response != nil && response.Response.Code == 0 {

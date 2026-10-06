@@ -192,7 +192,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 	}
 	c.chainsMux.RUnlock()
 	watched := span.Seconds()
-	healthy, incidents, votes, due := 0, 0, 0, 0
+	healthy, eventful, incidents, votes, due := 0, 0, 0, 0, 0
 	dueNames := make([]string, 0)
 	for _, name := range sortedReportNames(chains) {
 		cc := chains[name]
@@ -205,16 +205,17 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		current := reportSnapshotAt(history.Snapshots[name], now)
 		previous := reportSnapshotAt(history.Snapshots[name], start)
 		info, _ := cc.validatorState()
-		alerts := cc.alertSettings()
 		threshold := reportDefaultRedSigned
-		if alerts.PercentageAlerts && alerts.Window > 0 {
-			threshold = 100 - float64(alerts.Window)
-		}
 		alertLines, count, longest := reportIncidents(history.Incidents, name, start, now)
 		signed, known := reportSigned(total)
-		dot := reportDot(alarms.getCount(name) > 0, info.Jailed || info.Tombstoned, signed, known, count, threshold)
-		if dot == dotGreen {
+		// scheduled-upgrade notices do not make rows red
+		active, notices, _ := cc.dashboardAlerts()
+		dot := reportDot(active > notices, info.Jailed || info.Tombstoned || !info.Bonded, signed, known, count, threshold)
+		switch dot {
+		case dotGreen:
 			healthy++
+		case dotYellow:
+			eventful++
 		}
 		incidents += count
 		votes += total.Votes
@@ -252,6 +253,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				}
 			}
 		}
+		turns := total.Proposed + total.MissedProps
 		if weekly {
 			row.Summary = signing + reportSigningTrend(total, previousTotal)
 			if rank != "" {
@@ -267,14 +269,30 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			if longest > 0 {
 				line += " · longest " + reportDuration(longest)
 			}
+			if turns > 0 {
+				line += fmt.Sprintf(" · 🧱 %d/%d", total.Proposed, turns)
+			}
 			row.Lines = []string{line}
 		} else {
-			// blocks proposed are routine, a missed proposal is what the operator acts on
 			line := fmt.Sprintf("✍️ %s signed · %s missed", signing, compactReportNumber(float64(total.Missed)))
-			if total.MissedProps > 0 {
-				line += " · " + plural(int(total.MissedProps), "missed proposal")
+			missed := make([]string, 0, 2)
+			if total.Late > 0 {
+				missed = append(missed, fmt.Sprintf("%d late", total.Late))
+			}
+			if total.PrevoteOnly > 0 {
+				missed = append(missed, fmt.Sprintf("%d prevote only", total.PrevoteOnly))
+			}
+			if len(missed) > 0 {
+				line += " (" + strings.Join(missed, ", ") + ")"
 			}
 			row.Lines = append(row.Lines, line)
+			if turns > 0 {
+				line = fmt.Sprintf("🧱 Proposed %d of %d turns", total.Proposed, turns)
+				if total.MissedProps > 0 {
+					line += fmt.Sprintf(" · %d missed", total.MissedProps)
+				}
+				row.Lines = append(row.Lines, line)
+			}
 			line = "⚖️ " + power
 			if powerChange != "" {
 				line += " (" + powerChange + ")"
@@ -295,6 +313,18 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 					row.Lines = append(row.Lines, "🔔 "+line)
 				}
 			}
+		}
+		switch {
+		case info.Tombstoned:
+			row.Lines = append([]string{"🚨 Tombstoned"}, row.Lines...)
+		case info.Jailed:
+			line := "🚨 Jailed"
+			if since := cc.jailSince(); !since.IsZero() {
+				line += " since " + since.In(loc).Format("2 Jan 15:04")
+			}
+			row.Lines = append([]string{line}, row.Lines...)
+		case !info.Bonded:
+			row.Lines = append([]string{"🚨 Not in the active set"}, row.Lines...)
 		}
 		proposals, loaded := cc.govSnapshot()
 		if loaded {
@@ -352,7 +382,15 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		}
 		result.Notes = append(splitReportText(note, 900), result.Notes...)
 	} else {
-		result.Header = append(result.Header, fmt.Sprintf("🟢 %d healthy · 🔴 %d needs attention", healthy, len(result.Rows)-healthy))
+		// resolved incidents make rows yellow and need no attention
+		header := fmt.Sprintf("🟢 %d healthy", healthy)
+		if eventful > 0 {
+			header += fmt.Sprintf(" · 🟡 %d had incidents", eventful)
+		}
+		if red := len(result.Rows) - healthy - eventful; red > 0 {
+			header += fmt.Sprintf(" · 🔴 %d needs attention", red)
+		}
+		result.Header = append(result.Header, header)
 	}
 	result.Footer = "Watched " + reportWatchedDuration(time.Duration(watched)*time.Second) + " of " + reportWatchedDuration(span) + " · " + loc.String()
 	if watched < span.Seconds()-60 {
@@ -361,7 +399,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 	return result
 }
 
-// Persisted rollups for both periods, so daily reports survive a restart.
+// Persist rollups for both report periods.
 func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []string {
 	st := c.fibreData()
 	st.mu.Lock()
@@ -383,7 +421,7 @@ func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []
 			latest = h
 		}
 	}
-	if exports == 0 {
+	if exports == 0 && counts["endorsements_endorsed"]+counts["endorsements_missed"]+counts["endorsements_unknown"] == 0 {
 		return nil
 	}
 	lines := make([]string, 0, 4)
@@ -396,6 +434,19 @@ func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []
 			line += fmt.Sprintf(" · %.1f%% reachable", 100*float64(reachable)/float64(checks))
 		}
 		lines = append(lines, line)
+	}
+	if total := counts["endorsements_endorsed"] + counts["endorsements_missed"]; total > 0 {
+		endorsement := fmt.Sprintf("endorsed %.0f of %.0f (%.1f%%)", counts["endorsements_endorsed"], total, 100*counts["endorsements_endorsed"]/total)
+		if cc := c.Chains[chain]; cc != nil {
+			if longest := st.longestEndorsementStop(chain, cc.alertSettings(), start, end); longest > 0 {
+				endorsement += " · stopped " + shortDuration(longest)
+			}
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "🧵 Fibre: "+endorsement)
+		} else {
+			lines[0] += " · " + endorsement
+		}
 	}
 	if n := counts["signatures_ok"]; n > 0 {
 		line := "✍️ Signing: "
