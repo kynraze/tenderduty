@@ -125,7 +125,7 @@ func (cc *ChainConfig) backfill(ctx context.Context, remote string, wanted []int
 	}
 }
 
-// fillHeight: the newest place is lastBlockNum-1, a block carries the previous height's signatures.
+// fillHeight maps lastBlockNum-1 to the newest slot; commits sign the previous height.
 func (cc *ChainConfig) fillHeight(height int64, status StatusType) bool {
 	cc.stateMux.Lock()
 	defer cc.stateMux.Unlock()

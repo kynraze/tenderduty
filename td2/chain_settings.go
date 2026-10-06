@@ -116,7 +116,7 @@ func settingExpects(t reflect.Type) string {
 	return "text"
 }
 
-// settingChange is one key of a chain set: old and new as shown to the operator.
+// settingChange holds a key and its displayed old and new values.
 type settingChange struct {
 	Key, Old, New string
 	Changed       bool
@@ -159,7 +159,7 @@ func parseSetting(keys map[string]reflect.Type, assignment string) (parsedSettin
 	return parsedSetting{key, t, value}, nil
 }
 
-// validateChainSettings checks every assignment, in order, before anything is written or fetched.
+// validateChainSettings checks assignments before writing or fetching.
 func validateChainSettings(assignments []string) error {
 	keys := chainSettingTypes()
 	for _, assignment := range assignments {
@@ -170,7 +170,7 @@ func validateChainSettings(assignments []string) error {
 	return nil
 }
 
-// settingText is how a value reads in the file or on the command line: yes/no, comma-separated lists.
+// settingText formats booleans as yes/no and lists with commas.
 func settingText(t reflect.Type, node *yaml.Node) string {
 	if node == nil || node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
 		return "unset"
@@ -225,7 +225,7 @@ func applyChainSettings(data []byte, assignments []string) ([]byte, error) {
 	return result, err
 }
 
-// applyChainSettingsDiff also reports each key's old and new value; the data is returned as is when nothing changed.
+// applyChainSettingsDiff returns the original data when nothing changed.
 func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settingChange, error) {
 	if len(assignments) == 0 {
 		return data, nil, nil
@@ -279,7 +279,7 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 	if !anyChanged {
 		return data, changes, nil
 	}
-	// a head comment right above the first key would become the document's, with a blank line added; keep it on the key
+	// keep the first key's comment from becoming a document comment
 	if doc.HeadComment != "" && len(doc.Content[0].Content) > 0 && !headCommentStandsAlone(data) {
 		first := doc.Content[0].Content[0]
 		first.HeadComment = strings.TrimSuffix(doc.HeadComment+"\n"+first.HeadComment, "\n")
@@ -301,7 +301,6 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 	return result, changes, nil
 }
 
-// Leading comment lines are followed by a blank line.
 func headCommentStandsAlone(data []byte) bool {
 	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -313,7 +312,7 @@ func headCommentStandsAlone(data []byte) bool {
 	return false
 }
 
-// Stage the whole chains directory so the real loader validates it without touching live files.
+// Stage the directory so the loader can validate it without changing live files.
 func validateChainEdit(configFile, directory, filename string, data []byte, password *string) error {
 	stage, err := os.MkdirTemp("", "tenderduty-chain-*")
 	if err != nil {

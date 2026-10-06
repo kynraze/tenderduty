@@ -66,7 +66,7 @@ func TestReloadSaysWhoWasReloaded(t *testing.T) {
 }
 
 func TestPIDLiveProcessWithoutLockReplaced(t *testing.T) {
-	// no one holds the lock, so a live PID in the file is stale, as is our own after a crash in Docker
+	// without a held lock, even a live stored PID is stale
 	for name, pid := range map[string]int{"parent": os.Getppid(), "own": os.Getpid()} {
 		state := filepath.Join(t.TempDir(), "state.json")
 		if err := os.WriteFile(state+".pid", []byte(strconv.Itoa(pid)), 0600); err != nil {

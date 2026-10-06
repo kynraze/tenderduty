@@ -44,7 +44,7 @@ var (
 	tokenSymbolPattern  = regexp.MustCompile(`^[A-Za-z0-9]{1,12}$`)
 )
 
-// denomLabel turns arst into RST, "" when the denom is not a plain micro/atto denom.
+// denomLabel turns a plain micro/atto denom into a token label.
 func denomLabel(denom string) string {
 	if !stakingDenomPattern.MatchString(denom) {
 		return ""
@@ -52,7 +52,7 @@ func denomLabel(denom string) string {
 	return strings.ToUpper(denom[1:])
 }
 
-// tokenLabel prefers the bank symbol (erc20:0x... is DSTRX), then the a/u prefix rule.
+// tokenLabel prefers the bank symbol over the a/u prefix rule.
 func tokenLabel(denom, symbol string) string {
 	if tokenSymbolPattern.MatchString(symbol) {
 		return strings.ToUpper(symbol)
@@ -263,7 +263,7 @@ func saveChainEdit(options AddChainOptions, filename string, mode os.FileMode, d
 	return nil
 }
 
-// appendChainValidator adds the validator to the chain file, converting a single-validator file to a validators list.
+// appendChainValidator converts a single-validator file to a validators list.
 func appendChainValidator(ctx context.Context, options AddChainOptions, output io.Writer, fetch addChainFetchers, node string, validator *ValInfo, target *chainValidatorEdit) error {
 	label := options.Label
 	if label == "" {

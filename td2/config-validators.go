@@ -2,7 +2,7 @@ package tenderduty
 
 import "fmt"
 
-// Splits a multi-validator chain (Realio multistaking) into one per validator; each tries its own nodes, then the chain's.
+// Each validator tries its own nodes before shared chain nodes.
 func expandValidators(c *Config) ([]string, error) {
 	warnings := make([]string, 0)
 	for chainName, chain := range c.Chains {
@@ -17,7 +17,7 @@ func expandValidators(c *Config) ([]string, error) {
 			if node == nil {
 				return nil, fmt.Errorf("%s has an empty RPC node", chainName)
 			}
-			// a shared node belongs to no validator, alerting on it would page once per validator
+			// shared nodes would page once per validator
 			if node.AlertIfDown {
 				warnings = append(warnings, fmt.Sprintf("warn: %20s alert_if_down is ignored on the shared node %s, set it on a validator's own node", chainName, node.Url))
 			}

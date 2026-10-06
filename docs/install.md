@@ -74,7 +74,7 @@ sudo snap install go --classic
 brew install go
 ```
 
-Clone the repository before building, its dependencies use replace directives in `go.mod`.
+Clone the repository before building because its dependencies use replace directives in `go.mod`.
 
 ```
 git clone --branch main https://github.com/kynraze/tenderduty.git
@@ -86,9 +86,11 @@ go mod download
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
+Run `./tenderduty` or the equivalent `./tenderduty start`. It reads `config.yml` and `chains.d` from the current directory, else (Linux and macOS) `/etc/tenderduty` with the state in `/var/lib/tenderduty`. Without a config it says where it looked and how to create one: `tenderduty -example-config > config.yml`. `-home`, `-f`, `-cc` and `-state` choose other paths, see `tenderduty -h`.
+
 ## Run as a systemd service on Ubuntu
 
-One process for all chains, running as its own user. Build the binary as above, then:
+One process monitors all chains under its own user. Build the binary as above, then:
 
 ```shell
 sudo install -m 0755 tenderduty /usr/local/bin/tenderduty

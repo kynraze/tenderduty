@@ -21,9 +21,9 @@ This is a tool for validators running tendermint nodes. It sends notifications w
 
 Monitors a validator's performance across multiple chains
 
-- The main purpose of tenderduty is to monitor consensus state, and alert if the validator is missing blocks. This can be based on consecutive misses or on a percentage missed within the slashing window.
-- Alerting if jailed, tombstoned, or inactive.
-- Optional alerts for missed proposals, jail risk, governance proposals, scheduled upgrades and Celestia signalling and Fibre.
+- Monitors consensus state with one alert that follows consecutive missed blocks through jail risk, then jailing or leaving the active set.
+- Alerting if jailed, tombstoned, or inactive; available slash amounts and double-sign evidence appear in the alert.
+- Governance proposals, scheduled upgrades and Celestia version signalling are on by default. Missed proposals and Celestia Fibre are optional.
 - Optional quiet hours: quieter alerts wait until morning.
 - Daily and weekly reports.
 - Alert destinations can be customized for each chain.
@@ -38,11 +38,11 @@ Sends an alert to any of four destinations: Pagerduty, Discord, Telegram, or Sla
 A dashboard for displaying status.
 
 - The missed block grid was heavily influenced by the uptime display on [ping.pub](https://ping.pub). *Many thanks for the inspiration!*
-- The overview shows the last 48 blocks beside each validator, a chain's detail shows its last 512.
+- The overview shows the last 48 blocks beside each validator. Chain details show the last 512.
 - Displays a table showing validator and node status.
 - Filters to focus on chains that need attention.
 - Designed intentionally for maximum density for validators on a lot of chains.
-- Four themes and custom colors: **Customize** in the dashboard. Settings are saved in the browser, not in `config.yml`.
+- Four themes and custom colors under Customize in the dashboard. The browser saves these settings separately from `config.yml`.
 - Optionally shows a real-time stream of log messages with details about ongoing health checks.
 
 ![dashboard screenshot](dash.png)
@@ -87,7 +87,7 @@ Dashboard:
 Notifications:
 
 * For Discord, Telegram and Slack it will only send an alert on a new alarm and when the alarm clears. Pagerduty has a little more nuance.
-* Each event is one message, shown as a card: the chain and what happened, then a line per fact. A cleared alert says how long it lasted. Pagerduty gets plain text.
+* Each event appears as a card with the chain, what happened and a line per fact. Recovery cards show the duration. Pagerduty gets plain text.
 * Failed deliveries are retried and survive a restart. After a crash the last message may be sent twice.
 * A tombstone is sent once and never cleared in a chat.
 * Pagerduty:

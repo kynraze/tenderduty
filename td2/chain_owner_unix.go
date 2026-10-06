@@ -9,9 +9,8 @@ import (
 	"syscall"
 )
 
-// chainFileOwner picks the mode and owner for the file written at filename, -1 leaving an id alone.
-// A replaced file keeps its owner and mode; a new one takes the directory's group, group-readable
-// when the directory is group-accessible.
+// chainFileOwner returns the file mode and owner; -1 leaves an ID unchanged.
+// Replacements keep their owner and mode; new files inherit the directory group and read access.
 func chainFileOwner(filename string, replace bool, mode os.FileMode) (os.FileMode, int, int) {
 	if replace {
 		if info, err := os.Stat(filename); err == nil {
@@ -34,7 +33,7 @@ func chainFileOwner(filename string, replace bool, mode os.FileMode) (os.FileMod
 	return 0600, -1, int(stat.Gid)
 }
 
-// chownTemp ignores EPERM: only root can give files away, and others have nothing to fix.
+// chownTemp ignores EPERM when the caller cannot change ownership.
 func chownTemp(file *os.File, uid, gid int) error {
 	if uid < 0 && gid < 0 {
 		return nil
@@ -45,7 +44,7 @@ func chownTemp(file *os.File, uid, gid int) error {
 	return nil
 }
 
-// makeChainDirectory creates the chain directory as 0750 with its parent's group, leaving an existing one alone.
+// makeChainDirectory creates a missing directory as 0750 with its parent group.
 func makeChainDirectory(directory string) error {
 	_, statErr := os.Stat(directory)
 	if err := os.MkdirAll(directory, 0750); err != nil || statErr == nil {

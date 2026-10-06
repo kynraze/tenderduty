@@ -39,7 +39,7 @@ func acquirePID(stateFile string) (func(), error) {
 	if err != nil || !os.SameFile(info, current) {
 		return fail(fmt.Errorf("PID file changed during startup; retry"))
 	}
-	// the lock is the proof nobody else runs; a stored PID can be this process again (Docker PID 1)
+	// PID reuse, including Docker PID 1, makes the lock necessary
 	if err := file.Truncate(0); err != nil {
 		return fail(err)
 	}

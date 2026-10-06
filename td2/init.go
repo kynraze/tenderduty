@@ -30,7 +30,7 @@ func init() {
 
 var logs = make(chan interface{}, 128)
 
-// cliMode drops the loader's progress lines and prints its warnings plainly, for tenderduty chain.
+// cliMode hides loader progress and formats warnings for chain commands.
 var cliMode bool
 
 func l(v ...any) {

@@ -6,15 +6,17 @@
 
 Tenderduty monitors Tendermint validators and alerts when they miss blocks, get jailed, or a node goes down.
 
-This is a fork of [blockpane/tenderduty](https://github.com/blockpane/tenderduty) maintained by [Kynraze](https://github.com/kynraze). Configs from the original still load. What's different:
+This is a fork of [blockpane/tenderduty](https://github.com/blockpane/tenderduty) maintained by [Kynraze](https://github.com/kynraze). Configs from the original still load. This fork includes:
 
-- New dashboard with filters, chain details and themes.
-- Alerting fixes: no false alerts after restarts, PagerDuty incidents resolve, alerts survive state file problems.
+- Dashboard with filters, chain details and themes.
+- Fixes for false alerts after restarts, unresolved PagerDuty incidents and alerts lost to state file problems.
 - Realio multistaking: several validators on one chain, each with its own nodes.
-- Reload with `tenderduty reload`, SIGHUP or file watching, keeping unchanged chains and their state.
+- Reload with `tenderduty reload` or SIGHUP, keeping unchanged chains and their state.
 - Manage chain files with `tenderduty chain add/set/remove/list`.
 - Daily and weekly reports for Telegram, Discord and Slack.
-- Celestia Fibre, signal, governance and upgrade alerts.
+- One staged signing alert: missing blocks, close to jail, then jailed or out of the active set.
+- Governance and upgrade alerts, including Celestia version signalling; optional missed block proposals.
+- Celestia Fibre: provider checks, metrics from Fibre itself, endorsements and a dashboard tab, see [fibre.md](docs/fibre.md).
 - Docker image at `ghcr.io/kynraze/tenderduty`.
 
 ![dashboard screenshot](docs/dash.png)
@@ -48,9 +50,9 @@ See [installation](docs/install.md) for Docker Compose, systemd and dashboard ac
 
 ## Configuration
 
-Shared settings go in `config.yml`, with `alert_defaults` for the alerts every chain uses. Each chain goes in its own file in `chains.d`, named after the chain: `chains.d/Osmosis.yml` is "Osmosis", the label ends at the first dot. Start from [examples/](examples).
+Shared settings go in `config.yml`, with `alert_defaults` for the alerts every chain uses. Each chain goes in its own file in `chains.d`, named after the chain: `chains.d/Osmosis.yml` is "Osmosis", the label ends at the first dot. Start from [examples/](examples), or print one: `tenderduty -example-config`, `-example-chain`, `-example-celestia`. Warnings for unknown settings name the closest known one.
 
-Edit, then run `tenderduty reload` to apply without a restart.
+After editing, run `tenderduty reload` to apply the settings that support reload.
 
 ## Options
 
@@ -63,6 +65,7 @@ Usage:
   tenderduty [command]
 
 Available Commands:
+  start       Run tenderduty (the same as no command)
   chain       Add, change, remove or list chains
   reload      Reload a running tenderduty
   help        Help about any command
@@ -76,6 +79,7 @@ Flags:
   -state string              state file (default ".tenderduty-state.json", or <home>/.tenderduty-state.json)
   -example-config            print an example config.yml and exit
   -example-chain             print an example chains.d/<Chain>.yml and exit
+  -example-celestia          print an example chains.d/Celestia.yml with Fibre and exit
   -h, -help                  help for tenderduty
 
 Remote config (see docs/remote.md):

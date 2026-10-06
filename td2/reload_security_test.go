@@ -34,7 +34,7 @@ func TestReloadKeepsFibreTokenWhileTheListenerIsOpen(t *testing.T) {
 		return response.Code
 	}
 
-	// the new file looks fine alone: loopback needs no token. The old 0.0.0.0 listener stays, so it must keep one.
+	// the running listener stays on 0.0.0.0 and still needs a token
 	write("  listen: 127.0.0.1:4318\n")
 	err := c.reload(filename, chains, &password)
 	c.workers.Wait()
@@ -48,7 +48,7 @@ func TestReloadKeepsFibreTokenWhileTheListenerIsOpen(t *testing.T) {
 		t.Fatalf("the listener answered %d without the token after a refused reload", got)
 	}
 
-	// changing the token is fine, and still applies at once
+	// token changes apply on reload
 	write("  listen: 127.0.0.1:4318\n  token: other\n")
 	if err := c.reload(filename, chains, &password); err != nil {
 		t.Fatal(err)

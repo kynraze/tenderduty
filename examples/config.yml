@@ -101,73 +101,42 @@ healthcheck:
 #   # Serve every metric Fibre exports on the Prometheus endpoint (needs prometheus_enabled).
 #   export_raw: no
 
-# Daily and weekly reports to the alert destinations of every chain. See docs/config.md.
-# reports:
-#   daily: "09:00"            # local time in timezone, empty is off
-#   weekly: "monday 09:00"
-#   timezone: Asia/Jakarta    # IANA name or UTC+7, default the quiet hours timezone, else UTC
-#   include_testnets: yes
+# Daily and weekly reports to the alert destinations of every chain. Empty is off. See docs/config.md.
+reports:
+  daily: ""                 # e.g. "09:00", local time in timezone
+  weekly: ""                # e.g. "monday 09:00"
+  timezone: ""              # Asia/Jakarta or UTC+7, default the quiet hours timezone, else UTC
+  include_testnets: yes
 
 # Which alerts to send. They apply to every chain unless the chain's file overrides them.
 alert_defaults:
-  # If the chain stops seeing new blocks, should an alert be sent?
-  stalled_enabled: yes
-  # How long a halted chain takes in minutes to generate an alarm.
-  stalled_minutes: 10
-
-  # Most basic alarm, you just missed x blocks ... would you like to know?
-  consecutive_enabled: yes
-  # How many missed blocks should trigger a notification?
-  consecutive_missed: 5
-  # Severity of this alert.
-  consecutive_priority: critical
-
-  # Alert when this percentage of the slashing window is missed?
-  percentage_enabled: no
-  # What percentage should trigger the alert?
-  percentage_missed: 10
-  # Severity of this alert.
-  percentage_priority: warning
-
-  # Missed proposals: the validator was due to propose a block but another validator did.
-  # Alerts when proposal_missed happen within proposal_minutes.
-  proposal_enabled: no
-  proposal_missed: 3
-  proposal_minutes: 60
-  proposal_priority: warning
-
-  # Alert when this percent of the misses allowed before jailing has been used.
-  jail_risk_enabled: no
-  jail_risk_percent: 50
-  # Also alert if, at the chain's block time, the validator would be jailed within this many minutes.
-  jail_risk_minutes: 60
-  jail_risk_priority: critical
-
-  # Governance: a message when a proposal opens for voting, and a reminder when voting ends within
-  # gov_remind_minutes without a vote.
-  gov_enabled: no
-  gov_remind_minutes: 60
-  gov_priority: info
-
-  # Upgrades scheduled in x/upgrade: a message with height and estimated time, and a reminder before it.
-  upgrade_enabled: no
-  upgrade_remind_minutes: 60
-  upgrade_priority: warning
-
-  # Celestia x/signal: messages when signal_percent of the voting power has signalled the next version
-  # and this validator has not, and when the upgrade threshold is reached or the upgrade is scheduled.
-  # Chains without x/signal are skipped, so this can be on for every chain.
-  signal_enabled: no
-  signal_percent: 10
-  signal_remind_minutes: 60
-  signal_priority: warning
+  # On by default: missed blocks (5 in a row, then close to jail, then jailed), stalled chain, no RPC nodes,
+  # governance, upgrades (and Celestia version signalling). Set any *_enabled to no to turn it off.
+  consecutive_missed: 5 # Blocks missed in a row before the warning.
+  jail_risk_percent: 90 # Percent of allowed misses used before the critical alert.
+  jail_risk_minutes: 60 # Also alert when jailing is within this many minutes while missing.
+  stalled_minutes: 10 # Minutes without a new block before alerting.
+  gov_remind_minutes: 60 # Final reminder before voting ends without a vote.
+  gov_early_remind_percent: 25 # Warning at this percent of voting time left; 0 is off.
+  upgrade_remind_minutes: 60 # Reminder before the scheduled upgrade.
+  # Celestia version signalling: warn when this share of voting power signalled and this validator has not,
+  # remind critically at the second share, and when an own node is not ready this long before the upgrade.
+  # signal_percent: 5
+  # signal_remind_percent: 66
+  # signal_remind_minutes: 60
+  # info, warning, error or critical. Governance notices default to info, early reminders are warning, final reminders critical.
+  # gov_severity: info
+  missed_proposal_enabled: no # Missed block proposals are optional.
+  # missed_proposal_count: 3 # Misses within missed_proposal_minutes that alert.
+  # missed_proposal_minutes: 60
+  # missed_proposal_severity: warning
 
   # Celestia Fibre: alert when the validator is not a registered Fibre provider, its Fibre host is
   # unreachable, or the host's certificate is not this validator's. With fibre_metrics on, also alerts on
   # what Fibre reports. Run tenderduty on a different machine from Fibre. See docs/fibre.md.
   fibre_enabled: no
   # Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.
-  fibre_priority: warning
+  fibre_severity: warning
   # Hostname Fibre reports as service.instance.id. Only needed when several chains have fibre_enabled; set it
   # in each chain's file, not here.
   # fibre_instance: fibre-host-1
@@ -175,8 +144,6 @@ alert_defaults:
   # fibre_storage_percent: 90
   # Alert when Fibre has stored no upload for this many minutes, 0 is off. Only for steady uploads.
   # fibre_idle_minutes: 0
-
-  # Should an alert be sent if the validator is not in the active set (jailed, tombstoned, unbonding)?
-  alert_if_inactive: yes
-  # Should an alert be sent if no RPC servers are responding? (Uses node_down_alert_minutes)
-  alert_if_no_servers: yes
+  # fibre_endorsement_alert: no
+  # fibre_endorsement_blobs: 50
+  # fibre_endorsement_minutes: 120

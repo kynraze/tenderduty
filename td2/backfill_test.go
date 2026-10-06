@@ -15,7 +15,7 @@ func TestBackfillFillsUnobservedHeights(t *testing.T) {
 		proposer, flag := "OTHER", 2
 		switch height {
 		case "97":
-			flag = 1 // absent
+			flag = 1
 		case "98":
 			proposer = "ABCD"
 		case "99":

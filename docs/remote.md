@@ -1,8 +1,8 @@
 # Loading Remote Configurations
 
-A configuration file can be loaded over HTTP/HTTPS, useful for containers where a decryption secret can be passed in an environment variable. The file must be encrypted with a password. **Tenderduty refuses to load a plaintext configuration remotely.**
+Tenderduty can load a configuration file over HTTP/HTTPS, including in containers that receive the decryption secret through an environment variable. The file must be encrypted with a password. Tenderduty refuses plaintext remote configurations.
 
-*Note: the remote file is not polled. Fetch changes with `tenderduty reload` or a restart.*
+The remote file is not polled. Fetch changes with `tenderduty reload` or a restart.
 
 The [encryption](../td2/encryption.go) is AES-256 with an authenticated SHA-256 HMAC, and keys derived with Argon2id. Use a good password.
 

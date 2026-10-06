@@ -165,8 +165,8 @@ func fetchRegistryList(ctx context.Context, url string) (*registryResults, error
 	return chains, nil
 }
 
-// refreshRegistry updates the chain id to registry path map from the mainnet and testnet registries, the public fallback looks nodes up by it.
-// A chain id in both keeps its mainnet entry, and one registry failing does not drop the other.
+// refreshRegistry maps chain IDs to mainnet and testnet paths for public node lookup.
+// Mainnet wins duplicate IDs; a failed registry refresh keeps its entries.
 func refreshRegistry(ctx context.Context) error {
 	mainnet, mainErr := fetchRegistryList(ctx, registryJson)
 	testnet, testErr := fetchRegistryList(ctx, testnetRegistryJson)

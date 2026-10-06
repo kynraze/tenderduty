@@ -2,7 +2,7 @@ package dash
 
 import "sync"
 
-// broadcaster sends to every websocket client; a client that can't keep up misses messages.
+// broadcaster drops messages for clients that cannot keep up.
 type broadcaster struct {
 	mux       sync.Mutex
 	listeners map[chan []byte]struct{}

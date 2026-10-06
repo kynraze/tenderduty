@@ -14,8 +14,8 @@ Enable with `prometheus_enabled` and `prometheus_listen_port` in [config.md](con
 | `tenderduty_missed_block_window` | The missed block (slashing) window. |
 | `tenderduty_missed_blocks` | Blocks missed without a precommit or prevote seen, since tenderduty started. |
 | `tenderduty_missed_blocks_for_window` | Missed blocks in the slashing window, regardless of precommit or prevote. |
-| `tenderduty_missed_blocks_precommit_present` | Blocks missed with a precommit seen, since start. |
-| `tenderduty_missed_blocks_prevote_present` | Blocks missed with a prevote seen, since start. |
+| `tenderduty_missed_blocks_precommit_present` | Late precommits: the precommit was seen but missed the commit, since start. |
+| `tenderduty_missed_blocks_prevote_present` | Prevote only: a prevote was seen but no precommit, since start. |
 | `tenderduty_misses_before_jail` | Blocks that can still be missed in the window before jailing. |
 | `tenderduty_missed_proposals` | Blocks the validator was due to propose but another validator did, since start. |
 | `tenderduty_proposed_blocks` | Blocks proposed, since start. |

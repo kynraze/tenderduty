@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// tgMention is someone who asked to be pinged with /mentionme, by id so it works without a username.
+// tgMention stores /mentionme users by ID, including those without usernames.
 type tgMention struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
@@ -24,7 +24,7 @@ func (m tgMention) link() string {
 	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, m.ID, html.EscapeString(m.Name))
 }
 
-// telegramMentions is the config names (escaped) then the /mentionme links as HTML, already safe to send.
+// telegramMentions returns escaped config names and user links as HTML.
 func telegramMentions(configured []string) string {
 	parts := make([]string, 0, len(configured))
 	for _, name := range configured {

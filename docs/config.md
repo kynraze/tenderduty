@@ -2,7 +2,7 @@
 
 `config.yml` holds the settings every chain shares: the dashboard, alert destinations, quiet hours and `alert_defaults`. Each chain goes in its own file in `chains.d`, see [chains.md](chains.md). Examples are in [examples/](../examples).
 
-**ProTip:** With only the binary or the docker image, `-example-config` prints [examples/config.yml](../examples/config.yml) and `-example-chain` prints [examples/chains.d/Osmosis.yml](../examples/chains.d/Osmosis.yml):
+With the binary or the docker image, `-example-config` prints [examples/config.yml](../examples/config.yml) and `-example-chain` prints [examples/chains.d/Osmosis.yml](../examples/chains.d/Osmosis.yml):
 
 ```
 $ tenderduty -example-config > config.yml
@@ -34,17 +34,24 @@ A few notes on how Go handles YAML:
 * Booleans can be specified with either true/false or yes/no
 * If a setting is omitted it will default to an empty string for strings, zero for numbers, false for booleans, and nil for arrays and structures.
 
-Unknown settings, missing credentials and invalid RPC URLs are logged as warnings.
+Unknown settings, missing credentials and invalid RPC URLs are logged as warnings. An unknown setting names the closest known one: `warning: alerts.gov_priority is not a setting; did you mean alerts.gov_severity?`
 
 ## Shared alert settings
 
-Set `alert_defaults` once for every chain. A chain's own `alerts` only needs what differs.
+Set shared alerts in `alert_defaults`. Each chain's `alerts` overrides only the settings that differ. Missed blocks, stalled chains, no RPC nodes, governance and upgrades (including Celestia signalling) are on by default. Set `missed_blocks_enabled`, `stalled_enabled`, `alert_if_no_servers`, `gov_enabled` or `upgrade_enabled` to `no` to turn a family off. Missed block proposals and Fibre are off by default.
 
 ```yaml
 # config.yml
 alert_defaults:
-  consecutive_enabled: yes
   consecutive_missed: 5
+  jail_risk_percent: 90
+  jail_risk_minutes: 60
+  stalled_minutes: 10
+  gov_remind_minutes: 60
+  gov_early_remind_percent: 25
+  upgrade_remind_minutes: 60
+  missed_proposal_enabled: no
+  fibre_enabled: no
 ```
 
 ```yaml
@@ -53,7 +60,7 @@ alerts:
   consecutive_missed: 3
 ```
 
-Several validators on one chain, like Realio multistaking: see [chains.md](chains.md#several-validators-on-one-chain).
+For several validators on one chain, including Realio multistaking, see [chains.md](chains.md#several-validators-on-one-chain).
 
 ## Reload
 
@@ -75,6 +82,7 @@ The CLI reads `<state file>.pid`, so use the same state path and working directo
 - Applied at once: alert thresholds, destinations, credentials, mentions, `min_severity`, `extra_info`, quiet hours, `alert_defaults`, Fibre alert settings, `fibre_metrics.token`, Telegram commands, reports, `group_node_alerts`, `group_wait_seconds`, `nodes[].server`.
 - Needs a restart: dashboard and Prometheus enable/port, `hide_logs`, healthcheck, `fibre_metrics` listen/TLS.
 - Unchanged chains keep their state and alarms. Added chains start, removed chains stop and their alarms resolve as "No longer watched". A changed chain id, validator or nodes restarts that chain only.
+- The log names what was applied: `reloaded config: settings applied: quiet_hours.start; 0 added, 0 removed, 0 restarted, 1 updated, 0 settings need a restart`, or `reloaded config: no changes`.
 - A failed load leaves the old configuration running, logs the problems and sends a notice to the enabled Telegram, Discord and Slack destinations.
 - A reload that drops `fibre_metrics.token` is refused while the running listener is open to the network; restart tenderduty to apply it.
 
@@ -88,9 +96,9 @@ The CLI reads `<state file>.pid`, so use the same state path and working directo
 | --- | --- |
 | `enable_dashboard` | Enable the dashboard. |
 | `listen_port` | TCP port of the dashboard. |
-| `hide_logs` | Disable the log feed and hide most node details, for a public dashboard. Also hides Fibre failure reasons, identity errors, version and resource figures. Not fully vetted against leaking node names. Needs a restart. |
-| `node_down_alert_minutes` | Minutes to wait before alerting that a node is down. |
-| `node_down_alert_severity` | Severity of node down alerts: info, warning, error or critical. |
+| `hide_logs` | Disable the log feed and hide the RPC node list (with node versions) and error details, for a public dashboard, and the node lines of Telegram `/status`. Also hides Fibre failure reasons and identity errors; runtime metrics and Fibre's version stay. Not fully vetted against leaking node names. Needs a restart. |
+| `node_down_alert_minutes` | Minutes to wait before alerting that a node is down. 3 when empty, under 3 can give false alarms. |
+| `node_down_alert_severity` | Severity of node down alerts: info, warning, error or critical. Critical when empty. |
 | `group_node_alerts` | One Telegram, Discord and Slack message for nodes of one server that go down together. Default no. PagerDuty still gets one incident per node. |
 | `group_wait_seconds` | Seconds a node down alert waits for others of its server. Default 60, minimum 10. |
 | `prometheus_enabled` | Enable the prometheus exporter, see [prometheus.md](prometheus.md). |
@@ -98,7 +106,7 @@ The CLI reads `<state file>.pid`, so use the same state path and working directo
 
 ## Alert Destinations
 
-Enabling a destination in `config.yml` is enough, every chain uses it. A chain only says something to leave it out:
+Every chain uses destinations enabled in `config.yml`. To exclude a chain, disable the destination in its alerts:
 
 ```yaml
 # chains.d/Osmosis.yml
@@ -138,7 +146,7 @@ alerts:
 | `telegram.api_key` | Bot token from @BotFather, see [telegram.md](telegram.md). |
 | `telegram.channel` | Chat id, see [telegram.md](telegram.md). |
 | `telegram.commands` | Answer `/status`, `/report` and `/mentionme`. Off by default, see [telegram.md](telegram.md). |
-| `telegram.admins` | Telegram user ids allowed to send commands in a group. |
+| `telegram.admins` | Telegram user ids allowed to send commands in a group. A channel needs none. |
 
 ## Slack Settings
 
@@ -159,7 +167,7 @@ Alerts below `min_severity` wait until the quiet hours end, and are sent then if
 | `quiet_hours.timezone` | IANA name (`Europe/Berlin`, follows daylight saving) or fixed offset (`UTC+7`, `UTC-05:30`). UTC when empty. |
 | `quiet_hours.min_severity` | Severity sent anyway. Critical when empty. |
 
-With `critical`, jailing, a stopped chain, all RPC nodes failing, consecutive misses and jail risk still wake you. Governance proposals, upgrades, missed proposals and being able to unjail wait. `percentage_priority` is `warning` by default, so set it to `critical` if percentage alerts should wake you.
+With `critical`, alerts for a node down (`node_down_alert_severity`), jail risk, jailing or leaving the active set, a stalled chain, all RPC nodes failing, scheduled upgrades and upgrade or governance reminders are sent immediately. The first missed-block stage, a signal not sent, missed block proposals, Fibre and governance notices wait by default. `missed_proposal_severity`, `fibre_severity` and `gov_severity` control which of those are sent immediately.
 
 ## Health Check Settings
 
@@ -171,7 +179,7 @@ With `critical`, jailing, a stopped chain, all RPC nodes failing, consecutive mi
 
 ## Fibre Metrics
 
-Receives the OTLP/HTTP metrics a Celestia Fibre server exports. Off unless `listen` is set. Setup and alerts are in [fibre.md](fibre.md); the per-chain alert settings are in [chains.md](chains.md). A request over 1 MiB (4 MiB unzipped) is refused, and past 4 decoded at once the rest get a 503, which exporters retry.
+Receives the OTLP/HTTP metrics a Celestia Fibre server exports. Off unless `listen` is set. Setup and alerts are in [fibre.md](fibre.md); the per-chain alert settings are in [chains.md](chains.md). Requests over 1 MiB (4 MiB unzipped) are refused. At most 4 requests are decoded at once; excess requests get a 503, which exporters retry.
 
 | Config Setting | Description |
 | --- | --- |
@@ -194,8 +202,9 @@ reports:
 
 Empty `daily` or `weekly` turns that report off. `timezone` takes an IANA name or an offset like `UTC+7`; it defaults to the quiet hours timezone, then UTC. Applies on reload.
 
-- Reports show signing, voting power and rank changes, delegators, incidents, votes due, scheduled upgrades and Fibre totals. Weekly reports compare with the previous week. Unknown numbers say `unavailable`.
-- Each enabled Telegram, Discord and Slack destination gets one report for its chains. No mentions, quiet hours don't apply, PagerDuty gets none.
+- Daily signing shows missed blocks with late and prevote-only counts. Proposer turns appear separately and are condensed in the weekly summary.
+- Reports show signing, voting power and rank changes, delegators, incidents, votes due, scheduled upgrades and Fibre totals (shards stored, failed, `endorsed X of Y`, signing). A jailed validator leads with `Jailed since ...`. Weekly reports compare with the previous week. Unknown numbers say `unavailable`.
+- Each enabled Telegram, Discord and Slack destination gets one report for its chains without mentions or quiet-hour delays. PagerDuty receives no reports.
 - Testnets are included by default. Set `testnet: yes` or `no` in a chain file to override the registry's `network_type`; unknown chains count as mainnet.
 - With Telegram commands on, `/report` and `/report weekly` show the current report.
 - Reports missed while tenderduty was down are sent up to six hours late, marked `(late)`.

@@ -57,7 +57,7 @@ func Reload(stateFile string, output io.Writer) error {
 	return nil
 }
 
-// reloadAfterEdit says whether a saved change is live; reload is replaceable for tests.
+// reloadAfterEdit reports whether a saved change is live; tests may replace reload.
 func reloadAfterEdit(stateFile string, output io.Writer, reload func(string) (int, error)) {
 	if reload == nil {
 		reload = reloadProcess

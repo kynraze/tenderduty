@@ -17,7 +17,7 @@ import (
 func TestNotificationErrorsHideTokens(t *testing.T) {
 	auditConfig(t)
 	const token = "123456:FAKE-bot-token_abc"
-	// nothing listens on port 1, the connection is refused at once
+	// port 1 is expected to refuse connections
 	unreachable := "http://127.0.0.1:1/bot" + token + "/sendMessage?key=" + token
 	check := func(name string, err error) {
 		t.Helper()

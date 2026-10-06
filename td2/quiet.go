@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// QuietHoursConfig holds back alerts below MinSeverity during part of the day, they go out when it ends if still active.
+// QuietHoursConfig delays alerts below MinSeverity until the window ends.
 type QuietHoursConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	Start       string `yaml:"start"`    // "23:00"
@@ -33,7 +33,7 @@ var (
 // offsetZone matches a fixed offset like UTC+7.
 var offsetZone = regexp.MustCompile(`^(?i:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?$`)
 
-// loadTimezone takes an IANA name (follows daylight saving) or a fixed offset like UTC+7. Empty is UTC.
+// loadTimezone accepts IANA names or fixed offsets; empty means UTC.
 func loadTimezone(name string) (*time.Location, error) {
 	name = strings.TrimSpace(name)
 	if location, err := time.LoadLocation(name); err == nil {
@@ -98,7 +98,7 @@ func (q *QuietHoursConfig) active(now time.Time) bool {
 	return minute >= q.start || minute < q.end
 }
 
-// holds is false for a recovery, it is never held.
+// holds excludes recoveries.
 func (q *QuietHoursConfig) holds(severity string, resolved bool, now time.Time) bool {
 	return !resolved && q.active(now) && severityRank(severity) < severityRank(q.MinSeverity)
 }

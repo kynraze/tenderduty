@@ -15,7 +15,7 @@ type queuedNotification struct {
 	Destination notifyDest `json:"destination"`
 	pendingRecovery
 	Resolved bool `json:"resolved"`
-	// Queued is what a node down alert waits from, for others on its server
+	// Queued starts the node-down grouping wait
 	Queued   time.Time `json:"queued,omitempty"`
 	snapshot *alertMsg // credentials kept only in memory, for removed chains
 }
@@ -156,7 +156,7 @@ func (c *Config) queuedHead(key string) (queuedNotification, bool, bool) {
 	return alarms.headOf(key)
 }
 
-// headOf is a worker's next notification, and whether to skip it (raised and recovered unsent). notifyMux held.
+// headOf skips unsent recoveries and returns the next notification. notifyMux held.
 func (a *alarmCache) headOf(key string) (queuedNotification, bool, bool) {
 	var head *queuedNotification
 	for i := range a.Outbox {
@@ -298,7 +298,7 @@ func (client notificationClient) Do(request *http.Request) (*http.Response, erro
 	return resp, scrubURLError(err)
 }
 
-// scrubbedError is a *url.Error without its path and query, where bot tokens and webhook secrets live.
+// scrubbedError removes URL paths and queries that may contain credentials.
 type scrubbedError struct {
 	text string
 	err  error
@@ -307,7 +307,7 @@ type scrubbedError struct {
 func (e *scrubbedError) Error() string { return e.text }
 func (e *scrubbedError) Unwrap() error { return e.err }
 
-// scrubURLError reads "Post scheme://host: cause", for logs and alerts.
+// scrubURLError formats logs as "Post scheme://host: cause".
 func scrubURLError(err error) error {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {

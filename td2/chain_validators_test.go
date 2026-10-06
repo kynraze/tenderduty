@@ -264,7 +264,6 @@ func TestChainRemoveValidatorRefusals(t *testing.T) {
 	if err := ChainCommand(context.Background(), options, []string{"remove", "Multi", "--validator", "RIO", "--yes"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	// one entry is left: still a validators list, and the last one stays
 	data, _ := os.ReadFile(multi)
 	if !strings.Contains(string(data), "validators:") {
 		t.Fatalf("converted back:\n%s", data)
@@ -297,7 +296,6 @@ func TestAddExistingFileSays(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("got %v, want %q", err, want)
 	}
-	// moniker unreadable: the address
 	fetch.validator = func(_ context.Context, _, valoper string) (*ValInfo, error) {
 		if valoper == "celestiavaloper1test" {
 			return nil, errors.New("down")

@@ -273,7 +273,7 @@ func (c *Config) reportTick(now time.Time) {
 		if c.reportData.Last == nil {
 			c.reportData.Last = make(map[string]time.Time)
 		}
-		// Saved together so a restart cannot skip a queued report.
+		// Persist the report and queue entry together for restart recovery.
 		c.reportData.Last[schedule.kind] = at
 		c.reportData.Pending = append(c.reportData.Pending, jobs...)
 		c.reportsMux.Unlock()
@@ -311,7 +311,7 @@ func (c *Config) deliverReports() {
 			job.Next++
 			c.finishReportJob(job, job.Next == len(job.Parts))
 			if job.Next == len(job.Parts) {
-				// once per destination, however many parts it took
+				// count once per destination
 				note := ""
 				if job.Late {
 					note = " (late)"
