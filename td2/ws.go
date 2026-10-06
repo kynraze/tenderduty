@@ -21,10 +21,10 @@ const (
 	QueryNewRound string = `tm.event='NewRound'`
 )
 
-// subscriptions in the order they are requested, the request id is the index + 1.
+// subscription request IDs are indexes plus one.
 var subscriptions = []string{QueryNewBlock, QueryVote, QueryNewRound}
 
-// roundsId is the NewRound subscription; optional, a node refusing it isn't fatal.
+// roundsId is optional; refusing NewRound does not stop monitoring.
 const roundsId = 3
 
 // StatusType represents the various possible end states. Prevote and Precommit are special cases, where the node
@@ -120,6 +120,46 @@ func (cc *ChainConfig) WsRun() {
 		workers.Add(1)
 		go func() { defer workers.Done(); work() }()
 	}
+	slashBlocks := make(chan *WsReply, 64)
+	start(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case reply := <-slashBlocks:
+				val, _ := cc.validatorState()
+				cc.observeSlash(ctx, client.Remote(), reply.Value(), val)
+			}
+		}
+	})
+	var endorsementBlocks chan *WsReply
+	if cc.alertSettings().FibreAlerts {
+		endorsementBlocks = make(chan *WsReply, 64)
+		start(func() {
+			watcher := &cc.fibreEndorsements
+			lastHeight := startHeight
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case reply := <-endorsementBlocks:
+					var block rawBlock
+					if json.Unmarshal(reply.Value(), &block) != nil {
+						continue
+					}
+					height := block.Block.Header.Height.val()
+					if height <= 0 || (height <= lastHeight && height+heightReset >= lastHeight) {
+						continue
+					}
+					if height+heightReset < lastHeight {
+						watcher.slots = nil
+					}
+					lastHeight = height
+					watcher.observe(ctx, cc, &block)
+				}
+			}
+		})
+	}
 	start(func() { cc.processResults(ctx, results) })
 	start(func() { handleVotes(ctx, votes, results, address) })
 	start(func() {
@@ -151,6 +191,18 @@ func (cc *ChainConfig) WsRun() {
 			var target chan *WsReply
 			switch reply.Type() {
 			case "tendermint/event/NewBlock":
+				select {
+				case slashBlocks <- reply:
+				case <-ctx.Done():
+					return
+				}
+				if endorsementBlocks != nil {
+					select {
+					case endorsementBlocks <- reply:
+					case <-ctx.Done():
+						return
+					}
+				}
 				target = blocks
 			case "tendermint/event/Vote":
 				target = votes
@@ -186,11 +238,11 @@ const maxProposalMisses = 1000
 
 type signingTracker struct {
 	votes     map[int64]StatusType
-	proposals map[int64]bool // heights where another validator proposed in our place
+	proposals map[int64]bool // heights proposed by another validator on our round-0 turn
 	finalized int64
 }
 
-// consume returns the status, whether a proposal was missed, and whether the height is final.
+// consume returns block status, missed-proposal state and finality.
 func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool, bool) {
 	if update.Final && update.Height > 0 && update.Height+heightReset < tracker.finalized {
 		l("⚠️ block height went from", tracker.finalized, "to", update.Height, "- assuming the chain was reset")
@@ -275,7 +327,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 					cc.blocksResults = append([]int{-1}, cc.blocksResults[:len(cc.blocksResults)-1]...)
 				}
 			}
-			// average only back to back blocks, a gap would count the time we weren't watching
+			// average consecutive blocks only to exclude gaps in monitoring
 			if update.HeadHeight == previousHeight+1 && !previousTime.IsZero() {
 				if elapsed := time.Since(previousTime); cc.blockTime == 0 {
 					cc.blockTime = elapsed
@@ -317,13 +369,18 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			td.recordReportBlock(cc.name, time.Now(), status, missedProposal)
 			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss, metricMissedProposals: cc.statProposalMiss}
 			cc.stateMux.Unlock()
-			if status >= 0 && status < StatusSigned {
+			switch status {
+			case StatusPrecommit:
+				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId+": late precommit")
+			case StatusPrevote:
+				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId+": prevote only")
+			case Statusmissed:
 				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId)
 			}
 			if missedProposal {
 				l(info.Moniker, "missed proposing block", update.Height, "on", cc.ChainId)
 			}
-			// on connect, backfill heights with no data from the node's history
+			// backfill missing heights on connect
 			if client := cc.clientSnapshot(); !backfilled && client != nil {
 				backfilled = true
 				heights := cc.emptyHeights()
@@ -361,6 +418,9 @@ type signature struct {
 // rawBlock is a trimmed down version of the block subscription result, it contains only what we need.
 type rawBlock struct {
 	Block struct {
+		Data *struct {
+			Txs json.RawMessage `json:"txs"`
+		} `json:"data"`
 		Header struct {
 			Height          stringInt64 `json:"height"`
 			ProposerAddress string      `json:"proposer_address"`
@@ -403,7 +463,7 @@ func (r rawRound) first() bool {
 
 // handleBlocks consumes the channel for new blocks and when it sees one sends a status update. It's also
 // responsible for stalled chain detection and will shutdown the client if there are no blocks for a minute.
-// Rounds are watched too: a block we were the round 0 proposer for but someone else made is a missed proposal.
+// Count a missed proposal when the round-0 proposer did not make the block.
 func handleBlocks(ctx context.Context, blocks, rounds chan *WsReply, results chan StatusUpdate, address string) error {
 	live := time.NewTicker(time.Minute)
 	defer live.Stop()

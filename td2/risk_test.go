@@ -35,7 +35,7 @@ func TestRiskAlertDefaults(t *testing.T) {
 	configFile := filepath.Join(directory, "config.yml")
 	data := []byte(`
 alert_defaults:
-  jail_risk_enabled: yes
+  missed_blocks_enabled: yes
 chains:
   Juno:
     chain_id: juno-1
@@ -56,7 +56,7 @@ chains:
 		t.Fatalf("valid configuration was rejected: %v", problems)
 	}
 	alerts := c.Chains["Juno"].Alerts
-	if alerts.JailRiskPercent != 50 || alerts.JailRiskPriority != "critical" {
+	if alerts.JailRiskPercent != 90 || alerts.JailRiskMinutes != 60 {
 		t.Fatalf("missing risk defaults: %+v", alerts)
 	}
 }
@@ -64,10 +64,10 @@ chains:
 func TestJailRiskAlertFires(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "consensus", Window: 10_000, Missed: 3_000, MaxMissed: 5_000}}
-	chain.Alerts.JailRiskAlerts, chain.Alerts.JailRiskPercent, chain.Alerts.JailRiskPriority = true, 50, "critical"
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.JailRiskPercent = true, 50
 	c.Chains["Chain"] = chain
 	c.startWorker(chain.watch)
-	want := map[string]bool{"validator has used 50% of the misses allowed before jailing on test-chain": true}
+	want := map[string]bool{"validator is close to jail on test-chain": true}
 	for len(want) > 0 {
 		select {
 		case alert := <-c.alertChan:
@@ -88,12 +88,12 @@ func TestJailSoonAlertFires(t *testing.T) {
 	// 100 misses left at 6s a block is 10 minutes away
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", statConsecutiveMiss: 5, blockTime: 6 * time.Second,
 		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "consensus", Window: 10_000, Missed: 4_900, MaxMissed: 5_000}}
-	chain.Alerts.JailRiskAlerts, chain.Alerts.JailRiskPercent, chain.Alerts.JailRiskMinutes = true, 100, 60
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.JailRiskPercent, chain.Alerts.JailRiskMinutes = true, 100, 60
 	c.Chains["Chain"] = chain
 	c.startWorker(chain.watch)
 	select {
 	case alert := <-c.alertChan:
-		if alert.message != "validator will be jailed in under 60 minutes on test-chain if it keeps missing blocks" || alert.severity != "critical" {
+		if alert.message != "validator is close to jail on test-chain" || alert.severity != "critical" {
 			t.Fatalf("unexpected alert %+v", alert)
 		}
 	case <-time.After(3 * time.Second):

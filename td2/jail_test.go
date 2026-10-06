@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestJailMessages(t *testing.T) {
+func TestLegacyJailMessages(t *testing.T) {
 	until := time.Now().UTC().Truncate(time.Minute).Add(10 * time.Minute)
 	jailed := &alertMsg{chain: "AtomOne", severity: "critical", message: jailMessage(&ValInfo{Moniker: "Validator", Jailed: true, JailedUntil: until}, "atomone-1")}
 	if icon, label := jailed.header(); icon != "🚨" || label != "Jailed" {
@@ -46,28 +46,25 @@ func watchAlerts(t *testing.T, c *Config, chain *ChainConfig) map[string]*alertM
 	}
 }
 
-func TestJailedThenCanUnjail(t *testing.T) {
+func TestJailedPastUnjailTime(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Valcons: "consensus", Jailed: true, Window: 100, JailedUntil: time.Now().Add(-time.Minute).UTC().Truncate(time.Minute)}}
-	chain.Alerts.AlertIfInactive = true
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
 	got := watchAlerts(t, c, chain)
-	if len(got) != 2 || got["validator can unjail on test-chain"] == nil || got["validator can unjail on test-chain"].severity != "info" {
+	if len(got) != 1 || got["validator is jailed on test-chain"] == nil || got["validator is jailed on test-chain"].severity != "critical" {
 		t.Fatalf("alerts %v", got)
 	}
-	for message, alert := range got {
-		if strings.HasPrefix(message, "validator is jailed on test-chain\nCan unjail after ") && alert.severity == "critical" {
-			return
-		}
+	if summary := got["validator is jailed on test-chain"].summary(); !strings.Contains(summary, "jailed since ") || !strings.HasSuffix(summary, "can unjail now") {
+		t.Fatalf("jailed detail %q", summary)
 	}
-	t.Fatalf("no jailed alert in %v", got)
 }
 
 func TestTombstonedIsItsOwnAlert(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Valcons: "consensus", Jailed: true, Tombstoned: true, Window: 100, JailedUntil: time.Now().Add(-time.Minute)}}
-	chain.Alerts.AlertIfInactive = true
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
 	got := watchAlerts(t, c, chain)
-	if len(got) != 1 || got["validator is tombstoned on test-chain\nPermanent, the validator can't be unjailed"] == nil {
+	if len(got) != 1 || got["validator is no longer in the active set on test-chain"] == nil {
 		t.Fatalf("a tombstoned validator sent %v", got)
 	}
 }
@@ -77,7 +74,7 @@ func TestOldInactiveAlarmClearsWhenActive(t *testing.T) {
 	old := "validator is no longer active: validator is jailed"
 	alarms.AllAlarms["Chain"] = map[string]time.Time{old: time.Now()}
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Valcons: "consensus", Bonded: true, Window: 100}}
-	chain.Alerts.AlertIfInactive = true
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
 	got := watchAlerts(t, c, chain)
 	if alert := got[old]; alert == nil || !alert.resolved {
 		t.Fatalf("the alarm saved by an older version wasn't cleared: %v", got)

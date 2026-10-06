@@ -23,14 +23,17 @@ import (
 
 // ValInfo holds most of the stats/info used for secondary alarms. It is refreshed roughly every minute.
 type ValInfo struct {
+	SlashDoubleSign  string    `json:"slash_double_sign,omitempty"`
+	SlashDowntime    string    `json:"slash_downtime,omitempty"`
 	Moniker          string    `json:"moniker"`
+	Unbonding        bool      `json:"unbonding"`
 	Bonded           bool      `json:"bonded"`
 	Jailed           bool      `json:"jailed"`
 	Tombstoned       bool      `json:"tombstoned"`
 	JailedUntil      time.Time `json:"jailed_until"` // when it can unjail
 	Missed           int64     `json:"missed"`
 	Window           int64     `json:"window"`
-	Conspub          []byte    `json:"conspub"`           // 20-byte consensus address, not the key
+	Conspub          []byte    `json:"conspub"`           // 20-byte consensus address
 	ConsKey          []byte    `json:"conskey,omitempty"` // raw ed25519 public key, nil for other key types
 	Valcons          string    `json:"valcons"`
 	SigningUpdatedAt time.Time `json:"signing_updated_at"`
@@ -52,6 +55,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	info := &ValInfo{}
 	signingRead := false
 	previous, _ := cc.validatorState()
+	info.SlashDoubleSign, info.SlashDowntime = previous.SlashDoubleSign, previous.SlashDowntime
 	defer func() {
 		// Some consumer chains cannot answer slashing queries, but blocks can still be monitored.
 		if err != nil {
@@ -81,7 +85,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
 	// it's easier to ask people to provide valoper since it's readily available on
 	// explorers, so make it easy and lookup the consensus key for them.
-	info.Conspub, info.ConsKey, info.Moniker, info.Jailed, info.Bonded, err = getVal(ctx, client, cc.ValAddress)
+	info.Conspub, info.ConsKey, info.Moniker, info.Jailed, info.Bonded, err = getValStatus(ctx, client, cc.ValAddress, &info.Unbonding)
 	if err != nil {
 		return
 	}
@@ -94,7 +98,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		l(fmt.Sprintf("❌ %s (%s) is INACTIVE", cc.ValAddress, info.Moniker))
 	}
 
-	// voting power is display only; keep the last reading if the node can't list the set
+	// retain display-only voting power when the node cannot list the set
 	power, powerErr := getVotingPower(ctx, client.Remote(), info.Conspub)
 	if powerErr != nil {
 		power = votingPower{power: previous.VotingPower, total: previous.TotalPower, rank: previous.Rank, size: previous.ActiveSet}
@@ -159,6 +163,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	info.Missed = slash.ValSigningInfo.MissedBlocksCounter
 	info.JailedUntil = slash.ValSigningInfo.JailedUntil.UTC()
 	signingRead = true
+	slashHeight := resp.Response.Height
 
 	// finally get the signed blocks window, it rarely changes so only on (re)connect
 	if !first && previous.Valcons == info.Valcons {
@@ -183,6 +188,12 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 		if err != nil {
 			return
 		}
+		if !params.Params.SlashFractionDoubleSign.IsNil() {
+			info.SlashDoubleSign = params.Params.SlashFractionDoubleSign.String()
+		}
+		if !params.Params.SlashFractionDowntime.IsNil() {
+			info.SlashDowntime = params.Params.SlashFractionDowntime.String()
+		}
 		info.Window = params.Params.SignedBlocksWindow
 		info.MaxMissed = maxMissed(info.Window, params.Params.MinSignedPerWindow)
 		info.MaxValidators = getMaxValidators(ctx, client)
@@ -190,6 +201,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if info.Window <= 0 {
 		return errors.New("invalid signed blocks window")
 	}
+	cc.collectSlash(info, previous, first, slashHeight)
 	info.SigningUpdatedAt = time.Now()
 	cc.validatorMux.Lock()
 	cc.lastValInfo = cc.valInfo
@@ -224,6 +236,10 @@ func (e *validatorNotFoundError) Error() string {
 }
 
 func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
+	return getValStatus(ctx, client, valoper, nil)
+}
+
+func getValStatus(ctx context.Context, client *rpchttp.HTTP, valoper string, unbonding *bool) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
 	if strings.Contains(valoper, "valcons") {
 		_, bz, err := bech32.DecodeAndConvert(valoper)
 		if err != nil {
@@ -278,6 +294,11 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, con
 		return nil, nil, "", false, false, errors.New("could not get pubkey for" + valoper)
 	}
 
+	if unbonding != nil {
+
+		*unbonding = val.Validator.Status == 2
+
+	}
 	return pubBytes, consKey, val.Validator.GetMoniker(), val.Validator.Jailed, val.Validator.Status == 3, nil
 }
 
@@ -324,7 +345,7 @@ func (i *jsonInt) UnmarshalJSON(b []byte) error {
 	return err
 }
 
-// Only address and power are decoded, so unknown key types are fine; the set is sorted by power for the rank.
+// Decode address and power only to accept unknown key types; sort by power for rank.
 func getVotingPower(ctx context.Context, remote string, conspub []byte) (votingPower, error) {
 	result := votingPower{}
 	address := strings.ToUpper(hex.EncodeToString(conspub))

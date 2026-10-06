@@ -30,7 +30,6 @@ var (
 	registryCache = make(map[string]registryNodes) // by chain id
 )
 
-// Best rated first.
 func registryRpcs(ctx context.Context, chainId string) ([]string, error) {
 	registryMux.Lock()
 	cached, ok := registryCache[chainId]
@@ -69,14 +68,25 @@ type registryAPIs struct {
 	} `json:"rpc"`
 }
 
+type registryAsset struct {
+	Base       string `json:"base"`
+	Display    string `json:"display"`
+	Symbol     string `json:"symbol"`
+	DenomUnits []struct {
+		Denom    string `json:"denom"`
+		Exponent uint32 `json:"exponent"`
+	} `json:"denom_units"`
+}
+
 type registryChain struct {
-	NetworkType  string       `json:"network_type"`
-	ChainID      string       `json:"chain_id"`
-	Bech32Prefix string       `json:"bech32_prefix"`
-	PrettyName   string       `json:"pretty_name"`
-	ChainName    string       `json:"chain_name"`
-	BestApis     registryAPIs `json:"best_apis"`
-	Apis         registryAPIs `json:"apis"`
+	Assets       []registryAsset `json:"assets"`
+	NetworkType  string          `json:"network_type"`
+	ChainID      string          `json:"chain_id"`
+	Bech32Prefix string          `json:"bech32_prefix"`
+	PrettyName   string          `json:"pretty_name"`
+	ChainName    string          `json:"chain_name"`
+	BestApis     registryAPIs    `json:"best_apis"`
+	Apis         registryAPIs    `json:"apis"`
 }
 
 var errNotInRegistry = errors.New("not in the chain registry")
@@ -87,7 +97,6 @@ func (e registryStatusError) Error() string {
 	return fmt.Sprintf("registry returned status %d", int(e))
 }
 
-// Shared with chain add.
 func fetchRegistryChain(ctx context.Context, chainID string) (registryChain, error) {
 	pathMux.Lock()
 	entry := cosmosPaths[chainID]
@@ -134,10 +143,14 @@ func fetchRegistryFrom(ctx context.Context, base, path string) (registryChain, e
 		return registryChain{}, registryStatusError(resp.StatusCode)
 	}
 	result := struct {
-		Chain registryChain `json:"chain"`
+		Chain  registryChain   `json:"chain"`
+		Assets []registryAsset `json:"assets"`
 	}{}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&result); err != nil {
 		return registryChain{}, err
+	}
+	if len(result.Assets) > 0 {
+		result.Chain.Assets = result.Assets
 	}
 	reportNetworks.Store(result.Chain.ChainID, result.Chain.NetworkType == "testnet")
 	return result.Chain, nil
@@ -154,7 +167,7 @@ func websocketWorks(ctx context.Context, node string) bool {
 	return true
 }
 
-// The last working node is tried first. tryUrl also switches the chain to the node when it passes.
+// Try the last working node first; tryUrl switches the chain on success.
 func (cc *ChainConfig) publicFallback(tryUrl func(string) (string, bool, bool)) (string, bool) {
 	nodes, err := registryRpcs(cc.context(), cc.ChainId)
 	if err != nil {
