@@ -26,7 +26,7 @@ const (
 	maxWebsocketClients = 256
 )
 
-// limitClients answers 503 once limit requests are in flight, for handlers that stay open.
+// limitClients returns 503 when long-lived requests reach the limit.
 func limitClients(limit int, next http.HandlerFunc) http.HandlerFunc {
 	slots := make(chan struct{}, limit)
 	return func(writer http.ResponseWriter, request *http.Request) {
@@ -43,7 +43,9 @@ func limitClients(limit int, next http.HandlerFunc) http.HandlerFunc {
 func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	copy := *status
 	copy.Blocks = append([]int(nil), status.Blocks...)
+	copy.RPCNodes = append([]RPCNodeStatus(nil), status.RPCNodes...)
 	if hideLogs {
+		copy.RPCNodes = nil
 		copy.LastError = rex.ReplaceAllString(copy.LastError, "-redacted-")
 		copy.Fibre = copy.Fibre.withoutDetails()
 	}
@@ -93,6 +95,10 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 				}
 
 			case u := <-updates:
+				if message := fibreNotification(u); message != nil {
+					cast.send(message)
+					continue
+				}
 				// try to catch any accidental rpc endpoint leaks
 				u = statusSnapshot(u, hideLogs)
 				statusMux.Lock() // probably unnecessary
@@ -246,7 +252,7 @@ func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc 
 type CacheHandler struct{}
 
 func (ch CacheHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	// revalidate always so an upgrade never mixes old scripts with new markup
+	// revalidate scripts and markup on each request
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Powered-By", "https://github.com/kynraze/tenderduty")
 	http.FileServer(http.FS(rootDir)).ServeHTTP(writer, request)

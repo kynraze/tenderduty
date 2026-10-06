@@ -13,7 +13,7 @@ const statusNames = {
     '-1': 'unobserved'
 }
 let filter = 'all'
-// drawn height per chain and when it moved; a redraw continues the new-block animation instead of restarting it
+// retain drawn heights so redraws continue the new-block animation
 const drawnHeights = new Map()
 const newBlockMs = 700
 
@@ -54,9 +54,13 @@ function stateFor(chain) {
     if (chain.tombstoned) return { label: 'Tombstoned', tone: 'red', rank: 0 }
     if (chain.jailed) return { label: 'Jailed', tone: 'red', rank: 0 }
     if (chain.height <= 0 || chain.no_nodes === true) {
+        if (chain.active_alerts - (chain.notice_alerts || 0) > 0) return { label: 'Needs attention', tone: 'red', rank: 1 }
         return { label: 'No data', tone: 'unknown', rank: 1 }
     }
-    if (chain.active_alerts > 0) return { label: 'Needs attention', tone: 'red', rank: 2 }
+    if (chain.active_alerts > 0) {
+        if (chain.active_alerts - (chain.notice_alerts || 0) > 0) return { label: 'Needs attention', tone: 'red', rank: 2 }
+        return { label: chain.notice_label || 'Notice', tone: 'blue', rank: 3 }
+    }
     if (chain.monitoring === false) return { label: 'Monitoring interrupted', tone: 'amber', rank: 3 }
     if (chain.validator_stale) return { label: 'Validator info stale', tone: 'unknown', rank: 3 }
     if (chain.signing_stale) return { label: 'Signing info stale', tone: 'unknown', rank: 3 }
@@ -83,6 +87,17 @@ function votingPower(chain) {
     return { value: number(chain.voting_power), share, rank, detail: `${share} · rank ${rank}` }
 }
 
+// counts from the block history, which survives a restart
+function blockSummary(values) {
+    const c = { 'missed-proposal': 0, proposed: 0, signed: 0, precommit: 0, prevote: 0, missed: 0, unobserved: 0 }
+    for (const value of (Array.isArray(values) ? values : []).slice(0, 512)) c[statusNames[value] || 'unobserved']++
+    const total = Object.values(c).reduce((a, b) => a + b, 0) - c.unobserved
+    const missed = c.missed + c.precommit + c.prevote
+    let text = `${number(c.signed + c.proposed + c['missed-proposal'])} signed · ${number(c.proposed)} proposed · ${number(missed)} missed`
+    if (c['missed-proposal'] > 0) text += ` · ${number(c['missed-proposal'])} missed proposals`
+    return { total, text }
+}
+
 function blockTrace(values, limit, label, newAge) {
     const trace = element('div', 'block-tape')
     const recent = (Array.isArray(values) ? values : []).slice(0, limit)
@@ -97,7 +112,7 @@ function blockTrace(values, limit, label, newAge) {
         trace.firstChild.style.animationDelay = `-${newAge}ms`
     }
     trace.setAttribute('role', 'img')
-    trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts['missed-proposal']} missed proposals, ${counts.missed} missed, ${counts.precommit} precommit seen, ${counts.prevote} prevote seen, ${counts.unobserved} without data`)
+    trace.setAttribute('aria-label', `${label}: ${counts.signed} signed, ${counts.proposed} proposed, ${counts['missed-proposal']} missed proposals, ${counts.missed} missed, ${counts.precommit} late precommits, ${counts.prevote} prevote only, ${counts.unobserved} without data`)
     return trace
 }
 
@@ -131,8 +146,8 @@ function setStatus(update) {
 
 function renderSummary() {
     const values = [...chains.values()]
-    const attention = values.filter(chain => stateFor(chain).rank < 4)
-    const unavailable = values.filter(chain => stateFor(chain).label === 'No data')
+    const attention = values.filter(chain => stateFor(chain).tone === 'red')
+    const unavailable = values.filter(chain => chain.height <= 0 || chain.no_nodes === true)
     const degraded = values.filter(chain => chain.nodes > 0 && chain.healthy_nodes < chain.nodes)
     document.getElementById('chain-count').textContent = values.length
     document.getElementById('attention-count').textContent = attention.length
@@ -144,12 +159,43 @@ function renderSummary() {
     const priority = attention.sort((left, right) => stateFor(left).rank - stateFor(right).rank || left.name.localeCompare(right.name))[0]
     const section = document.getElementById('attention-section')
     section.hidden = !priority
+    const list = document.getElementById('priority-list')
+    list.replaceChildren()
     if (!priority) return
     document.getElementById('priority-count').textContent = `${attention.length} ${validatorLabel(attention.length)} ${attention.length === 1 ? 'needs' : 'need'} attention`
-    document.getElementById('priority-chain').textContent = priority.name
-    document.getElementById('priority-status').textContent = stateFor(priority).label
-    document.getElementById('priority-status').className = `status ${stateFor(priority).tone}`
-    document.getElementById('priority-detail').textContent = priority.last_error || `${priority.healthy_nodes} of ${priority.nodes} configured RPC endpoints responding`
+    for (const chain of attention.slice(0, 3)) {
+        const item = element('div', 'priority-chain')
+        const heading = element('div', 'alert-main')
+        heading.appendChild(element('strong', '', chain.name))
+        const state = stateFor(chain)
+        heading.appendChild(element('span', `status ${state.tone}`, state.label))
+        item.appendChild(heading)
+        const alerts = Array.isArray(chain.alerts) ? chain.alerts : []
+        for (const alert of alerts.slice(0, 3)) {
+            const line = element('div', 'priority-alert', alert.text)
+            if (alert.detail) line.appendChild(element('small', 'priority-detail', alert.detail))
+            item.appendChild(line)
+        }
+        if (alerts.length > 3) {
+            const more = element('button', 'priority-more', `+${alerts.length - 3} more`)
+            more.type = 'button'
+            more.setAttribute('aria-label', `Show ${alerts.length - 3} more alerts for ${chain.name}`)
+            more.addEventListener('click', () => showDetail(chain.name))
+            item.appendChild(more)
+        }
+        if (alerts.length === 0) item.appendChild(element('p', '', `${chain.healthy_nodes} of ${chain.nodes} configured RPC endpoints responding`))
+        if (chain.healthy_nodes < chain.nodes) {
+            const text = logsEnabled ? `${chain.nodes - chain.healthy_nodes} of ${chain.nodes} RPC endpoints unreachable` : 'RPC endpoints unreachable'
+            item.appendChild(element('p', 'priority-rpc', text))
+        }
+        list.appendChild(item)
+    }
+    if (attention.length > 3) {
+        const more = element('button', 'priority-more', `+${attention.length - 3} more validators need attention`)
+        more.type = 'button'
+        more.addEventListener('click', () => document.querySelector('[data-filter="attention"]').click())
+        list.appendChild(more)
+    }
     document.getElementById('priority-context').textContent = `${priority.healthy_nodes}/${priority.nodes} RPC endpoints healthy`
     document.getElementById('priority-context-detail').textContent = priority.last_block_at ? `Last block observed ${age(priority.last_block_at)}` : 'No block has been observed yet'
 }
@@ -213,8 +259,8 @@ function render() {
     renderSummary()
     statusTable.replaceChildren()
     const visible = ordered.filter(chain => {
-        if (filter === 'attention') return stateFor(chain).rank < 4
-        if (filter === 'unavailable') return stateFor(chain).label === 'No data'
+        if (filter === 'attention') return stateFor(chain).tone === 'red'
+        if (filter === 'unavailable') return chain.height <= 0 || chain.no_nodes === true
         return true
     })
     if (visible.length === 0) {
@@ -257,7 +303,7 @@ function msText(value) {
     return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
 }
 
-// what Fibre did in a window: a label and the text for each fact
+// Fibre window facts as label and text pairs
 const fibreWindowFacts = [
     ['Uploads ok / failed / rejected', w => `${number(w.uploads_ok)} / ${number(w.uploads_failed)} / ${number(w.uploads_rejected)}`],
     ['Data received', w => bytesText(w.bytes_received)],
@@ -268,11 +314,11 @@ const fibreWindowFacts = [
     ['Signatures / failed', w => `${number(w.signatures)} / ${number(w.signatures_failed)}`],
     ['Signed within 10 ms', w => w.sign_fast_percent === null || w.sign_fast_percent === undefined ? '—' : `${Math.floor(w.sign_fast_percent)}%`],
     ['Average signing time', w => msText(w.avg_sign_ms)],
-    ['Store put / get errors', w => `${number(w.store_put_errors)} / ${number(w.store_get_errors)}`],
+    ['Store put / get errors (get incl. not found)', w => `${number(w.store_put_errors)} / ${number(w.store_get_errors)}`],
     ['Average store put / get', w => `${msText(w.avg_put_ms)} / ${msText(w.avg_get_ms)}`],
     ['Prune errors / entries pruned', w => `${number(w.prune_errors)} / ${number(w.entries_pruned)}`],
     ['Average prune time', w => msText(w.avg_prune_ms)],
-    ['Object storage errors', w => `${number(w.object_storage_errors)} of ${number(w.object_storage_requests)} requests`]
+    ['Storage backend errors', w => `${number(w.object_storage_errors)} of ${number(w.object_storage_requests)} requests`]
 ]
 
 function fibreProviderFacts(chain) {
@@ -289,6 +335,7 @@ function fibreProviderFacts(chain) {
         const identity = { verified: 'Verified', failed: `Not verified${fibre.identity_error ? ` · ${fibre.identity_error}` : ''}` }
         rows.push(['Identity', identity[fibre.identity] || 'Not checked'])
     }
+    if (fibre.storage_backend) rows.push(['Storage backend', fibre.storage_backend])
     if (fibre.version) rows.push(['Fibre version', fibre.version])
     let share = 'Unavailable'
     if (chain.total_power > 0) {
@@ -299,16 +346,15 @@ function fibreProviderFacts(chain) {
         }
     }
     rows.push(['Share of rows', share])
-    let budget = fibre.in_active_set ? 'Unavailable' : 'None'
-    if (fibre.unlimited) {
-        budget = 'Unlimited (--unlimited-budget)'
-    } else if (fibre.chain_budget > 0) {
-        budget = bytesText(fibre.chain_budget)
-        if (fibre.budget_reported && fibre.fibre_budget !== fibre.chain_budget) budget += ` · Fibre reports ${bytesText(fibre.fibre_budget)}`
-    } else if (fibre.budget_reported) {
-        budget = `Fibre reports ${bytesText(fibre.fibre_budget)}`
+    let budget = `${fibre.occupancy_known ? bytesText(fibre.occupancy) : 'Unknown'} of ${fibre.chain_budget > 0 ? bytesText(fibre.chain_budget) : 'Unknown'} budget`
+    if (fibre.budget_reported) {
+        if (fibre.unlimited) budget += ' · Fibre unlimited'
+        else if (fibre.fibre_budget !== fibre.chain_budget) budget += ` · Fibre reports ${bytesText(fibre.fibre_budget)}`
     }
-    rows.push(['Storage budget', budget])
+    rows.push(['Shards', budget])
+    const endorsed = fibre.last_24h?.endorsed || 0, missed = fibre.last_24h?.missed || 0
+    rows.push(['Endorsed (24h)', endorsed + missed ? `${number(endorsed)} of ${number(endorsed + missed)} · ${(100 * endorsed / (endorsed + missed)).toFixed(1)}%` : 'none seen yet'])
+    rows.push(['Endorsing', fibre.endorsing?.text || 'none seen yet'])
     return rows
 }
 
@@ -329,15 +375,14 @@ function fillFibre(chain) {
     const facts = document.getElementById('detail-fibre-facts')
     const note = document.getElementById('detail-fibre-note')
     facts.replaceChildren()
-    for (const [label, value] of fibreProviderFacts(chain)) appendFact(facts, label, value)
+    for (const [label, value] of fibreProviderFacts(chain)) {
+        appendFact(facts, label, value)
+        if (label === 'Endorsing' && fibre.endorsing?.stopped) facts.lastChild.lastChild.style.color = 'var(--critical)'
+    }
     if (!fibre.metrics_received) {
         appendFact(facts, 'Fibre metrics', 'Not received, see docs/fibre.md')
         note.textContent = 'Share and budget come from the chain. Fibre reports what it did and how full its storage is once it sends metrics to tenderduty.'
         return
-    }
-    if (fibre.occupancy_known) {
-        const used = fibre.budget_reported && fibre.fibre_budget > 0 ? ` · ${(100 * fibre.occupancy / fibre.fibre_budget).toFixed(2)}% of the budget` : ''
-        appendFact(facts, 'Storage used', `${bytesText(fibre.occupancy)}${used}`)
     }
     appendFact(facts, 'Metrics received', age(fibre.metrics_at))
     appendFact(facts, 'Last successful upload', fibre.last_upload_at ? age(fibre.last_upload_at) : '—')
@@ -348,7 +393,7 @@ function fillFibre(chain) {
         appendFact(facts, label, [`10 min · ${text(fibre.last_10m)}`, `24 h · ${text(fibre.last_24h)}`])
     }
     note.textContent = short
-        ? `The 24 h figures cover ${durationText(fibre.last_24h.seconds)} so far, since tenderduty started: Fibre's history is kept in memory.`
+        ? `The 24 h figures cover ${durationText(fibre.last_24h.seconds)} so far, since tenderduty started.`
         : 'Figures are what Fibre reported to tenderduty.'
 }
 
@@ -370,15 +415,16 @@ function fillDetail(name) {
         ['Rank in active set', votingPower(chain).rank],
         ['Healthy RPC endpoints', `${chain.healthy_nodes} / ${chain.nodes}`],
         ['Active alerts', String(chain.active_alerts || 0)],
-        ['Signed since start', number(chain.signed || 0)],
-        ['Proposed since start', number(chain.proposed || 0)],
-        ['Missed proposals since start', number(chain.missed_proposals || 0)]
+        [`Last ${number(blockSummary(chain.blocks).total)} blocks`, blockSummary(chain.blocks).text]
     ]
     for (const [label, value] of rows) {
         const item = element('div', 'detail-fact')
         item.appendChild(element('small', '', label))
         item.appendChild(element('strong', '', value))
         facts.appendChild(item)
+    }
+    for (const node of chain.rpc_nodes || []) {
+        appendFact(facts, 'RPC node', `${node.endpoint}${node.version ? ` · ${node.version}` : ''} · ${node.down ? 'down' : 'healthy'}`)
     }
     fillFibre(chain)
     const history = document.getElementById('detail-blocks')
@@ -440,6 +486,7 @@ function connect() {
     socket.addEventListener('message', event => {
         try {
             const message = JSON.parse(event.data)
+            if (message.msgType === 'fibre') document.dispatchEvent(new CustomEvent('fibre-update', { detail: message }))
             if (message.msgType === 'update') setStatus(message)
             if (message.msgType === 'log' && logsEnabled) addActivity(message)
         } catch (error) {

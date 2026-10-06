@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// cardCase is one notification, its stored resolution is reset by use() because cases share a message.
+// cardCase shares its message; use resets the stored resolution.
 type cardCase struct {
 	name  string
 	msg   *alertMsg
@@ -34,6 +34,7 @@ func cardChain(t *testing.T) *ChainConfig {
 	cc.Alerts.ProposalMissed, cc.Alerts.ProposalMinutes = 2, 60
 	cc.Alerts.JailRiskPercent, cc.Alerts.JailRiskMinutes = 80, 10
 	cc.Alerts.FibreStoragePercent, cc.Alerts.FibreIdleMinutes, cc.Alerts.SignalPercent = 90, 15, 33
+	cc.signal = signalState{Version: 10, Power: 7100, Threshold: 8333, Total: 10000}
 	cc.fibre = fibreState{Registered: true, Host: cardHost, DownSince: time.Now().Add(-2*time.Minute - 5*time.Second), DownReason: "connection refused: Fibre is not listening on that port"}
 	c.Chains["Devnet1"] = cc
 	upgradeETAs.Store("Devnet1@12345678", time.Now().Add(52*time.Hour).UTC())
@@ -70,6 +71,8 @@ func cardCases(t *testing.T) []cardCase {
 		"missed window":      "Kynraze has missed > 5% of the slashing window's blocks on devnet-1",
 		"missed proposals":   cc.proposalMessage("Kynraze"),
 		"jail risk":          cc.jailRiskMessage("Kynraze"),
+		"jail stage":         "Kynraze is close to jail on devnet-1",
+		"signal stopped":     signalStoppedMessage(11),
 		"jail soon":          cc.jailSoonMessage("Kynraze"),
 		"jailed":             jailMessage(&ValInfo{Moniker: "Kynraze", Jailed: true, JailedUntil: until}, "devnet-1"),
 		"jailed no end":      jailMessage(&ValInfo{Moniker: "Kynraze", Jailed: true}, "devnet-1"),
@@ -83,6 +86,7 @@ func cardCases(t *testing.T) []cardCase {
 		"upgrade soon":       upgradeSoonMessage(&upgradePlan{Name: "v4.0.0", Height: 12_345_678}),
 		"signal started":     signalStartMessage(10),
 		"signal missing":     signalMissingMessage(10),
+		"signal reminder":    signalRemindMessage(10),
 		"signal threshold":   signalThresholdMessage(10),
 		"signal upgrade":     signalUpgradeMessage(10, 12_345_678),
 		"signal upgrade end": signalUpgradeSoonMessage(10, 12_345_678),
@@ -92,9 +96,9 @@ func cardCases(t *testing.T) []cardCase {
 	}
 	severities := map[string]string{"proposal": "info", "proposal no title": "info", "can unjail": "info", "jail risk": "warning",
 		"signal started": "warning", "upgrade": "warning"}
-	order := []string{"node down", "no RPC", "stalled", "missed blocks", "missed window", "missed proposals", "jail risk", "jail soon",
+	order := []string{"node down", "no RPC", "stalled", "missed blocks", "missed window", "missed proposals", "jail risk", "jail stage", "signal stopped", "jail soon",
 		"jailed", "jailed no end", "tombstoned", "inactive", "can unjail", "proposal", "proposal no title", "vote reminder", "upgrade",
-		"upgrade soon", "signal started", "signal missing", "signal threshold", "signal upgrade", "signal upgrade end",
+		"upgrade soon", "signal started", "signal missing", "signal reminder", "signal threshold", "signal upgrade", "signal upgrade end",
 		"fibre unregistered", "fibre down", "fibre identity"}
 	for _, kind := range fibreMetricsKinds {
 		plain["fibre metrics "+kind.kind] = cc.fibreMetricsMessage(kind.kind)
@@ -109,7 +113,6 @@ func cardCases(t *testing.T) []cardCase {
 		raised(name, plain[name], severity)
 	}
 
-	// one reason only, text from the message
 	for _, name := range []string{"node down", "no RPC", "stalled", "missed blocks", "missed window", "missed proposals", "jail risk",
 		"jail soon", "jailed", "jailed no end", "tombstoned", "inactive", "can unjail"} {
 		cleared(name, plain[name], nil)
@@ -156,12 +159,15 @@ func cardCases(t *testing.T) []cardCase {
 	}
 	signal("signal upgraded", plain["signal started"], signalState{Version: 11})
 	signal("signal signalled", plain["signal missing"], signalState{Version: 10, Signalled: true})
+	signal("signal reminder signalled", plain["signal reminder"], signalState{Version: 10, Signalled: true})
+	signal("signal reminder dropped", plain["signal reminder"], signalState{Version: 10})
+	signal("signal reminder scheduled", plain["signal reminder"], signalState{Version: 10, UpgradeHeight: 12_345_678})
+	signal("signal reminder threshold", plain["signal reminder"], signalState{Version: 10, Power: 84, Threshold: 84})
 	signal("signal scheduled", plain["signal threshold"], signalState{Version: 10, UpgradeHeight: 12_345_678})
 	signal("signal fell back", plain["signal threshold"], signalState{Version: 10})
 	signal("signal dropped", plain["signal started"], signalState{Version: 10})
 
-	// restored after a restart, no stored resolution
-	for _, name := range []string{"fibre unregistered", "fibre down", "fibre identity", "signal started", "signal missing", "signal threshold"} {
+	for _, name := range []string{"fibre unregistered", "fibre down", "fibre identity", "signal started", "signal missing", "signal reminder", "signal threshold"} {
 		cleared("restored "+name, plain[name], nil)
 	}
 	for _, kind := range fibreMetricsKinds {
@@ -177,17 +183,41 @@ func cardCases(t *testing.T) []cardCase {
 
 // detailForms are the live detail lines a message gets when sent.
 var detailForms = []struct{ message, detail string }{
+	{signalUpgradeMessage(11, 1365), "localhost:26657 · celestia-app 10.4.0 · needs v11\nrpc.kynraze.com · celestia-app 11.0.0 · ready"},
+	{signalUpgradeSoonMessage(11, 1365), "localhost:26657 · version unknown"},
+	{signalUpgradeSoonMessage(11, 1365), "all nodes ready"},
+	{signalUpgradeMessage(11, 1365), "upgrade height reached · not upgraded: localhost:26657 (10.4.0)"},
+	{"RPC node http://localhost:26657 has been down for > 3 minutes on celestia", "stopped at the version 11 upgrade height 1,365: runs celestia-app 10.4.0, upgrade to v11"},
+	{signalRemindMessage(10), "71% signalled, the upgrade unlocks at 83.33%: upgrade celestia-appd, then send the signal tx"},
+	{signalMissingMessage(10), "upgrade celestia-appd, then send the signal tx"},
+	{signalUpgradeMessage(11, 1000), "≈ Wed 7 Oct 14:20 WIB, in 2d 3h\nnode runs celestia-app 10.4.0-corto, version 11 needs v11 or later"},
+	{signalUpgradeSoonMessage(11, 1000), "≈ Wed 7 Oct 14:20 +0700, in 2h\nnode ready: celestia-app 11.0.0"},
+	{signalStoppedMessage(11), "upgrade celestia-appd to v11 or later"},
+	{"Kynraze is close to jail on devnet-1", "9,000 of 9,990 misses used · jailed in ~45 min at this rate"},
+	{"Kynraze is jailed on devnet-1", "jailed since Tue 6 Oct 02:00 WIB · can unjail from 02:10"},
+	{"Kynraze is jailed on devnet-1", "jailed since Tue 6 Oct 02:00 WIB · can unjail from 7 Oct 02:10"},
+	{"Kynraze is jailed on devnet-1", "jailed since Tue 6 Oct 02:00 WIB · can unjail now"},
+	{"Kynraze is jailed on devnet-1", "jailed since Tue 6 Oct 02:00 WIB"},
+	{"Kynraze is jailed on devnet-1", "can unjail from 02:10"},
+	{"Kynraze is jailed on devnet-1", "can unjail now"},
+	{"Kynraze is jailed on devnet-1", "jailed until Tue 6 Oct 02:10 WIB"},
+	{"Kynraze can unjail on devnet-1", "send the unjail tx"},
+	{"Kynraze is no longer in the active set on devnet-1", "tombstoned"},
+	{"Kynraze is no longer in the active set on devnet-1", "unbonding"},
+	{"Kynraze is no longer in the active set on devnet-1", "not in the top 100 by stake"},
 	{"Fibre at localhost:7980 is unreachable on devnet-1", "connection refused: Fibre is not listening on that port"},
 	{"Fibre at localhost:7980 does not prove it belongs to this validator on devnet-1", "the certificate is not valid at this time"},
 	{"Fibre has sent no metrics for over 3 minutes on devnet-1", "last metrics 1h 3m ago"},
 	{"Fibre has sent no metrics for over 3 minutes on devnet-1", "no metrics since tenderduty started"},
-	{"Fibre storage is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "70 GB of 74 GB, 3 uploads turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
-	{"Fibre storage is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "900 MB used, 1 upload turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
-	{"Fibre storage is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "0 uploads turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
+	{"Fibre shard budget is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "70 GB of 74 GB, 3 uploads turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
+	{"Fibre shard budget is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "900 MB used, 1 upload turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
+	{"Fibre shard budget is nearly full on devnet-1, the budget the chain gives this validator is almost used up", "0 uploads turned away in the last 10 minutes. The budget is set by the chain from your stake, the whole network fills together"},
 	{"Fibre could not sign payment promises on devnet-1", "1 of 23 signatures failed over the last 9h 30m"},
 	{"Fibre signing is slower than 10ms on devnet-1", "5 of 9 signatures took over 10ms in the last 10 minutes"},
-	{"Fibre storage operations are failing on devnet-1", "put 1, get 0, prune 2 failed in the last 10 minutes"},
-	{"Fibre object storage requests are failing on devnet-1", "timeout 1, throttled 2, error 3 of 100 requests in the last 10 minutes"},
+	{"Fibre storage operations are failing on devnet-1", "put 1, prune 2 failed in the last 10 minutes"},
+	{"Fibre storage backend requests are failing on devnet-1", "object: 6 of 100 requests failed in the last 10 minutes (timeout 1, throttled 2, error 3)"},
+	{"Fibre storage backend requests are failing on devnet-1", "local: 3 of 120 requests failed in the last 10 minutes (timeout 2, error 1)\nCheck Fibre's data disk: space, health and permissions."},
+	{"Fibre storage backend requests are failing on devnet-1", "s3: 3 of 120 requests failed in the last 10 minutes (timeout 2, error 1)\nCheck the bucket's credentials, rate limits, network, and that it is in the same region as Fibre."},
 	{"Fibre has had no successful upload for over 15 minutes on devnet-1", "last successful upload 1h 3m ago"},
 	{"Kynraze is jailed on devnet-1", "Can unjail after 3 Oct 2026 18:28 UTC · 9m left"},
 	{"Kynraze is tombstoned on devnet-1", "Permanent, the validator can't be unjailed"},
@@ -196,7 +226,7 @@ var detailForms = []struct{ message, detail string }{
 	{"Proposal #39 Community Pool\nEnds 10 Oct 2026 17:48 UTC", ""},
 }
 
-// checkCard: known, short labelled lines, valid for telegram and discord.
+// checkCard checks labelled lines and Telegram and Discord limits.
 func checkCard(t *testing.T, name string, card alertCard) {
 	t.Helper()
 	if !card.known() {
@@ -213,7 +243,6 @@ func checkCard(t *testing.T, name string, card alertCard) {
 		if f.Icon == "" || f.Label == "" || f.Value == "" || strings.Contains(f.Value, "\n") || utf8.RuneCountInString(f.Value) > cardValueLimit {
 			t.Errorf("%s: bad field %+v", name, f)
 		}
-		// unread lines stay Detail or Note
 		if f.Label == "Detail" || f.Label == "Note" && !strings.HasPrefix(f.Value, "The budget is") && !strings.HasPrefix(f.Value, "Permanent,") {
 			t.Errorf("%s: a line was not understood: %+v", name, f)
 		}
@@ -230,7 +259,7 @@ func checkCard(t *testing.T, name string, card alertCard) {
 	}
 }
 
-// checkSent: valid html and json, within discord's limits.
+// checkSent checks HTML, JSON and Discord limits.
 func checkSent(t *testing.T, name string, msg *alertMsg) {
 	t.Helper()
 	telegram := buildTelegramMessage(msg)
@@ -285,7 +314,7 @@ func TestCardDetailLinesAreUnderstood(t *testing.T) {
 	}
 }
 
-// saved state from earlier versions carries the old message
+// TestTheOldInactiveMessageIsACard: saved state from earlier versions carries the old message
 func TestTheOldInactiveMessageIsACard(t *testing.T) {
 	cardChain(t)
 	for _, resolved := range []bool{false, true} {
@@ -323,6 +352,33 @@ func TestUnknownMessageStaysAsNote(t *testing.T) {
 	msg = &alertMsg{chain: "Devnet1", resolved: true, message: "something else"}
 	if card := msg.card(); card.known() || card.Note != "something else" || card.State != "Resolved" {
 		t.Fatalf("card is %+v", card)
+	}
+}
+
+func TestTelegramTombstonedSlashCard(t *testing.T) {
+	c := auditConfig(t)
+	c.Reports.Timezone = "Asia/Jakarta"
+	block, val := atomoneSlashFixture(t)
+	val.Moniker = "POSTHUMAN"
+	var d slashDetails
+	d.read(block, val, 10584954)
+	d.Denom, d.Symbol, d.Exponent, d.DisplayKnown, d.Fraction = "uatone", "ATONE", 6, true, "0.05"
+	cc := &ChainConfig{name: "AtomOne", ChainId: "atomone-1", valInfo: val, slash: d}
+	c.Chains[cc.name] = cc
+	for _, message := range []string{jailMessage(val, cc.ChainId), "POSTHUMAN is tombstoned on atomone-1"} {
+		msg := &alertMsg{chain: cc.name, severity: "critical", message: message}
+		want := "\u2620\ufe0f <b>AtomOne</b> \u00b7 Tombstoned\n\n" +
+			"\U0001f464 <b>Validator:</b> POSTHUMAN\n\u26d3 <b>Chain:</b> <code>atomone-1</code>\n" +
+			"\u270d\ufe0f <b>Double-signed:</b> 10,584,953 \u00b7 round 0 \u00b7 prevote \u00b7 30 Sep 07:53 WIB\n" +
+			"\U0001f525 <b>Slashed:</b> 89,868 ATONE (5%)\nPermanent, the validator can&#39;t be unjailed"
+		if got := buildTelegramMessage(msg); got != want {
+			t.Fatalf("got\n%s\nwant\n%s", got, want)
+		}
+	}
+	val.Tombstoned = false
+	msg := &alertMsg{chain: cc.name, severity: "critical", message: "POSTHUMAN is jailed on atomone-1"}
+	if got := buildTelegramMessage(msg); !strings.Contains(got, "\U0001f525 <b>Slashed:</b>") || !strings.Contains(got, "\U0001f512 <b>Status:</b> \U0001f534 jailed") {
+		t.Fatalf("jailed card: %s", got)
 	}
 }
 
@@ -452,7 +508,6 @@ func TestDiscordCards(t *testing.T) {
 		}
 	}
 
-	// the time left stays bold, a title is the description, and a resolved card is green
 	msg = &alertMsg{chain: "Devnet1", severity: "info", message: "Proposal #39 Community Pool\nEnds 10 Oct 2020 17:48 UTC"}
 	embed = buildDiscordMessage(msg).Embeds[0]
 	if embed.Description != "**#39 Community Pool**" || len(embed.Fields) != 1 || embed.Fields[0].Name != "🗓 Ends" {
@@ -564,7 +619,6 @@ func TestLastedFollowsTheAlarm(t *testing.T) {
 
 	c.alert("Devnet1", message, "critical", false, &id)
 	<-c.alertChan
-	// raised 12 minutes ago
 	alarms.notifyMux.Lock()
 	alarms.AllAlarms["Devnet1"][message] = time.Now().Add(-12 * time.Minute)
 	alarms.notifyMux.Unlock()
@@ -579,7 +633,6 @@ func TestLastedFollowsTheAlarm(t *testing.T) {
 	if fields := got.card().Fields; fields[len(fields)-1] != (alertField{Icon: "⏱", Label: "Lasted", Value: "12m"}) {
 		t.Fatalf("fields %+v", fields)
 	}
-	// the worker rebuilds it from the queue, same result
 	alarms.notifyMux.RLock()
 	var queued *queuedNotification
 	for i := range alarms.Outbox {

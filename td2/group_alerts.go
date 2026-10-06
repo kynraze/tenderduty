@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// group_node_alerts: one chat message per server. Alarms, the outbox and pagerduty stay per node.
+// group_node_alerts combines chat messages; alarms, outbox and PagerDuty remain per node.
 
 const (
 	defaultGroupWaitSeconds = 60
@@ -171,7 +171,7 @@ func (a *alarmCache) sent(item queuedNotification) bool {
 	return a.sentTo(item.Destination, item.key(), item.Message)
 }
 
-// claim marks a notification in flight, false if it already is. notifyMux held.
+// claim marks an idle notification in flight. notifyMux held.
 func (a *alarmCache) claim(dest notifyDest, key string) bool {
 	if a.inFlight == nil {
 		a.inFlight = make(map[notifyDest]map[string]bool)
@@ -200,7 +200,7 @@ func (c *Config) groupDelay(item queuedNotification) time.Duration {
 	return time.Until(item.Queued.Add(wait))
 }
 
-// notifyGroup is a sent group message, kept for its recovery. Keys are chain and message.
+// notifyGroup stores sent messages for recovery, keyed by chain and message.
 type notifyGroup struct {
 	Destination notifyDest    `json:"destination"`
 	Server      string        `json:"server"`
@@ -277,7 +277,13 @@ func (g *groupCard) summary(msg *alertMsg) string {
 	if msg.resolved {
 		return g.heading() + ": all nodes back up"
 	}
-	return fmt.Sprintf("%s: %s down", g.heading(), plural(len(g.Members), "node"))
+	body := fmt.Sprintf("%s: %s down", g.heading(), plural(len(g.Members), "node"))
+	for _, member := range g.Members {
+		if detail := ownNodeDownDetail(member.Chain, member.URL); detail != "" {
+			body += "\n" + nodeEndpoint(member.URL) + " · " + detail
+		}
+	}
+	return body
 }
 
 func (g *groupCard) card(msg *alertMsg) alertCard {
@@ -294,7 +300,13 @@ func (g *groupCard) card(msg *alertMsg) alertCard {
 			fields = append(fields, row("🔌", "More", plural(len(g.Members)-groupListLimit, "node")))
 			break
 		}
-		fields = append(fields, codeField("🔌", member.Chain, member.URL))
+		value := member.URL
+		if !msg.resolved {
+			if detail := ownNodeDownDetail(member.Chain, member.URL); detail != "" {
+				value += " · " + detail
+			}
+		}
+		fields = append(fields, codeField("🔌", member.Chain, value))
 	}
 	if msg.resolved {
 		fields = append(fields, row("📡", "Status", dotGreen+" all nodes back up"))
@@ -358,7 +370,7 @@ func (c *Config) groupRaise(item queuedNotification, msg *alertMsg) (bool, error
 	}
 	dest, ownKey := item.Destination, item.key()
 	identity := destIdentity(msg, dest)
-	// no DNS under notifyMux, candidates are checked again once it is held
+	// resolve DNS outside notifyMux and recheck candidates under the lock
 	server := c.nodeServer(item.Chain, nodeURL)
 
 	alarms.notifyMux.RLock()
@@ -480,7 +492,7 @@ func siblingSequences(siblings []groupSibling) []uint64 {
 	return sequences
 }
 
-// groupRecovery: only the last node of a group back up sends, for all of them.
+// groupRecovery sends when the last node recovers.
 func (c *Config) groupRecovery(item queuedNotification, msg *alertMsg) (bool, error) {
 	dest, ownKey := item.Destination, item.key()
 	alarms.notifyMux.Lock()

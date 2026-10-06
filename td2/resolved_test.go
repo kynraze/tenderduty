@@ -28,7 +28,6 @@ func TestResolvedNotificationsSayWhatIsTrueNow(t *testing.T) {
 		{"missed proposal", cc.proposalMessage("Kynraze"), "✅", "Resolved", "Kynraze missed fewer than 3 block proposals in the last 60 minutes on atomone-1"},
 		{"jail risk", cc.jailRiskMessage("Kynraze"), "✅", "Resolved", "Kynraze is back under 50% of the misses allowed before jailing on atomone-1"},
 		{"jail soon", cc.jailSoonMessage("Kynraze"), "✅", "Resolved", "Kynraze is no longer close to being jailed on atomone-1"},
-		// these read fine as they are
 		{"upgrade", upgradeMessage(&upgradePlan{Name: "v4", Height: 9_550_000}), "✅", "Upgraded", "Upgrade v4 at height 9,550,000"},
 		{"other", "something nobody formats", "✅", "Resolved", "something nobody formats"},
 	} {
@@ -96,16 +95,17 @@ func TestResolvedSignalling(t *testing.T) {
 			}
 		})
 	}
-	if _, ok := cc.signalResolution(signalUpgradeMessage(10, 15_000_000), signalState{}, "Kynraze"); ok {
-		t.Error("a scheduled upgrade's message reads fine and shouldn't be rewritten")
+	if r, ok := cc.signalResolution(signalUpgradeMessage(10, 15_000_000), signalState{}, "Kynraze"); !ok || r.text != "upgrade cancelled or rescheduled" {
+		t.Errorf("scheduled resolution: %+v", r)
 	}
 }
 
-// a chain that upgraded must not read "Signalled"
+// TestSignalAlarmsRecordWhyTheyCleared: a chain that upgraded must not read "Signalled"
 func TestSignalAlarmsRecordWhyTheyCleared(t *testing.T) {
 	c := auditConfig(t)
 	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, signal: signalState{Version: 11}}
-	cc.Alerts.SignalAlerts, cc.Alerts.SignalPercent, cc.Alerts.SignalPriority = true, 10, "warning"
+	cc.Alerts.SignalPercent = 10
+	cc.Alerts.UpgradeAlerts = true
 	c.Chains["Celestia"] = cc
 	alarms.AllAlarms["Celestia"] = map[string]time.Time{signalMissingMessage(10): time.Now()}
 	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
@@ -115,7 +115,7 @@ func TestSignalAlarmsRecordWhyTheyCleared(t *testing.T) {
 	}
 }
 
-// or its next recovery would repeat the old reason
+// TestRaisingAgainForgetsTheLastResolution: or its next recovery would repeat the old reason
 func TestRaisingAgainForgetsTheLastResolution(t *testing.T) {
 	c := auditConfig(t)
 	c.Chains["Chain"] = &ChainConfig{name: "Chain", ChainId: "chain-1"}
@@ -135,12 +135,12 @@ func TestOrphanedAlarmIsNotCalledFixed(t *testing.T) {
 	}
 }
 
-// "registered" reads before the problem found on the new host
+// TestFibreSendsWhatClearedFirst: "registered" reads before the problem found on the new host
 func TestFibreSendsWhatClearedFirst(t *testing.T) {
 	c := auditConfig(t)
 	cc := &ChainConfig{name: "Mocha", ChainId: "mocha-5", fibreLoaded: true,
 		fibre: fibreState{Registered: true, Host: "1.2.3.4:7980", Reachable: true, KeyKnown: true, IdentityError: "x"}}
-	cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+	cc.Alerts.FibreAlerts, cc.Alerts.FibreSeverity = true, "warning"
 	c.Chains["Mocha"] = cc
 	alarms.AllAlarms["Mocha"] = map[string]time.Time{fibreNotRegisteredMessage("mocha-5"): time.Now()}
 	cc.fibreAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)

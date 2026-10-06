@@ -28,7 +28,7 @@
     <main id="overview">
       <header class="top">
         <div>
-          <div class="eyebrow">Network operations</div>
+          
           <h1>Validator overview</h1>
           <p>Find what needs attention, then inspect block and RPC evidence.</p>
         </div>
@@ -45,8 +45,7 @@
       <section class="attention" id="attention-section" aria-label="Current priority" hidden>
         <div class="alert danger">
           <div class="sectioncap"><b>Current priority</b><span id="priority-count"></span></div>
-          <div class="alert-main"><strong id="priority-chain"></strong><span class="tag" id="priority-status"></span></div>
-          <p id="priority-detail"></p>
+          <div id="priority-list" class="priority-list"></div>
         </div>
         <div class="alert upgrade">
           <div class="sectioncap"><b>Monitoring context</b></div>
@@ -85,8 +84,8 @@
             <span><i class="trace-mark signed"></i> Signed</span>
             <span><i class="trace-mark proposed"></i> Proposed</span>
             <span><i class="trace-mark missed-proposal"></i> Missed proposal</span>
-            <span><i class="trace-mark precommit"></i> Precommit seen</span>
-            <span><i class="trace-mark prevote"></i> Prevote seen</span>
+            <span><i class="trace-mark precommit"></i> Late precommit</span>
+            <span><i class="trace-mark prevote"></i> Prevote only</span>
             <span><i class="trace-mark missed"></i> Missed</span>
             <span><i class="trace-mark unobserved"></i> No data</span>
           </div>
@@ -95,7 +94,7 @@
       </section>
     </main>
     <main id="fibre" hidden aria-labelledby="fibre-heading">
-      <header class="top"><div><div class="eyebrow">Provider operations</div><h1 id="fibre-heading">Fibre</h1><p>Uploads, signing and storage alongside the chain's provider checks.</p></div><button type="button" id="fibre-customize">Customize panels</button></header>
+      <header class="top"><div><h1 id="fibre-heading">Fibre</h1><p>Uploads, signing and storage alongside the chain's provider checks.</p></div><button type="button" id="fibre-customize">Customize panels</button></header>
       <div class="fibre-controls"><label id="fibre-chain-label">Chain <select id="fibre-chain"></select></label><div class="tools" id="fibre-ranges" role="group" aria-label="History range"></div></div>
       <div id="fibre-facts" class="detail-facts"></div>
       <p id="fibre-message" role="status"></p>
@@ -105,7 +104,7 @@
 
   <dialog id="chain-dialog" aria-labelledby="detail-heading">
     <div class="dialog-head">
-      <div><div class="eyebrow">Chain detail</div><h2 id="detail-heading"></h2><p id="detail-subtitle"></p></div>
+      <div><h2 id="detail-heading"></h2><p id="detail-subtitle"></p></div>
       <button type="button" id="detail-close" aria-label="Close chain detail">Close</button>
     </div>
     <div id="detail-facts" class="detail-facts"></div>
@@ -120,7 +119,7 @@
     <p id="detail-error" class="detail-error"></p>
   </dialog>
   <dialog id="appearance-dialog" aria-labelledby="appearance-heading">
-    <div class="dialog-head"><div><div class="eyebrow">Appearance</div><h2 id="appearance-heading">Customize appearance</h2><p>Preview changes live. Apply saves them in this browser.</p></div></div>
+    <div class="dialog-head"><div><h2 id="appearance-heading">Customize appearance</h2><p>Preview changes live. Apply saves them in this browser.</p></div></div>
     <label class="appearance-label" for="appearance-theme">Theme</label>
     <select id="appearance-theme"><option value="graphite">Graphite</option><option value="midnight">Midnight</option><option value="paper">Paper</option><option value="warm-stone">Warm Stone</option><option value="custom">Custom</option></select>
     <fieldset id="custom-colors" hidden>

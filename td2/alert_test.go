@@ -209,3 +209,16 @@ func TestDiscordPlainStyle(t *testing.T) {
 		t.Fatalf("embed is %q / %+v", embed.Content, embed.Embeds)
 	}
 }
+
+func TestDashboardShowsTheUpgradeReminderOnce(t *testing.T) {
+	oldAlarms, oldTd := alarms, td
+	alarms, td = newAlarmCache(), &Config{}
+	t.Cleanup(func() { alarms, td = oldAlarms, oldTd })
+	alarms.AllAlarms["Devnet"] = map[string]time.Time{
+		"Version 11 upgrade at height 394":          time.Now(),
+		"Version 11 upgrade at height 394 is close": time.Now(),
+	}
+	if got := getAlarms("Devnet"); got != "🚨 Version 11 upgrade at height 394 is close\n" {
+		t.Fatalf("got %q", got)
+	}
+}

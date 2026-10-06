@@ -459,12 +459,12 @@ func TestLegacyRecoveryMigrationPreservesActiveIncident(t *testing.T) {
 	}
 }
 
-func TestStaleSigningInfoCannotClearPercentageAlert(t *testing.T) {
+func TestStaleSigningInfoCannotClearSigningAlert(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "consensus", Missed: 0, Window: 100, SigningStale: true}}
-	chain.Alerts.PercentageAlerts, chain.Alerts.Window = true, 10
+	chain.Alerts.MissedBlocksAlerts = true
 	c.Chains["Chain"] = chain
-	message := "validator has missed > 10% of the slashing window's blocks on test-chain"
+	message := "validator is close to jail on test-chain"
 	alarms.AllAlarms["Chain"] = map[string]time.Time{message: time.Now()}
 	c.startWorker(chain.watch)
 	select {
@@ -475,7 +475,7 @@ func TestStaleSigningInfoCannotClearPercentageAlert(t *testing.T) {
 	c.cancel()
 	c.workers.Wait()
 	if !alarmIsActive("Chain", message) {
-		t.Fatal("stale data cleared the percentage alert")
+		t.Fatal("stale data cleared the signing alert")
 	}
 }
 
@@ -857,18 +857,18 @@ func TestRPCPrefersConfiguredOrder(t *testing.T) {
 	}
 }
 
-func TestInactiveAtStartupOnlyAlertsWhenJailed(t *testing.T) {
+func TestInactiveAtStartupAlerts(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
 		valInfo: &ValInfo{Moniker: "validator", Valcons: "junovalcons1example"}}
-	chain.Alerts.AlertIfInactive = true
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 0 {
-		t.Fatalf("validator outside the active set alerted at startup: %+v", raised)
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || !strings.Contains(raised[0].message, "active set") {
+		t.Fatalf("validator outside the active set did not alert at startup: %+v", raised)
 	}
 	chain.validatorMux.Lock()
 	chain.valInfo.Jailed = true
 	chain.validatorMux.Unlock()
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || !strings.Contains(raised[0].message, "jailed") {
+	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 2 || !raised[0].quiet || !strings.Contains(raised[1].message, "jailed") {
 		t.Fatalf("jailed validator did not alert: %+v", raised)
 	}
 }
@@ -1013,12 +1013,12 @@ func TestIncompleteAlertSettingsOnlyWarn(t *testing.T) {
 	}}
 	alerts := &c.Chains["Juno"].Alerts
 	alerts.Discord.Enabled = yes(true)
-	alerts.StalledAlerts, alerts.ConsecutiveAlerts, alerts.PercentageAlerts = true, true, true
+	alerts.StalledAlerts, alerts.MissedBlocksAlerts, alerts.ConsecutiveAlerts = true, true, true
 	fatal, problems := validateConfig(c)
 	if fatal {
 		t.Fatalf("settings older versions accepted stopped startup: %v", problems)
 	}
-	if alerts.Stalled != 10 || alerts.ConsecutiveMissed != 5 || alerts.Window != 10 {
+	if alerts.Stalled != 10 || alerts.ConsecutiveMissed != 5 || alerts.JailRiskPercent != 90 {
 		t.Fatalf("zero thresholds were not replaced: %+v", alerts)
 	}
 	if !strings.Contains(strings.Join(problems, "\n"), "discord alerts need a valid webhook URL") {

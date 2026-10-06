@@ -217,7 +217,6 @@ func (h *groupHarness) waitFor(what string, ok func() bool) {
 func (h *groupHarness) waitTelegram(n int) []sentTelegram {
 	h.t.Helper()
 	h.waitFor("telegram messages", func() bool { return len(h.telegramSent()) >= n })
-	// anything extra would arrive in this time
 	time.Sleep(4 * groupUnit)
 	sent := h.telegramSent()
 	if len(sent) != n {
@@ -308,10 +307,11 @@ func TestTwoServersAreTwoMessages(t *testing.T) {
 	h.chain("AlphaTwo", "http://a2:26657", "@one")
 	h.chain("BetaOne", "http://b1:26657", "@one")
 	h.chain("BetaTwo", "http://b2:26657", "@one")
-	h.run()
+	// State writes can outlast the group window; queue every node before workers start.
 	for _, name := range []string{"AlphaOne", "BetaOne", "AlphaTwo", "BetaTwo"} {
 		h.down(name)
 	}
+	h.run()
 	sent := h.waitTelegram(2)
 	var alpha, beta string
 	for _, s := range sent {
@@ -527,7 +527,6 @@ chains:
 	h.down("AlphaTwo")
 	h.waitTelegram(1)
 	h.waitFor("the outbox to drain", h.drained)
-	// the first alarm was raised 12 minutes ago
 	alarms.notifyMux.Lock()
 	for _, group := range alarms.Groups {
 		group.Members[0].Raised = time.Now().Add(-12 * time.Minute)
@@ -670,7 +669,7 @@ func TestServerResolution(t *testing.T) {
 	if got := resolveServer(ctx, "http://slow:26657"); got != "slow" {
 		t.Errorf("timed out lookup: %q", got)
 	}
-	// a lookup that failed is tried again once its time is up, a good one is kept for ten minutes
+	// retry failed DNS lookups after expiry; cache successful ones for ten minutes
 	serverCacheMux.Lock()
 	multi, gone := serverCache["multi"], serverCache["gone"]
 	serverCacheMux.Unlock()
@@ -717,7 +716,7 @@ func TestOnlyNodeDownAlertsWait(t *testing.T) {
 		}
 		c.GroupNodeAlerts = true
 	}
-	// the queue keeps when it was queued, an old state file has none
+	// old state files have no queue timestamp
 	var item queuedNotification
 	if err := json.Unmarshal([]byte(`{"sequence":1,"destination":1,"chain":"Chain","message":"x","resolved":false}`), &item); err != nil || !item.Queued.IsZero() {
 		t.Errorf("old queue entry: %+v, %v", item, err)

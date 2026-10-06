@@ -1,13 +1,14 @@
 package tenderduty
 
 import (
+	"fmt"
 	"html"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// Cards are built from the message and its detail lines only, nothing sent to pagerduty or kept as state changes.
+// Cards use notification text without changing alarm state.
 
 const (
 	dotGreen  = "🟢"
@@ -50,14 +51,14 @@ func who(moniker, chainId string) []alertField {
 	return []alertField{validatorField(moniker), chainField(chainId)}
 }
 
-// cardParts: ident facts say who and where and stay true after the alarm clears, state facts are the problem or what replaced it.
+// cardParts separates identity fields from fields that change on recovery.
 type cardParts struct {
 	title        string
 	ident, state []alertField
 	used         bool // rule consumed the detail lines
 }
 
-// cardRule reads one form of message: m is the match of the first line, rest the lines after it.
+// cardRule matches the first line and reads the remaining detail lines.
 type cardRule struct {
 	re    *regexp.Regexp
 	build func(msg *alertMsg, m, rest []string) cardParts
@@ -78,11 +79,48 @@ func matchRule(msg *alertMsg, rules []cardRule, first string, rest []string) (ca
 	return cardParts{}, false
 }
 
+var cardOwnNodeBinary = regexp.MustCompile(`^\S+ · (version unknown|celestia-app \S+ · (ready|needs v\d+))$`)
+
 func noteFields(lines []string) []alertField {
 	var notes []alertField
 	for _, line := range lines {
 		if line != "" {
-			notes = append(notes, row("ℹ️", "Note", line))
+			switch {
+			case strings.HasPrefix(line, "Slashed "):
+				notes = append(notes, row("🔥", "Slashed", strings.TrimPrefix(line, "Slashed ")))
+			case strings.HasPrefix(line, "Double-signed "):
+				notes = append(notes, row("✍️", "Double-signed", strings.TrimPrefix(line, "Double-signed ")))
+			case strings.HasPrefix(line, "≈ "):
+				notes = append(notes, row("🕒", "Expected", strings.TrimPrefix(line, "≈ ")))
+			case cardOwnNodeBinary.MatchString(line):
+				notes = append(notes, row("🔌", "Node", line))
+			case strings.HasPrefix(line, "stopped at the v"), strings.HasPrefix(line, "halted at the "):
+				notes = append(notes, row("⬆️", "Upgrade", line))
+			case strings.HasPrefix(line, "node ready: "), strings.HasPrefix(line, "node runs "):
+				notes = append(notes, row("⬆️", "Binary", line))
+			case strings.HasPrefix(line, "jailed since "), strings.HasPrefix(line, "can unjail "):
+				for _, part := range strings.Split(line, " · ") {
+					if since, ok := strings.CutPrefix(part, "jailed since "); ok {
+						notes = append(notes, row("🔒", "Jailed since", since))
+					} else if unjail, ok := strings.CutPrefix(part, "can unjail "); ok {
+						notes = append(notes, row("🔓", "Can unjail", unjail))
+					}
+				}
+			case strings.HasPrefix(line, "jailed until "):
+				notes = append(notes, row("🔒", "Jailed until", strings.TrimPrefix(line, "jailed until ")))
+			case strings.Contains(line, " in a row · "):
+				notes = append(notes, row("⚠️", "Missed", line))
+			case strings.Contains(line, " misses used"):
+				notes = append(notes, row("⚠️", "Misses used", line))
+			case line == "send the unjail tx", strings.HasPrefix(line, "upgrade celestia-appd to "):
+				notes = append(notes, row("⬆️", "To do", line))
+			case line == "tombstoned", line == "unbonding", line == "not in the active set", strings.HasPrefix(line, "not in the top "):
+				notes = append(notes, row("🚨", "Reason", line))
+			case line == "all nodes ready", strings.HasPrefix(line, "upgrade height reached · not upgraded: "), line == "upgrade height reached", line == "upgrade cancelled or rescheduled", line == "blocks advancing again":
+				notes = append(notes, row("✅", "Status", line))
+			default:
+				notes = append(notes, row("ℹ️", "Note", line))
+			}
 		}
 	}
 	return notes
@@ -98,23 +136,23 @@ var (
 	cardLegacyInactive  = regexp.MustCompile(`^(.+) is no longer active: validator is (.+)$`)
 	cardJailSoon        = regexp.MustCompile(`^(.+) will be jailed in under (.+) on (\S+) if it keeps missing blocks$`)
 	cardSignalStart     = regexp.MustCompile(`^Version (\d+) signalling has started$`)
-	cardSignalMissing   = regexp.MustCompile(`^Validator has not signalled version (\d+)$`)
+	cardSignalMissing   = regexp.MustCompile(`^Validator has not signalled version (\d+)(?:, upgrade soon)?$`)
+	cardSignalDetail    = regexp.MustCompile(`^(?:([\d.]+)% signalled, the upgrade unlocks at ([\d.]+)%: )?upgrade celestia-appd, then send the signal tx$`)
 	cardSignalThreshold = regexp.MustCompile(`^Version (\d+) reached the upgrade threshold$`)
 	cardNotRegistered   = regexp.MustCompile(`^Validator is not a registered Fibre provider on (\S+)$`)
 	cardFibreDown       = regexp.MustCompile(`^Fibre at (\S+) is unreachable on (\S+)$`)
 	cardFibreIdentity   = regexp.MustCompile(`^Fibre at (\S+) does not prove it belongs to this validator on (\S+)$`)
 	cardSilent          = regexp.MustCompile(`^Fibre has sent no metrics for over (.+) on (\S+)$`)
-	cardStorageFull     = regexp.MustCompile(`^Fibre storage is nearly full on (\S+?)(?:,.*)?$`)
+	cardStorageFull     = regexp.MustCompile(`^Fibre (?:shard budget|storage) is nearly full on (\S+?)(?:,.*)?$`)
 	cardSignFailed      = regexp.MustCompile(`^Fibre could not sign payment promises on (\S+)$`)
 	cardSigningSlow     = regexp.MustCompile(`^Fibre signing is slower than 10ms on (\S+)$`)
 	cardStorageErrors   = regexp.MustCompile(`^Fibre storage operations are failing on (\S+)$`)
-	cardObjectErrors    = regexp.MustCompile(`^Fibre object storage requests are failing on (\S+)$`)
+	cardObjectErrors    = regexp.MustCompile(`^Fibre storage backend requests are failing on (\S+)$`)
 	cardIdle            = regexp.MustCompile(`^Fibre has had no successful upload for over (.+) on (\S+)$`)
 
 	cardUpgrade       = regexp.MustCompile(`^Upgrade (.+) at height ([\d,]+)(?: is close)?$`)
 	cardSignalUpgrade = regexp.MustCompile(`^Version (\d+) upgrade at height ([\d,]+)(?: is close)?$`)
 
-	// resolution texts, see resolved.go
 	backSigning       = regexp.MustCompile(`^(.+) is signing blocks again on (\S+)$`)
 	backWindow        = regexp.MustCompile(`^(.+) is back under (\d+)% of the slashing window missed on (\S+)$`)
 	backProducing     = regexp.MustCompile(`^(\S+) is producing blocks again$`)
@@ -135,11 +173,11 @@ var (
 	backUnchecked    = regexp.MustCompile(`^Fibre at (\S+) is no longer checked, the validator's consensus key isn't known$`)
 
 	backMetrics       = regexp.MustCompile(`^Fibre metrics are arriving again on (\S+)$`)
-	backStorage       = regexp.MustCompile(`^Fibre storage is back under (\d+)% of its budget on (\S+), no uploads turned away for (\d+ minutes)$`)
+	backStorage       = regexp.MustCompile(`^Fibre shards are back under (\d+)% of the budget on (\S+), no uploads turned away for (\d+ minutes)$`)
 	backSigned        = regexp.MustCompile(`^Fibre is signing payment promises again on (\S+)$`)
 	backSigningFast   = regexp.MustCompile(`^Fibre signing is back under 10ms on (\S+)$`)
 	backStorageOps    = regexp.MustCompile(`^Fibre storage operations are succeeding again on (\S+)$`)
-	backObjectOps     = regexp.MustCompile(`^Fibre object storage requests are succeeding again on (\S+)$`)
+	backObjectOps     = regexp.MustCompile(`^Fibre storage backend requests are succeeding again on (\S+)$`)
 	backUploads       = regexp.MustCompile(`^Fibre stored an upload again on (\S+)$`)
 	backUpgraded      = regexp.MustCompile(`^(\S+) runs version (\d+) now$`)
 	backSignalled     = regexp.MustCompile(`^(.+) signalled version (\d+) on (\S+)$`)
@@ -156,12 +194,22 @@ var (
 	cardStorageDetail  = regexp.MustCompile(`^(?:(.+?), )?(\d+ uploads?) turned away (in the last 10 minutes)\. (.+)$`)
 	cardSignDetail     = regexp.MustCompile(`^(\d+ of \d+ signatures) failed (.+)$`)
 	cardSlowDetail     = regexp.MustCompile(`^(\d+ of \d+ signatures) took over 10ms (.+)$`)
-	cardStoreDetail    = regexp.MustCompile(`^(put \d+, get \d+, prune \d+) failed (in the last .+)$`)
-	cardObjectDetail   = regexp.MustCompile(`^(timeout \d+, throttled \d+, error \d+ of \d+ requests) (.+)$`)
+	cardStoreDetail    = regexp.MustCompile(`^(put \d+, (?:get \d+, )?prune \d+) failed (in the last .+)$`)
+	cardObjectDetail   = regexp.MustCompile(`^([^:]+): (\d+ of \d+ requests failed .+ \(.+\))$`)
 	cardLastUploadLine = regexp.MustCompile(`^last successful upload (.+)$`)
 )
 
 var raisedRules = []cardRule{
+	{regexp.MustCompile(`^Fibre is not endorsing on (\S+)$`), func(_ *alertMsg, m, rest []string) cardParts {
+		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("✍️", "Endorsed", dotRed+" stopped")}, used: true}
+		if len(rest) > 0 {
+			p.state = append(p.state, row("📊", "Blobs", rest[0]))
+		}
+		if len(rest) > 1 {
+			p.state = append(p.state, row("🔎", "Check", rest[1]))
+		}
+		return p
+	}},
 	{cardMissed, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[3]), state: []alertField{row("🎯", "Missed", m[2]+" blocks in a row")}}
 	}},
@@ -178,7 +226,7 @@ var raisedRules = []cardRule{
 		return cardParts{ident: []alertField{codeField("🔌", "Node", m[1]), chainField(m[3])}, state: []alertField{row("📡", "Status", dotRed+" down for > "+m[2])}}
 	}},
 	{cardTombstoned, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: who(m[1], m[2]), state: []alertField{row("☠️", "Status", dotRed+" tombstoned")}}
+		return cardParts{ident: who(m[1], m[2])}
 	}},
 	{cardJailed, func(msg *alertMsg, m, rest []string) cardParts {
 		p := cardParts{ident: who(m[1], m[2]), state: []alertField{row("🔒", "Status", dotRed+" jailed")}, used: true}
@@ -191,7 +239,6 @@ var raisedRules = []cardRule{
 		}
 		return p
 	}},
-	// old message in saved state, no chain id
 	{cardLegacyInactive, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{validatorField(m[1])}, state: []alertField{row("🔒", "Status", dotRed+" "+m[2])}}
 	}},
@@ -214,8 +261,19 @@ var raisedRules = []cardRule{
 	{cardSignalStart, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{row("🔖", "Version", m[1])}, state: []alertField{row("📣", "Signalling", dotYellow+" started")}}
 	}},
-	{cardSignalMissing, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: []alertField{row("🔖", "Version", m[1])}, state: []alertField{row("🗳", "Signal", dotRed+" not signalled by this validator")}}
+	{cardSignalMissing, func(_ *alertMsg, m, rest []string) cardParts {
+		p := cardParts{ident: []alertField{row("🔖", "Version", m[1])}, state: []alertField{row("🗳", "Your signal", dotRed+" not sent yet")}, used: true}
+		for _, line := range rest {
+			if detail := cardSignalDetail.FindStringSubmatch(line); detail != nil {
+				if detail[1] != "" {
+					p.state = append(p.state, row("📣", "Signalled", detail[1]+"% of voting power, the upgrade unlocks at "+detail[2]+"%"))
+				}
+				p.state = append(p.state, row("⬆️", "To do", "upgrade celestia-appd, then send the signal tx"))
+			} else {
+				p.state = append(p.state, noteFields([]string{line})...)
+			}
+		}
+		return p
 	}},
 	{cardSignalThreshold, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{row("🔖", "Version", m[1])}, state: []alertField{row("🚦", "Threshold", dotYellow+" reached, no upgrade scheduled yet")}}
@@ -240,7 +298,7 @@ var raisedRules = []cardRule{
 		return metricsParts(m[2], row("📨", "Metrics", dotRed+" none for over "+m[1]), kindSilent, rest)
 	}},
 	{cardStorageFull, func(msg *alertMsg, m, rest []string) cardParts {
-		return metricsParts(m[1], row("🗄", "Storage", dotRed+" nearly full"), kindStorage, rest)
+		return metricsParts(m[1], row("🗄", "Shard budget", dotRed+" nearly full"), kindStorage, rest)
 	}},
 	{cardSignFailed, func(msg *alertMsg, m, rest []string) cardParts {
 		return metricsParts(m[1], row("✍️", "Signing", dotRed+" failing"), kindSignFailed, rest)
@@ -252,7 +310,7 @@ var raisedRules = []cardRule{
 		return metricsParts(m[1], row("🗄", "Storage", dotRed+" operations failing"), kindStorageErrors, rest)
 	}},
 	{cardObjectErrors, func(msg *alertMsg, m, rest []string) cardParts {
-		return metricsParts(m[1], row("🪣", "Object storage", dotRed+" requests failing"), kindObject, rest)
+		return metricsParts(m[1], row("🪣", "Storage backend", dotRed+" requests failing"), kindObject, rest)
 	}},
 	{cardIdle, func(msg *alertMsg, m, rest []string) cardParts {
 		return metricsParts(m[2], row("💤", "Uploads", dotRed+" none for over "+m[1]), kindIdle, rest)
@@ -303,7 +361,15 @@ func metricsParts(chainId string, state alertField, kind string, rest []string) 
 		}
 	case kindObject:
 		if m := cardObjectDetail.FindStringSubmatch(line); m != nil {
-			found = []alertField{row("🎯", "Failed", m[1]+" "+m[2])}
+			p.state[0].Label = "Storage backend (" + m[1] + ")"
+			found = []alertField{row("🎯", "Failed", m[2])}
+		}
+		for _, detail := range rest[1:] {
+			if m := cardObjectDetail.FindStringSubmatch(detail); m != nil {
+				found = append(found, row("🎯", "Failed ("+m[1]+")", m[2]))
+			} else {
+				found = append(found, row("ℹ️", "Advice", detail))
+			}
 		}
 	case kindIdle:
 		if m := cardLastUploadLine.FindStringSubmatch(line); m != nil {
@@ -319,6 +385,10 @@ func metricsParts(chainId string, state alertField, kind string, rest []string) 
 
 // resolvedRules match the texts of resolved.go.
 var resolvedRules = []cardRule{
+	{regexp.MustCompile(`^Fibre endorses again on (\S+)$`), func(_ *alertMsg, m, rest []string) cardParts {
+		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("✍️", "Endorsed", dotGreen+" endorsing again")}}
+		return p
+	}},
 	{backSigning, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[2]), state: []alertField{row("✍️", "Signing", dotGreen+" signing blocks again")}}
 	}},
@@ -378,7 +448,7 @@ var resolvedRules = []cardRule{
 	}},
 	{backStorage, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[2])},
-			state: []alertField{row("🗄", "Storage", dotGreen+" under "+m[1]+"% of its budget"), row("🚫", "Turned away", "no uploads for "+m[3])}}
+			state: []alertField{row("🗄", "Shard budget", dotGreen+" under "+m[1]+"%"), row("🚫", "Turned away", "no uploads for "+m[3])}}
 	}},
 	{backSigned, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("✍️", "Signing", dotGreen+" signing again")}}
@@ -390,7 +460,7 @@ var resolvedRules = []cardRule{
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🗄", "Storage", dotGreen+" operations succeeding")}}
 	}},
 	{backObjectOps, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🪣", "Object storage", dotGreen+" requests succeeding")}}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🪣", "Storage backend", dotGreen+" requests succeeding")}}
 	}},
 	{backUploads, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("💤", "Uploads", dotGreen+" arriving again")}}
@@ -447,6 +517,8 @@ func (msg *alertMsg) proposalParts(first string, rest []string, state string) ca
 		switch {
 		case strings.HasPrefix(line, "Ends "):
 			p.ident = append(p.ident, row("🗓", "Ends", strings.TrimPrefix(line, "Ends ")))
+		case strings.HasSuffix(line, " has not voted yet"):
+			p.state = append(p.state, validatorField(strings.TrimSuffix(line, " has not voted yet")), row("🗳", "Vote", dotRed+" not voted yet"))
 		case strings.HasSuffix(line, " has not voted"):
 			p.state = append(p.state, validatorField(strings.TrimSuffix(line, " has not voted")), row("🗳", "Vote", dotRed+" not voted yet"))
 		case msg.resolved && line == "Voting closed":
@@ -476,6 +548,9 @@ func (msg *alertMsg) upgradeParts(title, height string, rest []string, state str
 	p := cardParts{title: title, ident: []alertField{row("📏", "Height", height)}, used: true}
 	if msg.resolved {
 		status := dotGreen + " upgraded"
+		if isSignalUpgrade(msg.message) {
+			status = dotGreen + " upgrade height reached"
+		}
 		if state == "Cancelled" {
 			status = dotRed + " cancelled"
 		}
@@ -495,7 +570,7 @@ func (msg *alertMsg) upgradeParts(title, height string, rest []string, state str
 func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts, bool) {
 	orphan := msg.resolved && len(rest) > 0 && rest[len(rest)-1] == orphanNote
 	if orphan {
-		// orphaned alarm: show who and where, and that it stopped
+		// orphaned alarm: keep identity fields and show that monitoring stopped
 		p, ok := raisedParts(msg, first, rest[:len(rest)-1], state)
 		if !ok {
 			return cardParts{}, false
@@ -504,12 +579,18 @@ func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts
 		return p, true
 	}
 	if msg.resolved {
+		if r, ok := storedResolution(msg.chain, msg.message); ok && (isJailAlarm(msg.message) || isSignalMessage(msg.message)) {
+			original, _, _ := strings.Cut(msg.message, "\n")
+			p, known := raisedParts(msg, original, nil, state)
+			p.state = []alertField{row("✅", "Status", r.text)}
+			return p, known
+		}
 		if !strings.HasPrefix(first, "Proposal #") && !cardUpgrade.MatchString(first) && !cardSignalUpgrade.MatchString(first) {
 			if p, ok := matchRule(msg, resolvedRules, first, rest); ok {
 				return p, true
 			}
-			// no stored resolution (restarted since it cleared): fall back to the raised message
-			p, ok := matchRule(msg, raisedRules, first, nil)
+			// after a restart, use the raised message when no resolution was saved
+			p, ok := raisedParts(msg, first, nil, state)
 			p.state = []alertField{row("📌", "Status", dotGreen+" cleared")}
 			return p, ok
 		}
@@ -518,6 +599,23 @@ func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts
 }
 
 func raisedParts(msg *alertMsg, first string, rest []string, state string) (cardParts, bool) {
+	if cardInactive.MatchString(first) || canUnjail.MatchString(first) {
+		p, ok := matchRule(msg, raisedRules, first, nil)
+		p.state = append(p.state, noteFields(rest)...)
+		p.used = true
+		return p, ok
+	}
+	if strings.Contains(first, " is missing blocks on ") {
+		parts := strings.SplitN(first, " is missing blocks on ", 2)
+		return cardParts{ident: who(parts[0], parts[1]), state: append([]alertField{row("⚠️", "Status", "missing blocks")}, noteFields(rest)...), used: true}, true
+	}
+	if strings.Contains(first, " is close to jail on ") {
+		parts := strings.SplitN(first, " is close to jail on ", 2)
+		return cardParts{ident: who(parts[0], parts[1]), state: append([]alertField{row("🚨", "Status", "close to jail")}, noteFields(rest)...), used: true}, true
+	}
+	if strings.HasPrefix(first, "Node stopped at the version ") {
+		return cardParts{ident: []alertField{row("🔖", "Version", fmt.Sprint(signalMessageVersion(first)))}, state: append([]alertField{row("🚨", "Status", "node stopped at upgrade height")}, noteFields(rest)...), used: true}, true
+	}
 	if strings.HasPrefix(first, "Proposal #") {
 		return msg.proposalParts(first, rest, state), true
 	}
@@ -554,7 +652,7 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 	c.Title = p.title
 	fields := append(append([]alertField(nil), p.ident...), p.state...)
 	orphan := msg.resolved && strings.HasSuffix(body, "\n"+orphanNote)
-	if !msg.resolved && msg.severity != "" && msg.severity != "info" && state != strings.ToUpper(msg.severity[:1])+msg.severity[1:] {
+	if !msg.resolved && state != "Tombstoned" && msg.severity != "" && msg.severity != "info" && state != strings.ToUpper(msg.severity[:1])+msg.severity[1:] {
 		fields = append(fields, row("⚠️", "Severity", msg.severity))
 	}
 	if msg.resolved && !orphan && msg.lasted > 0 && msg.wasAProblem() {
@@ -571,7 +669,7 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 	return c
 }
 
-// wasAProblem is false for news (proposal, upgrade, signalling) and permanent tombstones, where the duration means nothing.
+// wasAProblem excludes notices and permanent tombstones from durations.
 func (msg *alertMsg) wasAProblem() bool {
 	m := msg.message
 	return !strings.HasPrefix(m, "Proposal #") && !strings.HasPrefix(m, "Upgrade ") && !isSignalMessage(m) && !strings.Contains(m, " is tombstoned on ")
@@ -592,6 +690,10 @@ func (c alertCard) telegramLines() []string {
 	}
 	for _, f := range c.Fields {
 		value := html.EscapeString(f.Value)
+		if c.State == "Tombstoned" && f.Label == "Note" && f.Value == "Permanent, the validator can't be unjailed" {
+			lines = append(lines, value)
+			continue
+		}
 		if f.Code {
 			value = "<code>" + value + "</code>"
 		} else {
@@ -650,7 +752,7 @@ type DiscordFooter struct {
 	Text string `json:"text"`
 }
 
-// discordEmbed clips to discord's limits, it rejects the whole message otherwise.
+// discordEmbed clips fields to Discord limits.
 func (c alertCard) discordEmbed(color uint) DiscordEmbed {
 	description := ""
 	if c.Title != "" {

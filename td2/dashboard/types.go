@@ -10,42 +10,82 @@ type HealthStatus struct {
 	Stale       int  `json:"stale_validator_info"`
 }
 
+type RPCNodeStatus struct {
+	Endpoint string `json:"endpoint"`
+	Down     bool   `json:"down"`
+	Version  string `json:"version,omitempty"`
+}
+
+type AlertLine struct {
+	Text   string `json:"text"`
+	Detail string `json:"detail,omitempty"`
+	Notice bool   `json:"notice,omitempty"`
+}
+
 type ChainStatus struct {
-	MsgType        string `json:"msgType"`
-	Name           string `json:"name"`
-	ChainId        string `json:"chain_id"`
-	Moniker        string `json:"moniker"`
-	Bonded         bool   `json:"bonded"`
-	Jailed         bool   `json:"jailed"`
-	Tombstoned     bool   `json:"tombstoned"`
-	Missed         int64  `json:"missed"`
-	Window         int64  `json:"window"`
-	SigningStale   bool   `json:"signing_stale"`
-	ValidatorStale bool   `json:"validator_stale"`
-	Monitoring     bool   `json:"monitoring"`
-	Nodes          int    `json:"nodes"`
-	HealthyNodes   int    `json:"healthy_nodes"`
-	NoNodes        bool   `json:"no_nodes"`
-	ActiveAlerts   int    `json:"active_alerts"`
-	Height         int64  `json:"height"`
-	LastBlockAt    int64  `json:"last_block_at"`
-	LastError      string `json:"last_error"`
-	Signed         int64  `json:"signed"`
-	Proposed       int64  `json:"proposed"`
-	MissedProps    int64  `json:"missed_proposals"`
-	VotingPower    int64  `json:"voting_power"`
-	TotalPower     int64  `json:"total_power"`
-	Rank           int    `json:"rank"`
-	ActiveSet      int    `json:"active_set"`
-	MaxValidators  int    `json:"max_validators"`
-	MaxMissed      int64  `json:"max_missed"`
+	MsgType        string          `json:"msgType"`
+	Name           string          `json:"name"`
+	ChainId        string          `json:"chain_id"`
+	Moniker        string          `json:"moniker"`
+	Bonded         bool            `json:"bonded"`
+	Jailed         bool            `json:"jailed"`
+	Tombstoned     bool            `json:"tombstoned"`
+	Missed         int64           `json:"missed"`
+	Window         int64           `json:"window"`
+	SigningStale   bool            `json:"signing_stale"`
+	ValidatorStale bool            `json:"validator_stale"`
+	Monitoring     bool            `json:"monitoring"`
+	RPCNodes       []RPCNodeStatus `json:"rpc_nodes,omitempty"`
+	Nodes          int             `json:"nodes"`
+	HealthyNodes   int             `json:"healthy_nodes"`
+	NoNodes        bool            `json:"no_nodes"`
+	ActiveAlerts   int             `json:"active_alerts"`
+	NoticeAlerts   int             `json:"notice_alerts"`
+	NoticeLabel    string          `json:"notice_label,omitempty"`
+	Height         int64           `json:"height"`
+	LastBlockAt    int64           `json:"last_block_at"`
+	Alerts         []AlertLine     `json:"alerts,omitempty"`
+	LastError      string          `json:"last_error"`
+	Signed         int64           `json:"signed"`
+	Proposed       int64           `json:"proposed"`
+	MissedProps    int64           `json:"missed_proposals"`
+	VotingPower    int64           `json:"voting_power"`
+	TotalPower     int64           `json:"total_power"`
+	Rank           int             `json:"rank"`
+	ActiveSet      int             `json:"active_set"`
+	MaxValidators  int             `json:"max_validators"`
+	MaxMissed      int64           `json:"max_missed"`
 
 	Blocks []int `json:"blocks"`
 
 	Fibre *FibreStatus `json:"fibre,omitempty"`
 }
 
+type FibreMissedBlob struct {
+	Height     int64   `json:"height"`
+	Commitment string  `json:"commitment"`
+	BlobSize   uint64  `json:"blob_size"`
+	Namespace  string  `json:"namespace"`
+	Time       int64   `json:"time"`
+	Signed     int     `json:"signed,omitempty"`
+	Validators int     `json:"validators,omitempty"`
+	Power      float64 `json:"power,omitempty"`
+}
+
+type FibreEndorsing struct {
+	Stopped      bool   `json:"stopped"`
+	Since        int64  `json:"since"`
+	Height       int64  `json:"height"`
+	Blobs        int64  `json:"blobs"`
+	LastEndorsed int64  `json:"last_endorsed"`
+	Text         string `json:"text"`
+}
+
 type FibreStatus struct {
+	Endorsing      FibreEndorsing    `json:"endorsing"`
+	StorageBackend string            `json:"storage_backend,omitempty"`
+	LatestMissed   []FibreMissedBlob `json:"latest_missed"`
+
 	Resources     map[string]float64 `json:"resources,omitempty"`
 	Registered    bool               `json:"registered"`
 	Host          string             `json:"host,omitempty"`
@@ -80,8 +120,12 @@ type FibreStatus struct {
 	Last24h FibreWindow `json:"last_24h"`
 }
 
-// Seconds is the part of the window seen, short after a restart. A nil average or share was not measured.
+// FibreWindow seconds is observed time; nil averages and shares were not measured.
 type FibreWindow struct {
+	Endorsed int64 `json:"endorsed"`
+	Missed   int64 `json:"missed"`
+	Unknown  int64 `json:"unknown"`
+
 	Seconds          int64    `json:"seconds"`
 	UploadsOK        int64    `json:"uploads_ok"`
 	UploadsFailed    int64    `json:"uploads_failed"`

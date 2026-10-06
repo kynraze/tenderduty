@@ -38,7 +38,7 @@ type alertMsg struct {
 	key      string
 	// how long a resolved alarm was active, zero if unknown
 	lasted time.Duration
-	// recovery announced by another alarm of the same event: no chat message, pagerduty still resolves
+	// chat recovery announced by another alarm; PagerDuty still resolves
 	quiet bool
 	// several nodes of one server, see group_alerts.go
 	group *groupCard
@@ -63,7 +63,7 @@ func (msg *alertMsg) heading() string {
 	return msg.chain
 }
 
-// summary drops the "Severity: x" line some alarms carry, the header shows it.
+// summary removes the severity line already shown in the header.
 func (msg *alertMsg) summary() string {
 	if msg.group != nil {
 		return msg.group.summary(msg)
@@ -78,15 +78,63 @@ func (msg *alertMsg) summary() string {
 	}
 	if strings.HasPrefix(msg.message, "Severity: ") {
 		if _, rest, ok := strings.Cut(msg.message, "\n"); ok {
+			if !msg.resolved {
+				if detail := nodeDownDetail(msg.chain, msg.message); detail != "" {
+					return rest + "\n" + detail
+				}
+			}
 			return rest
 		}
 	}
 	if (strings.HasPrefix(msg.message, "Proposal #") || strings.Contains(msg.message, "\nCan unjail after ")) && !msg.resolved {
 		return govTimeLeft(msg.message)
 	}
+	if !msg.resolved && isSignalUpgrade(msg.message) {
+		body := msg.message
+		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
+			body += "\n" + line
+		}
+		if line := signalUpgradeDetail(msg.chain, msg.message); line != "" {
+			body += "\n" + line
+		}
+		return body
+	}
+	if !msg.resolved && strings.HasPrefix(msg.message, "Node stopped at the version ") {
+		return msg.message + fmt.Sprintf("\nupgrade celestia-appd to v%d or later", signalMessageVersion(msg.message))
+	}
+	if !msg.resolved && strings.Contains(msg.message, " is tombstoned on ") {
+		first, rest, _ := strings.Cut(msg.message, "\n")
+		if detail := jailDetail(msg.chain, first); detail != "" {
+			first += "\n" + detail
+		}
+		if rest == "" {
+			rest = "Permanent, the validator can't be unjailed"
+		}
+		return first + "\n" + rest
+	}
+	if !msg.resolved && isJailAlarm(msg.message) && !strings.Contains(msg.message, "\n") {
+		if line := jailDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
 	if (strings.HasPrefix(msg.message, "Upgrade ") || isSignalUpgrade(msg.message)) && !msg.resolved {
 		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
 			return msg.message + "\n" + line
+		}
+	}
+	if isSignalMessage(msg.message) && !msg.resolved {
+		if line := signalDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if strings.HasPrefix(msg.message, "stalled: have not seen a new block") && !msg.resolved {
+		if line := stalledUpgradeDetail(msg.chain); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if strings.HasPrefix(msg.message, fibreEndorsementPrefix) && !msg.resolved {
+		if cc := td.Chains[msg.chain]; cc != nil {
+			return msg.message + "\n" + cc.endorsementAlertDetail()
 		}
 	}
 	if isFibreMessage(msg.message) && !msg.resolved {
@@ -119,7 +167,6 @@ func (msg *alertMsg) header() (icon, state string) {
 	if strings.HasPrefix(msg.message, "Config reload failed\n") {
 		return "ℹ️", "Config reload failed"
 	}
-	// governance gets its own labels
 	if strings.HasPrefix(msg.message, "Proposal #") {
 		if msg.resolved {
 			return govResolvedLabel(msg.chain, msg.message)
@@ -130,6 +177,16 @@ func (msg *alertMsg) header() (icon, state string) {
 		return "🗳", "New proposal"
 	}
 	switch first, _, _ := strings.Cut(msg.message, "\n"); {
+	case strings.Contains(first, " is missing blocks on "):
+		if msg.resolved {
+			return "✅", "Recovered"
+		}
+		return "⚠️", "Missing blocks"
+	case strings.Contains(first, " is close to jail on "):
+		if msg.resolved {
+			return "✅", "Recovered"
+		}
+		return "🚨", "Close to jail"
 	case strings.Contains(first, " is tombstoned on "):
 		if msg.resolved {
 			return "✅", "Resolved"
@@ -144,15 +201,21 @@ func (msg *alertMsg) header() (icon, state string) {
 		if msg.resolved {
 			return "✅", "Active again"
 		}
-		return "🚨", "Inactive"
+		return "🚨", "Not in the active set"
 	case strings.Contains(first, " can unjail on "):
 		if msg.resolved {
 			return "✅", "Unjailed"
 		}
-		return "🔓", "Can unjail"
+		return "🔓", "Can unjail now"
 	}
 	if isSignalMessage(msg.message) {
 		return signalLabel(msg)
+	}
+	if strings.HasPrefix(msg.message, fibreEndorsementPrefix) {
+		if msg.resolved {
+			return "✅", "Fibre endorsing"
+		}
+		return "✍️", "Fibre stopped"
 	}
 	if isFibreMessage(msg.message) {
 		return fibreLabel(msg)
@@ -196,6 +259,7 @@ const (
 )
 
 type alarmCache struct {
+	AlarmSeverities   map[string]string               `json:"alarm_severities,omitempty"`
 	AlarmIDs          map[string]string               `json:"alarm_ids,omitempty"`
 	SentPdAlarms      map[string]time.Time            `json:"sent_pd_alarms"`
 	SentTgAlarms      map[string]time.Time            `json:"sent_tg_alarms"`
@@ -216,7 +280,7 @@ type pendingRecovery struct {
 	Message  string `json:"message"`
 	Severity string `json:"severity"`
 	ID       string `json:"id"`
-	// Lasted is gone with the alarm, so it is kept here.
+	// Keep the duration after the alarm is removed.
 	Lasted time.Duration `json:"lasted,omitempty"`
 	Quiet  bool          `json:"quiet,omitempty"`
 }
@@ -416,7 +480,7 @@ func notifySlack(msg *alertMsg) (err error) {
 	return postSlack(msg)
 }
 
-// postSlack skips the sent-tracking, a grouped message covers several alarms.
+// postSlack skips sent tracking for grouped messages.
 func postSlack(msg *alertMsg) (err error) {
 	data, err := json.Marshal(buildSlackMessage(msg))
 	if err != nil {
@@ -473,7 +537,6 @@ func (msg *alertMsg) tone() string {
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
 	card := msg.card()
 	icon, state := card.Icon, card.State
-	// the first line is the notification preview, the fields hold the rest
 	message, _, _ := strings.Cut(msg.summary(), "\n")
 	if card.Note != "" {
 		message = msg.text()
@@ -483,7 +546,6 @@ func buildSlackMessage(msg *alertMsg) *SlackMessage {
 	if msg.resolved {
 		message = "OK: " + message
 	}
-	// slack colour names, plain has none
 	color := map[string]string{"good": "good", "warning": "warning", "danger": "danger"}[msg.tone()]
 	return &SlackMessage{
 		Text: slackText(message),
@@ -553,7 +615,7 @@ type DiscordMessage struct {
 	AllowedMentions *DiscordAllowedMentions `json:"allowed_mentions,omitempty"`
 }
 
-// DiscordAllowedMentions lists who a message may ping, anything else in its text is plain.
+// DiscordAllowedMentions lists the users and roles a message may ping.
 type DiscordAllowedMentions struct {
 	Parse []string `json:"parse"`
 	Users []string `json:"users,omitempty"`
@@ -568,7 +630,7 @@ var (
 // discordMentionLimit is how many users or roles discord accepts in allowed_mentions.
 const discordMentionLimit = 100
 
-// discordAllowedMentions lets the operator's own mentions ping, never chain text such as a chain name or proposal title.
+// discordAllowedMentions permits configured mentions only.
 func discordAllowedMentions(configured string) *DiscordAllowedMentions {
 	allowed := &DiscordAllowedMentions{Parse: []string{}}
 	// "everyone" covers @here as well
@@ -655,7 +717,7 @@ func postTg(msg *alertMsg) (err error) {
 // timeLeft matches the time left shown in governance and upgrade messages.
 var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 
-// buildTelegramMessage escapes all text, telegram rejects a message with a stray <.
+// buildTelegramMessage escapes text for Telegram HTML.
 func buildTelegramMessage(msg *alertMsg) string {
 	card := msg.card()
 	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.heading()), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
@@ -663,7 +725,6 @@ func buildTelegramMessage(msg *alertMsg) string {
 		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
 	if msg.tgMentions != "" {
-		// already HTML, escaped in telegramMentions
 		text += "\n" + msg.tgMentions
 	}
 	return text
@@ -714,6 +775,10 @@ func getAlarms(chain string) string {
 	}
 	result := ""
 	for k := range alarms.AllAlarms[chain] {
+		// the "is close" reminder repeats the scheduled upgrade, show it once
+		if _, ok := alarms.AllAlarms[chain][k+" is close"]; ok {
+			continue
+		}
 		result += "🚨 " + k + "\n"
 	}
 	return result
@@ -731,7 +796,6 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		uniq = *id
 	}
 	alerts := c.Chains[chainName].alertSettings()
-	// recoveries skip min_severity
 	routed := func(min string) bool { return resolved || severityRank(severity) >= severityRank(min) }
 	a := &alertMsg{
 		source:       c.Chains[chainName],
@@ -758,7 +822,7 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 	return a
 }
 
-// severityRank orders severities for min_severity, unknown ranks as critical so it is never dropped.
+// severityRank ranks unknown severities as critical to retain their alerts.
 func severityRank(severity string) int {
 	switch severity {
 	case "":
@@ -779,7 +843,7 @@ func (c *Config) alert(chainName, message, severity string, resolved bool, id *s
 	c.record(chainName, message, severity, resolved, false, id)
 }
 
-// resolveQuietly clears an alarm whose recovery another alarm announces, pagerduty still resolves.
+// resolveQuietly skips chat recovery but resolves PagerDuty.
 func (c *Config) resolveQuietly(chainName, message string, id *string) {
 	c.record(chainName, message, "info", true, true, id)
 }
@@ -802,7 +866,6 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 		return
 	}
 	// Keep retirement from passing an alert that is still being recorded.
-	// raised again: forget how it last resolved
 	if !resolved {
 		resolutions.Delete(chainName + "\x00" + message)
 	}
@@ -820,6 +883,14 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 		delete(alarms.AlarmIDs, chainName+"\x00"+message)
 	}
 	key := chainName + "\x00" + message
+	if resolved {
+		delete(alarms.AlarmSeverities, key)
+	} else if alarms.AllAlarms[chainName][message].IsZero() {
+		if alarms.AlarmSeverities == nil {
+			alarms.AlarmSeverities = make(map[string]string)
+		}
+		alarms.AlarmSeverities[key] = severity
+	}
 	if alarms.AllAlarms[chainName] == nil {
 		alarms.AllAlarms[chainName] = make(map[string]time.Time)
 	}
@@ -873,7 +944,7 @@ func (cc *ChainConfig) watch() {
 	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
 	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
-	var missedAlarm, pctAlarm, proposalAlarm, jailAlarm, jailSoonAlarm, noNodes, wasActive bool
+	var proposalAlarm, noNodes bool
 	var lastStatus *dash.ChainStatus
 	nodeAlarms := make(map[string]bool)
 
@@ -906,23 +977,9 @@ func (cc *ChainConfig) watch() {
 		noNodesSec = 0
 		break
 	}
-	missedAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.alertSettings().ConsecutiveMissed, cc.ChainId))
-	pctAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.alertSettings().Window, cc.ChainId))
 	proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(valInfo.Moniker))
-	jailAlarm = alarmIsActive(cc.name, cc.jailRiskMessage(valInfo.Moniker))
-	jailSoonAlarm = alarmIsActive(cc.name, cc.jailSoonMessage(valInfo.Moniker))
 	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
-	// old message wording, kept for saved alarms
-	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
-	if inactiveMessage == "" {
-		inactiveMessage = activeMessage(cc.name, " is no longer in the active set on ")
-	}
-	if inactiveMessage == "" {
-		inactiveMessage = activeMessage(cc.name, " is jailed on ")
-	}
-	tombstoneMessage := activeMessage(cc.name, " is tombstoned on ")
-	unjailMessage := activeMessage(cc.name, " can unjail on ")
 	for _, node := range cc.Nodes {
 		message := nodeDownMessage(node.Url, cc.ChainId)
 		nodeAlarms[node.Url] = alarmIsActive(cc.name, message)
@@ -951,11 +1008,7 @@ func (cc *ChainConfig) watch() {
 			info, _ := cc.validatorState()
 			cc.clearOrphanedAlarms(info, noRpcId)
 			alerts := cc.alertSettings()
-			missedAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed %d blocks on %s", info.Moniker, alerts.ConsecutiveMissed, cc.ChainId))
-			pctAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", info.Moniker, alerts.Window, cc.ChainId))
 			proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(info.Moniker))
-			jailAlarm = alarmIsActive(cc.name, cc.jailRiskMessage(info.Moniker))
-			jailSoonAlarm = alarmIsActive(cc.name, cc.jailSoonMessage(info.Moniker))
 			cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, alerts.Stalled))
 			noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
 			for _, node := range cc.Nodes {
@@ -963,7 +1016,7 @@ func (cc *ChainConfig) watch() {
 			}
 		}
 		valInfo, _ = cc.validatorState()
-		lastBlockTime, observedBlock, consecutiveMiss := cc.blockState()
+		lastBlockTime, _, consecutiveMiss := cc.blockState()
 		unavailable := cc.hasNoNodes()
 
 		// alert if we can't monitor
@@ -1032,148 +1085,17 @@ func (cc *ChainConfig) watch() {
 			)
 		}
 
-		// inactive status must also be reconciled after a restart.
-		if cc.alertSettings().AlertIfInactive && !valInfo.ValidatorStale {
-			id, tombId, unjailId := valInfo.Valcons+"jailed", valInfo.Valcons+"tombstoned", valInfo.Valcons+"unjail"
-			// tombstoned shows only in signing info, wait briefly before alerting jailed
-			waitForSigning := valInfo.Jailed && !valInfo.Tombstoned && valInfo.SigningStale &&
-				!valInfo.SigningUpdatedAt.IsZero() && time.Since(valInfo.SigningUpdatedAt) < 3*time.Minute
-			out := !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned
-			backInSet := false
-			switch {
-			case waitForSigning:
-			case valInfo.Tombstoned:
-				// permanent, never cleared; an earlier jailed alarm stays
-				if tombstoneMessage == "" || reconcile {
-					tombstoneMessage = jailMessage(valInfo, cc.ChainId)
-					td.alert(cc.name, tombstoneMessage, "critical", false, &tombId)
-				}
-			case out:
-				// a validator that was already outside the active set when we started isn't news, only alert if it
-				// drops out while we are watching. Jailing always alerts.
-				if inactiveMessage == "" && (valInfo.Jailed || wasActive) {
-					inactiveMessage = jailMessage(valInfo, cc.ChainId)
-					td.alert(cc.name, inactiveMessage, "critical", false, &id)
-				} else if inactiveMessage != "" && reconcile {
-					td.alert(cc.name, inactiveMessage, "critical", false, &id)
-				}
-			case inactiveMessage != "" && !valInfo.SigningStale:
-				td.alert(cc.name, inactiveMessage, "info", true, &id)
-				inactiveMessage, backInSet = "", true
-			}
-			// clears only when chain data changed (reset, other validator), quietly so pagerduty closes
-			if tombstoneMessage != "" && !valInfo.Tombstoned && !valInfo.SigningStale {
-				td.resolveQuietly(cc.name, tombstoneMessage, &tombId)
-				tombstoneMessage = ""
-			}
+		cc.jailAlarms(valInfo, consecutiveMiss, reconcile)
 
-			// downtime jail ends after jailed_until, then an unjail tx is needed
-			canUnjail := valInfo.Jailed && !valInfo.Tombstoned && valInfo.JailedUntil.After(time.Unix(0, 0)) && time.Now().After(valInfo.JailedUntil)
-			if canUnjail && (unjailMessage == "" || reconcile) {
-				unjailMessage = fmt.Sprintf("%s can unjail on %s", valInfo.Moniker, cc.ChainId)
-				td.alert(cc.name, unjailMessage, "info", false, &unjailId)
-			} else if unjailMessage != "" && !valInfo.Jailed {
-				// back in the set already says unjailed
-				if backInSet {
-					td.resolveQuietly(cc.name, unjailMessage, &unjailId)
-				} else {
-					td.alert(cc.name, unjailMessage, "info", true, &unjailId)
-				}
-				unjailMessage = ""
-			}
-		}
-		if valInfo.Bonded && !valInfo.Jailed && !valInfo.Tombstoned && !valInfo.ValidatorStale {
-			wasActive = true
-		}
-
-		// consecutive missed block alarms:
-		if (!missedAlarm || reconcile) && cc.alertSettings().ConsecutiveAlerts && int(consecutiveMiss) >= cc.alertSettings().ConsecutiveMissed {
-			// alert on missed block counter!
-			missedAlarm = true
-			id := valInfo.Valcons + "consecutive"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.alertSettings().ConsecutiveMissed, cc.ChainId),
-				cc.alertSettings().ConsecutivePriority,
-				false,
-				&id,
-			)
-		} else if missedAlarm && observedBlock && int(consecutiveMiss) < cc.alertSettings().ConsecutiveMissed {
-			// clear the alert
-			missedAlarm = false
-			id := valInfo.Valcons + "consecutive"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.alertSettings().ConsecutiveMissed, cc.ChainId),
-				"info",
-				true,
-				&id,
-			)
-		}
-
-		// window percentage missed block alarms
-		if cc.alertSettings().PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && (!pctAlarm || reconcile) &&
-			100*float64(valInfo.Missed)/float64(valInfo.Window) > float64(cc.alertSettings().Window) {
-			// alert on missed block counter!
-			pctAlarm = true
-			id := valInfo.Valcons + "percent"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.alertSettings().Window, cc.ChainId),
-				cc.alertSettings().PercentagePriority,
-				false,
-				&id,
-			)
-		} else if cc.alertSettings().PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && pctAlarm &&
-			100*float64(valInfo.Missed)/float64(valInfo.Window) <= float64(cc.alertSettings().Window) {
-			// clear the alert
-			pctAlarm = false
-			id := valInfo.Valcons + "percent"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.alertSettings().Window, cc.ChainId),
-				"info",
-				true,
-				&id,
-			)
-		}
-
-		// proposals are rare, so count misses over a time window
 		if cc.alertSettings().ProposalAlerts {
 			misses := cc.recentProposalMisses(time.Duration(cc.alertSettings().ProposalMinutes) * time.Minute)
 			id := valInfo.Valcons + "proposal"
 			if (!proposalAlarm || reconcile) && misses >= cc.alertSettings().ProposalMissed {
 				proposalAlarm = true
-				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), cc.alertSettings().ProposalPriority, false, &id)
+				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), cc.alertSettings().ProposalSeverity, false, &id)
 			} else if proposalAlarm && misses < cc.alertSettings().ProposalMissed {
 				proposalAlarm = false
 				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), "info", true, &id)
-			}
-		}
-
-		// near jailing, limit from the chain's slashing params
-		if cc.alertSettings().JailRiskAlerts && !valInfo.SigningStale && valInfo.MaxMissed > 0 {
-			id := valInfo.Valcons + "jail"
-			atRisk := 100*valInfo.Missed >= int64(cc.alertSettings().JailRiskPercent)*valInfo.MaxMissed
-			if (!jailAlarm || reconcile) && atRisk {
-				jailAlarm = true
-				td.alert(cc.name, cc.jailRiskMessage(valInfo.Moniker), cc.alertSettings().JailRiskPriority, false, &id)
-			} else if jailAlarm && !atRisk {
-				jailAlarm = false
-				td.alert(cc.name, cc.jailRiskMessage(valInfo.Moniker), "info", true, &id)
-			}
-
-			// estimate time to jailing from block time
-			soonId := valInfo.Valcons + "jailsoon"
-			blockTime := cc.averageBlockTime()
-			soon := consecutiveMiss >= jailSoonAfter && blockTime > 0 &&
-				time.Duration(valInfo.missesBeforeJail())*blockTime <= time.Duration(cc.alertSettings().JailRiskMinutes)*time.Minute
-			if (!jailSoonAlarm || reconcile) && soon {
-				jailSoonAlarm = true
-				td.alert(cc.name, cc.jailSoonMessage(valInfo.Moniker), "critical", false, &soonId)
-			} else if jailSoonAlarm && !soon {
-				jailSoonAlarm = false
-				td.alert(cc.name, cc.jailSoonMessage(valInfo.Moniker), "info", true, &soonId)
 			}
 		}
 
@@ -1183,7 +1105,7 @@ func (cc *ChainConfig) watch() {
 		if cc.alertSettings().UpgradeAlerts && valInfo.Valcons != "" {
 			cc.upgradeAlarms(valInfo, reconcile)
 		}
-		if cc.alertSettings().SignalAlerts && valInfo.Valcons != "" {
+		if cc.alertSettings().UpgradeAlerts && valInfo.Valcons != "" {
 			cc.signalAlarms(valInfo, reconcile)
 		}
 		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" {
@@ -1247,6 +1169,9 @@ func (cc *ChainConfig) watch() {
 				}
 			}
 		}
+		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" {
+			cc.fibreEndorsementAlarms(valInfo, reconcile)
+		}
 		if td.EnableDash {
 			// blocks are pushed as they arrive, only send node and alarm changes here
 			status := cc.dashboardStatus()
@@ -1262,9 +1187,6 @@ func (cc *ChainConfig) watch() {
 		reconcile = false
 	}
 }
-
-// jailSoonAfter is the consecutive misses needed before estimating time to jailing.
-const jailSoonAfter = 3
 
 func plural(n int, noun string) string {
 	if n == 1 {
@@ -1307,18 +1229,8 @@ func (cc *ChainConfig) jailSoonMessage(moniker string) string {
 // alert was disabled or a config change (thresholds, moniker etc.) changed the message.
 func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	expected := make(map[string]bool)
-	if cc.alertSettings().ConsecutiveAlerts {
-		expected[fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.alertSettings().ConsecutiveMissed, cc.ChainId)] = true
-	}
-	if cc.alertSettings().PercentageAlerts {
-		expected[fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.alertSettings().Window, cc.ChainId)] = true
-	}
 	if cc.alertSettings().ProposalAlerts {
 		expected[cc.proposalMessage(valInfo.Moniker)] = true
-	}
-	if cc.alertSettings().JailRiskAlerts {
-		expected[cc.jailRiskMessage(valInfo.Moniker)] = true
-		expected[cc.jailSoonMessage(valInfo.Moniker)] = true
 	}
 	if cc.alertSettings().StalledAlerts {
 		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled)] = true
@@ -1330,6 +1242,9 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 		if node.AlertIfDown {
 			expected[nodeDownMessage(node.Url, cc.ChainId)] = true
 		}
+	}
+	if cc.alertSettings().FibreAlerts && cc.alertSettings().FibreEndorsementAlert {
+		expected[fibreEndorsementPrefix+cc.ChainId] = true
 	}
 	if cc.alertSettings().FibreAlerts && td.FibreMetrics.Listen != "" {
 		for _, kind := range cc.fibreMetricsKindsOn() {
@@ -1347,7 +1262,16 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	for _, message := range restored {
 		var id string
 		switch {
-		case expected[message]:
+		case legacySigningAlarm(message):
+			id = td.alarmID(cc.name, message)
+			if id == "" {
+				id = jailAlarmID(valInfo, message)
+			}
+			td.resolveQuietly(cc.name, message, &id)
+			continue
+		case isJailAlarm(message):
+			continue // the staged alarm handles old and disabled alarms
+		case expected[fibreMetricsCurrentMessage(message)]:
 			continue
 		case strings.Contains(message, " is no longer active: validator is "), strings.Contains(message, " is no longer in the active set on "),
 			strings.Contains(message, " is jailed on "):
@@ -1378,10 +1302,12 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			}
 			id = upgradeAlarmId(valInfo, message)
 		case isSignalMessage(message):
-			if cc.alertSettings().SignalAlerts {
+			if cc.alertSettings().UpgradeAlerts {
 				continue
 			}
 			id = signalAlarmId(valInfo, message)
+		case strings.HasPrefix(message, fibreEndorsementPrefix):
+			id = valInfo.Valcons + "fibreendorsement"
 		case isFibreMessage(message):
 			if cc.alertSettings().FibreAlerts {
 				continue

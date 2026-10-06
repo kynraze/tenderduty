@@ -197,6 +197,8 @@ func saveState(stateFile string) error {
 	lastBlocks := make(map[string]time.Time)
 	heights := make(map[string]int64)
 	consecutive := make(map[string]float64)
+	jailedSince := make(map[string]time.Time)
+	slashes := make(map[string]slashDetails)
 	proposals := make(map[string][]time.Time)
 	nodesDown := make(map[string]map[string]time.Time)
 	for name, chain := range td.Chains {
@@ -205,6 +207,12 @@ func saveState(stateFile string) error {
 		lastBlocks[name] = chain.lastBlockTime
 		heights[name] = chain.lastBlockNum
 		consecutive[name] = chain.statConsecutiveMiss
+		if chain.slash.Valcons != "" {
+			slashes[name] = chain.slash
+		}
+		if !chain.jailedSince.IsZero() {
+			jailedSince[name] = chain.jailedSince
+		}
 		if len(chain.proposalMisses) > 0 {
 			proposals[name] = append([]time.Time(nil), chain.proposalMisses...)
 		}
@@ -223,7 +231,7 @@ func saveState(stateFile string) error {
 
 	alarms.notifyMux.RLock()
 	sequence := alarms.NextNotification
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, Proposals: proposals, TgMentions: mentionSnapshot(), FibreRollups: td.fibreData().savedHours(), Reports: td.savedReports(time.Now())})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, JailedSince: jailedSince, Slashes: slashes, Proposals: proposals, TgMentions: mentionSnapshot(), FibreEndorsing: td.fibreData().savedEndorsing(), FibreMissed: td.fibreData().savedMissed(), FibreRollups: td.fibreData().savedHours(), FibreMinutes: td.fibreData().savedShort("1h"), FibreTenmin: td.fibreData().savedShort("24h"), Reports: td.savedReports(time.Now())})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

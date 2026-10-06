@@ -51,14 +51,14 @@ func fibreStatusWithDetails() *FibreStatus {
 	return &FibreStatus{
 		Registered: true, Host: "fibre.example:7980", Reachable: false, DownReason: "dial tcp 10.0.0.5:7980: connection refused",
 		Identity: "failed", IdentityError: "key mismatch for fibre.internal:7980", Version: "v9.9.9-private",
-		Resources: map[string]float64{"go_goroutines": 120},
+		Resources: map[string]float64{"go_goroutines": 120, "go_memory_used_bytes": 1024, "go_processor_limit": 12},
 	}
 }
 
 func TestHiddenLogsHideFibreDetails(t *testing.T) {
 	original := &ChainStatus{Name: "Chain", Fibre: fibreStatusWithDetails()}
 	hidden := statusSnapshot(original, true).Fibre
-	if hidden.DownReason != "" || hidden.IdentityError != "" || hidden.Version != "" || hidden.Resources != nil {
+	if hidden.DownReason != "" || hidden.IdentityError != "" || hidden.Version == "" || hidden.Resources == nil {
 		t.Fatalf("hidden status exposes details: %+v", hidden)
 	}
 	if hidden.Host != "fibre.example:7980" || hidden.Identity != "failed" || hidden.Reachable || !hidden.Registered {
@@ -78,7 +78,7 @@ func TestHiddenLogsHideFibreDetails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leaked := range []string{"down_reason", "identity_error", "version", "resources", "fibre.internal", "10.0.0.5"} {
+	for _, leaked := range []string{"down_reason", "identity_error", "fibre.internal", "10.0.0.5"} {
 		if strings.Contains(string(data), leaked) {
 			t.Fatalf("%s is in %s", leaked, data)
 		}
@@ -100,10 +100,35 @@ func TestHiddenLogsHideFibreHistoryDetails(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(body, "fibre.example:7980") {
 			t.Fatalf("hide=%v: %d %s", hide, response.Code, body)
 		}
-		for _, key := range []string{"down_reason", "identity_error", "version", "resources"} {
+		for _, runtime := range []string{`"go_goroutines":120`, `"go_memory_used_bytes":1024`, `"go_processor_limit":12`} {
+			if !strings.Contains(body, runtime) {
+				t.Fatalf("runtime resources hidden: %s", body)
+			}
+		}
+		for _, key := range []string{"down_reason", "identity_error"} {
 			if strings.Contains(body, `"`+key+`"`) != wantDetails {
 				t.Fatalf("hide=%v: %s present=%v in %s", hide, key, !wantDetails, body)
 			}
 		}
+	}
+}
+
+func TestFibreNotificationBroadcast(t *testing.T) {
+	var cast broadcaster
+	messages, stop := cast.listen()
+	defer stop()
+	defer cast.close()
+	message := fibreNotification(&ChainStatus{MsgType: "fibre", Name: "Chain", Fibre: &FibreStatus{MetricsAt: 123, DownReason: "private"}})
+	cast.send(message)
+	select {
+	case body := <-messages:
+		if string(body) != `{"msgType":"fibre","name":"Chain","metrics_at":123}` {
+			t.Fatalf("notification: %s", body)
+		}
+	default:
+		t.Fatal("export notification was not broadcast")
+	}
+	if fibreNotification(&ChainStatus{MsgType: "update"}) != nil {
+		t.Fatal("normal status became a Fibre notification")
 	}
 }

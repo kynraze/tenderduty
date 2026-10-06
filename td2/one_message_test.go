@@ -55,11 +55,10 @@ func TestAProposalsAlarmAndReminderClearAsOneMessage(t *testing.T) {
 	p := govProposal{ID: 7, Title: "Raise the limit", VotingEnd: time.Now().Add(time.Hour)}
 	open, remind := cc.govOpenMessage(p), cc.govRemindMessage(p, "Kynraze")
 	alarms.AllAlarms["Chain"] = map[string]time.Time{open: time.Now(), remind: time.Now()}
-	// the vote was cast, nothing is wanted any more
 	cc.govAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
 	expectOne(t, c, remind, open)
 
-	// voted before the reminder, the proposal's own alarm says it
+	// the proposal notice announces a vote cast before any reminder
 	alarms.AllAlarms["Chain"] = map[string]time.Time{open: time.Now()}
 	cc.govAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
 	expectOne(t, c, open)
@@ -77,9 +76,10 @@ func TestAnUpgradesAlarmAndReminderClearAsOneMessage(t *testing.T) {
 
 func TestAVersionsSignalAlarmsClearAsOneMessage(t *testing.T) {
 	c := auditConfig(t)
-	// the chain runs version 10 now, state.Version is the next one
+	// state.Version is the next version, 11
 	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, signal: signalState{Version: 11}, lastBlockNum: 2000}
-	cc.Alerts.SignalAlerts, cc.Alerts.SignalPercent = true, 10
+	cc.Alerts.SignalPercent = 10
+	cc.Alerts.UpgradeAlerts = true
 	c.Chains["Celestia"] = cc
 	started, missing := signalStartMessage(10), signalMissingMessage(10)
 	upgrade, soon := signalUpgradeMessage(10, 1500), signalUpgradeSoonMessage(10, 1500)
@@ -91,27 +91,28 @@ func TestAVersionsSignalAlarmsClearAsOneMessage(t *testing.T) {
 	cc.signal = signalState{Version: 10, Power: 1, Total: 100}
 	alarms.AllAlarms["Celestia"] = map[string]time.Time{started: time.Now(), missing: time.Now()}
 	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
-	expectOne(t, c, started, missing)
+	expectOne(t, c, missing, started)
 
-	// the validator signalled: only that changed, so it is said
+	// the missing-signal recovery announces that the validator signalled
 	cc.signal = signalState{Version: 10, Power: 50, Total: 100, Signalled: true}
 	alarms.AllAlarms["Celestia"] = map[string]time.Time{started: time.Now(), missing: time.Now()}
 	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
-	expectOne(t, c, missing)
+	expectOne(t, c, missing, started)
 }
 
 func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
 	c := auditConfig(t)
 	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, lastBlockNum: 1000,
 		signal: signalState{Version: 10, Power: 90, Total: 100, Threshold: 84, Signalled: true, UpgradeHeight: 1500}}
-	cc.Alerts.SignalAlerts, cc.Alerts.SignalPercent = true, 10
+	cc.Alerts.SignalPercent = 10
+	cc.Alerts.UpgradeAlerts = true
 	c.Chains["Celestia"] = cc
 	threshold := signalThresholdMessage(10)
 	alarms.AllAlarms["Celestia"] = map[string]time.Time{signalStartMessage(10): time.Now(), threshold: time.Now()}
 	cc.signalAlarms(&ValInfo{Valcons: "cons", Moniker: "Kynraze"}, false)
 	announced, quiet := recoveries(t, c)
-	// the new "upgrade scheduled" alarm says it
-	if len(announced) != 0 || len(quiet) != 1 || quiet[0] != threshold {
+	// the scheduled-upgrade alarm announces this recovery
+	if len(announced) != 0 || len(quiet) != 2 || !containsMessage(quiet, threshold) || !containsMessage(quiet, signalStartMessage(10)) {
 		t.Fatalf("announced %q, quiet %q", announced, quiet)
 	}
 	if !alarmIsActive("Celestia", signalUpgradeMessage(10, 1500)) {
@@ -119,13 +120,13 @@ func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
 	}
 }
 
-// "back in the active set" announces it, "can unjail" clears quietly
+// TestAnUnjailIsOneMessage: recovery announces the active set once; legacy "can unjail" alarms clear quietly.
 func TestAnUnjailIsOneMessage(t *testing.T) {
 	oldConfig, oldAlarms := td, alarms
 	ctx, cancel := context.WithCancel(context.Background())
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
 		valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true, Window: 100, Valcons: "junovalcons1example"}}
-	chain.Alerts.AlertIfInactive = true
+	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
 	jailed, unjail := "Kynraze is jailed on juno-1", "Kynraze can unjail on juno-1"
 	alarms = newAlarmCache()
 	alarms.AllAlarms["Juno"] = map[string]time.Time{jailed: time.Now(), unjail: time.Now()}
@@ -174,7 +175,7 @@ func TestAMovedFibreHostIsOneMessage(t *testing.T) {
 	}
 }
 
-// clearing lets the alarm be sent again later
+// TestAQuietRecoverySendsNothingButClears: clearing lets the alarm be sent again later
 func TestAQuietRecoverySendsNothingButClears(t *testing.T) {
 	auditConfig(t)
 	calls := 0

@@ -101,7 +101,7 @@ func TestRemovedReloadKeysAreOnlyWarnedAbout(t *testing.T) {
 	if err != nil || !c.EnableDash {
 		t.Fatalf("the config did not load: %v", err)
 	}
-	for _, want := range []string{"not understood", "reload_on_change", "reload_check_seconds"} {
+	for _, want := range []string{"is not a setting", "reload_on_change", "reload_check_seconds"} {
 		if !strings.Contains(string(printed), want) {
 			t.Errorf("warning lacks %q: %s", want, printed)
 		}

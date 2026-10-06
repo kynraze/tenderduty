@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// A message is its alarm's key and names the problem, these say what is true once it clears.
+// Recovery text describes the cleared condition; raised messages remain alarm keys.
 
 type resolution struct {
 	icon, label, text string
 }
 
-// resolutions is keyed chain and message: the announcement for an alarm that clears for several reasons, dropped when it is raised again.
+// resolutions stores recovery text by chain and message, removed when raised again.
 var resolutions sync.Map
 
 func resolve(chain, message string, r resolution) {
@@ -53,8 +53,17 @@ var (
 	jailSoon          = regexp.MustCompile(`^(.+) will be jailed in under .+ on (\S+) if it keeps missing blocks$`)
 )
 
-// resolvedText covers alarms that clear for one reason only, others store a resolution. Empty if the message reads fine.
+// resolvedText handles single-cause recoveries; empty keeps the raised message.
 func resolvedText(chain, message string) string {
+	if isSignalUpgrade(message) {
+		if outcome, ok := upgradeOutcomes.Load(chain + "@" + messageHeight(message)); ok && outcome == "Cancelled" {
+			return message + "\nupgrade cancelled or rescheduled"
+		}
+		return message + "\nupgrade height reached"
+	}
+	if strings.HasPrefix(message, "Node stopped at the version ") {
+		return message + "\nblocks advancing again"
+	}
 	if strings.HasPrefix(message, "Proposal #") {
 		return govResolvedText(chain, message)
 	}
@@ -103,6 +112,8 @@ func govResolvedText(chain, message string) string {
 		switch {
 		case strings.HasPrefix(line, "Ends "):
 			ends = strings.TrimPrefix(line, "Ends ")
+		case strings.HasSuffix(line, " has not voted yet"):
+			moniker = strings.TrimSuffix(line, " has not voted yet")
 		case strings.HasSuffix(line, " has not voted"):
 			moniker = strings.TrimSuffix(line, " has not voted")
 		}
