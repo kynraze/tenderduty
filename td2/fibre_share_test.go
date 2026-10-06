@@ -163,7 +163,7 @@ func pathNode(t *testing.T, answer func(path string) (value []byte, codespace st
 	return client
 }
 
-// a failure keeps the last value and says nothing about Fibre
+// TestRefreshFibreReadsTheParams: a failure keeps the last value and says nothing about Fibre
 func TestRefreshFibreReadsTheParams(t *testing.T) {
 	paramsOK, paramsCode, paramsSpace := true, 0, ""
 	paramsValue := fibreParamsResponse(2<<40, true)
@@ -188,7 +188,7 @@ func TestRefreshFibreReadsTheParams(t *testing.T) {
 		t.Fatalf("stake %d, failing %v, state %+v", chain.fibreFullStake, chain.fibreParamsFailing, chain.fibre)
 	}
 
-	// the module is missing, or the node fails: the last value stays, the chain is still watched, and it is asked again
+	// failed reads retain the budget and keep the chain eligible for retries
 	for _, tc := range []struct {
 		name  string
 		space string
@@ -208,14 +208,13 @@ func TestRefreshFibreReadsTheParams(t *testing.T) {
 		t.Fatalf("the params were asked %d times", queries["/celestia.fibre.v1.Query/Params"])
 	}
 
-	// a read that works again takes the new value, governance can change it
 	paramsOK, paramsValue = true, fibreParamsResponse(4<<40, true)
 	chain.refreshFibre(context.Background(), client)
 	if chain.fibreFullStake != 4<<40 || chain.fibreParamsFailing {
 		t.Fatalf("stake %d, failing %v", chain.fibreFullStake, chain.fibreParamsFailing)
 	}
 
-	// an answer without the budget, or with zero, is not a budget and the last one stays
+	// missing or zero budgets keep the last value
 	paramsValue = fibreParamsResponse(0, false)
 	chain.refreshFibre(context.Background(), client)
 	if chain.fibreFullStake != 4<<40 || !chain.fibreParamsFailing {

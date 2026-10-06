@@ -41,7 +41,7 @@ func reportFixture(weekly bool) periodReport {
 				"🧵 Fibre: 1,284 shards stored · 0 failed",
 				"✍️ Signing: 100% under 10 ms · p95 0.9 ms",
 				"📡 99.3% reachable · upload p95 24 ms",
-				"🗃 39.6 of 74.0 GiB (53%)",
+				"🗃 Shards 39.6 of 74.0 GiB (53%)",
 			}},
 		},
 	}

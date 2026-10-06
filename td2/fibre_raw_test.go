@@ -164,7 +164,7 @@ func dashboardMetrics(t *testing.T) map[string]bool {
 	return names
 }
 
-// metrics the fixtures lack, with names and units as declared in Fibre's server_metrics.go and the Go runtime instrumentation
+// Fixtures omit these Fibre server and Go runtime metrics.
 func declaredOnlyExport() *metricsv1.MetricsData {
 	start := uint64(time.Now().Add(-time.Hour).UnixNano())
 	point := func() []*metricsv1.NumberDataPoint {
@@ -196,7 +196,7 @@ func declaredOnlyExport() *metricsv1.MetricsData {
 	}}}
 }
 
-// The client metrics are the Fibre client's; a validator's server doesn't export them.
+// TestFibreRawDashboardNames: the client metrics are the Fibre client's; a validator's server doesn't export them.
 func TestFibreRawDashboardNames(t *testing.T) {
 	r := rawRig(t)
 	r.c.ingestFibreMetrics(fixtureExport(t, "export1.pb"))
@@ -239,7 +239,7 @@ func TestFibreRawScrape(t *testing.T) {
 		}
 	}
 
-	// off: nothing is served and what was kept is forgotten with the next export
+	// disable serving immediately and discard stored series on the next export
 	r.c.FibreMetrics.ExportRaw = false
 	if body := scrape(t, r.c); strings.Contains(body, "fibre_server") {
 		t.Error("export_raw off still serves metrics")
@@ -256,7 +256,7 @@ func TestFibreRawScrape(t *testing.T) {
 	}
 }
 
-// also has a metric the receiver doesn't use, and one from a sender no chain claims
+// TestFibreRawKeepsEverythingOfAClaimedSender: includes an unused metric and an unclaimed sender.
 func TestFibreRawKeepsEverythingOfAClaimedSender(t *testing.T) {
 	r := rawRig(t)
 	start := uint64(r.clock.now.Add(-time.Hour).UnixNano())
@@ -285,7 +285,7 @@ func TestFibreRawKeepsEverythingOfAClaimedSender(t *testing.T) {
 	if strings.Contains(body, "stranger") || strings.Contains(body, "summary") || strings.Contains(body, `name="clash"`) {
 		t.Errorf("scrape has what it shouldn't:\n%s", body)
 	}
-	// a delta histogram adds up, a series that stopped coming goes stale
+	// delta histograms accumulate; absent series expire
 	r.advance(fibreRawStale)
 	if body := scrape(t, r.c); strings.Contains(body, "other_thing") {
 		t.Errorf("stale series are still served:\n%s", body)

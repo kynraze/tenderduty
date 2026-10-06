@@ -97,8 +97,8 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 	inspect(defaults)
 	defaults = mergeMaps(yamlMap{
 		"fibre_endorsement_alert":   false,
-		"fibre_endorsement_blobs":   20,
-		"fibre_endorsement_minutes": 30,
+		"fibre_endorsement_blobs":   50,
+		"fibre_endorsement_minutes": 120,
 		"gov_early_remind_percent":  25,
 		"gov_enabled":               true,
 		"upgrade_enabled":           true,

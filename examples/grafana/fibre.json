@@ -319,8 +319,8 @@
         },
         {
           "refId": "B",
-          "expr": "increase(tenderduty_fibre_object_storage_requests_total{name=~\"$chain\",outcome=~\"timeout|throttled|error\"}[$__rate_interval])",
-          "legendFormat": "{{name}} · {{outcome}}",
+          "expr": "increase(tenderduty_fibre_storage_backend_requests_total{name=~\"$chain\",outcome=~\"timeout|throttled|error\"}[$__rate_interval])",
+          "legendFormat": "{{name}} · {{backend}} · {{outcome}}",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"

@@ -22,7 +22,10 @@ type fibreReport struct {
 	Minimum     bool  // the 148 rows minimum raised the share
 	Budget      int64 // 0 when no rows or the parameter isn't read
 
-	Metrics fibreSnapshot // Found is false when nothing was received for the chain
+	Endorsing    dash.FibreEndorsing
+	Endorsements dash.FibreWindow
+	LatestMissed []dash.FibreMissedBlob
+	Metrics      fibreSnapshot // Found is false when nothing was received for the chain
 }
 
 // nil when Fibre isn't watched: fibre_enabled off or x/valaddr missing.
@@ -40,13 +43,15 @@ func (cc *ChainConfig) fibreReportFrom(now time.Time, store *fibreStore) *fibreR
 	if unsupported {
 		return nil
 	}
-	// right after start: pending, not absent
+	day, missed := store.endorsementSummary(cc.name)
+	endorsing := store.endorsingSummary(cc.name, cc.alertSettings(), now)
+	// provider check pending after startup
 	if !loaded {
-		return &fibreReport{Now: now, Pending: true}
+		return &fibreReport{Now: now, Pending: true, Endorsing: endorsing, Endorsements: day, LatestMissed: missed}
 	}
 	info, _ := cc.validatorState()
-	r := &fibreReport{Now: now, State: state}
-	// the power is zero too when the set couldn't be read, but then the total is as well
+	r := &fibreReport{Now: now, State: state, Endorsing: endorsing, Endorsements: day, LatestMissed: missed}
+	// failed set reads also leave total power zero
 	if info.TotalPower > 0 {
 		r.ShareKnown = true
 		r.Rows, r.Minimum = fibreRows(info.VotingPower, info.TotalPower)
@@ -97,15 +102,19 @@ func (s fibreState) identity() string {
 }
 
 func (r *fibreReport) telegramLines() []string {
+	endorsed := "<b>Endorsed (24h):</b> " + endorsementText(r.Endorsements.Endorsed, r.Endorsements.Missed)
+	if r.Endorsing.Stopped {
+		endorsed += "\n" + statusField("✍️", "Endorsing", "🔴 "+r.Endorsing.Text)
+	}
 	if r.Pending {
-		return []string{"🧵 <b>Fibre</b>", "⏳ Not checked yet, the first check runs within a minute"}
+		return []string{"🧵 <b>Fibre</b>", "⏳ Not checked yet, the first check runs within a minute", endorsed}
 	}
 	s, m := r.State, r.Metrics
 	head := "🧵 <b>Fibre</b>"
 	if m.Found && m.Version != "" {
 		head += " <code>" + html.EscapeString(m.Version) + "</code>"
 	}
-	lines := []string{head}
+	lines := []string{head, endorsed}
 	if !s.Registered {
 		lines = append(lines, statusField("🌐", "Host", "🔴 not registered on the chain"))
 	} else {
@@ -152,30 +161,35 @@ func (r *fibreReport) telegramLines() []string {
 	}
 	if m.HaveOccupancy {
 		used := humanBinary(m.Occupancy)
+		if r.Budget > 0 {
+			used += " of " + humanBinary(r.Budget) + " budget"
+		}
 		if m.HaveBudget && m.Budget > 0 {
 			used += " (" + html.EscapeString(percent(m.Occupancy, m.Budget)) + ")"
 		}
-		lines = append(lines, statusField("🗃", "Used", used))
+		lines = append(lines, statusField("🗃", "Shards", used))
 	}
 
 	if !m.Found {
 		return append(lines, statusField("📨", "Metrics", "⚪ not received, see docs/fibre.md"))
+	}
+	if len(m.BackendNames) > 0 {
+		lines = append(lines, statusField("🗄", "Storage backend", html.EscapeString(strings.Join(m.BackendNames, ", "))))
 	}
 	w := m.Ten
 	span := "10m"
 	if w.Covers < fibreWindow {
 		span = shortDuration(w.Covers)
 	}
-	// ok, failed, turned away by the storage limiter
 	uploads := fmt.Sprintf("✅ %s · ❌ %s · 🚫 %s", thousands(w.Sum.uploadOK), thousands(w.Sum.uploadFailed), thousands(w.Sum.rejected))
 	lines = append(lines, statusField("⬆️", "Uploads "+span, uploads))
 	last := "none yet"
 	if m.HaveSuccess {
 		last = ago(r.Now, m.LastSuccess)
 	}
-	lines = append(lines, statusField("🕒", "Last upload", last))
+	lines = append(lines, statusField("🕒", "Last successful upload", last))
 
-	// green when signing is fast, yellow when most signatures take over 10 ms (the slow alert), red when one failed
+	// red for failed signatures, yellow when most successful signatures exceed 10 ms
 	signing := "⚪ no signatures yet"
 	fast := func(d fibreDelta) string {
 		if d.signOK == 0 {
@@ -199,12 +213,16 @@ func (r *fibreReport) telegramLines() []string {
 		signing = fast(m.Day.Sum) + " over " + shortDuration(m.Day.Covers)
 	}
 	lines = append(lines, statusField("✍️", "Signing", signing))
+	// Fibre counts missing shards as failed gets, excluded from storage errors
 	storage := "🟢 ok"
-	if n := w.Sum.storePut + w.Sum.storeGet + w.Sum.prune + w.Sum.backendTimeout + w.Sum.backendThrottled + w.Sum.backendError; n > 0 {
+	if n := w.Sum.storePut + w.Sum.prune + w.Sum.backendTimeout + w.Sum.backendThrottled + w.Sum.backendError; n > 0 {
 		storage = "🔴 " + thousands(n) + " errors"
 		if n == 1 {
 			storage = "🔴 1 error"
 		}
+	}
+	if w.Sum.storeGet > 0 {
+		storage += " · " + thousands(w.Sum.storeGet) + " gets not found"
 	}
 	lines = append(lines, statusField("🗄", "Storage", storage))
 	return append(lines, statusField("📨", "Metrics", ago(r.Now, m.LastReceived)))
@@ -238,12 +256,15 @@ func fibreWindowStatus(s fibreSummary) dash.FibreWindow {
 }
 
 func (r *fibreReport) dashboard() *dash.FibreStatus {
-	if r.Pending {
+	if r.Pending && r.Endorsements.Endorsed+r.Endorsements.Missed+r.Endorsements.Unknown == 0 {
 		return nil
 	}
 	s, m := r.State, r.Metrics
 	f := &dash.FibreStatus{
-		Registered: s.Registered, Host: s.Host, Reachable: s.Reachable, DownReason: s.DownReason,
+		StorageBackend: strings.Join(m.BackendNames, ", "),
+		LatestMissed:   r.LatestMissed,
+		Endorsing:      r.Endorsing,
+		Registered:     s.Registered, Host: s.Host, Reachable: s.Reachable, DownReason: s.DownReason,
 		Resources: m.Resources,
 		Identity:  s.identity(), IdentityError: s.IdentityError, Version: m.Version,
 		InActiveSet: r.InActiveSet, Rows: r.Rows, TotalRows: fibreOriginalRows, MinimumApplies: r.Minimum, ChainBudget: r.Budget,
@@ -258,6 +279,7 @@ func (r *fibreReport) dashboard() *dash.FibreStatus {
 		f.MetricsAt = m.LastReceived.Unix()
 		f.Last10m, f.Last24h = fibreWindowStatus(m.Ten), fibreWindowStatus(m.Day)
 	}
+	f.Last24h.Endorsed, f.Last24h.Missed, f.Last24h.Unknown = r.Endorsements.Endorsed, r.Endorsements.Missed, r.Endorsements.Unknown
 	if m.HaveSuccess {
 		f.LastUploadAt = m.LastSuccess.Unix()
 	}

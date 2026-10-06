@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcev1 "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -62,7 +63,7 @@ func newFibreRig(t *testing.T) *fibreRig {
 	// the provider check has run: the chain has Fibre, so silence means something
 	cc := &ChainConfig{name: "Chain", ChainId: "celestia", valInfo: &ValInfo{Valcons: "valcons1", Moniker: "Kynraze"},
 		fibreLoaded: true, fibre: fibreState{Registered: true, Host: "1.2.3.4:7980", Reachable: true}}
-	cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+	cc.Alerts.FibreAlerts, cc.Alerts.FibreSeverity = true, "warning"
 	c.Chains["Chain"] = cc
 	clock := &fibreClock{now: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)}
 	st := newFibreStore()
@@ -83,8 +84,8 @@ type fibreFeed struct {
 	signFailed              int64
 	put, get, prune         int64
 	timeout, throttled, err int64
-	backendOK               int64 // requests that succeeded
-	ignoredOutcomes         int64 // canceled requests, a request that is neither a success nor a failure
+	backendOK               int64
+	ignoredOutcomes         int64 // canceled requests count toward the total
 	occupancy, budget       *int64
 	lastSuccess             *int64
 	delta                   bool // report each export's change instead of the running total
@@ -147,7 +148,6 @@ func gauge(name string, v int64) *metricsv1.Metric {
 	}}}
 }
 
-// every observation in the first bucket; only the count matters
 func plain(n int64, attrs ...interface{}) *metricsv1.HistogramDataPoint {
 	return &metricsv1.HistogramDataPoint{Attributes: kvs(attrs...), Count: uint64(n), BucketCounts: []uint64{uint64(n), 0}}
 }
@@ -312,7 +312,6 @@ func TestFibreMetricsFixtures(t *testing.T) {
 	if err := proto.Unmarshal(fibreFixture(t, "export1.pb"), &first); err != nil {
 		t.Fatal(err)
 	}
-	// the sender started a moment before its first export
 	started := time.Unix(0, int64(first.ResourceMetrics[0].ScopeMetrics[0].Metrics[0].GetSum().DataPoints[0].StartTimeUnixNano))
 	r.clock.now, r.st.started = started.Add(30*time.Second), started.Add(30*time.Second)
 
@@ -387,7 +386,7 @@ func TestFibreMetricsDeltas(t *testing.T) {
 		f.send()
 		f.rejected = 14
 		f.run(1)
-		// a new start time, and the value is lower
+		// changed start time and lower value
 		f.start = uint64(r.clock.now.Add(-20 * time.Second).UnixNano())
 		f.rejected = 3
 		f.run(1)
@@ -400,7 +399,7 @@ func TestFibreMetricsDeltas(t *testing.T) {
 		if w := r.st.snapshot("Chain").Window; w.rejected != 4+3+1 {
 			t.Fatalf("after a reset the window has %d rejected, want 8", w.rejected)
 		}
-		// a changed start time with a higher value is still a restart, the old total is not subtracted
+		// a changed start time resets the baseline even when the counter grows
 		f.start = uint64(r.clock.now.Add(-5 * time.Second).UnixNano())
 		f.rejected = 20
 		f.run(1)
@@ -414,7 +413,7 @@ func TestFibreMetricsDeltas(t *testing.T) {
 		f := r.feed(48 * time.Hour)
 		f.delta = true
 		f.signFast, f.signFailed, f.rejected = 5000, 400, 30
-		f.send() // the first delta isn't a baseline, it is what happened in the interval
+		f.send() // the first delta contains observations
 		if w := r.st.snapshot("Chain").Window; w.signFast != 5000 || w.signFailed != 400 || w.rejected != 30 {
 			t.Fatalf("first delta counted as %+v", w)
 		}
@@ -456,13 +455,12 @@ func TestFibreMetricsDeltas(t *testing.T) {
 		if w := r.st.snapshot("Chain").Window; w.signTotal != 0 || w.signOK != 0 || w.signFast != 0 {
 			t.Fatalf("signing counted without a 10ms bucket: %+v", w)
 		}
-		// a failure is a failure whatever the buckets are
 		bad := f.hist("sign.duration", []float64{0.005, 0.02}, &metricsv1.HistogramDataPoint{Attributes: kvs("success", false), Count: 4, BucketCounts: []uint64{0, 4, 0}})
 		r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", bad))
 		if w := r.st.snapshot("Chain").Window; w.signTotal != 4 || w.signFailed != 4 || w.signOK != 0 {
 			t.Fatalf("failed signatures counted %+v", w)
 		}
-		// found by value, wherever it is
+		// find the bucket by value
 		moved := f.hist("sign.duration", []float64{0.0001, 0.01, 0.1}, &metricsv1.HistogramDataPoint{Attributes: kvs("success", true), Count: 10, BucketCounts: []uint64{2, 3, 4, 1}})
 		r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", moved))
 		if w := r.st.snapshot("Chain").Window; w.signTotal != 14 || w.signOK != 10 || w.signFast != 5 {
@@ -509,7 +507,6 @@ func TestFibreMetricsIgnoresWhatIsNotFibre(t *testing.T) {
 	f := r.feed(time.Minute)
 	f.rejected = 5
 	good := f.data()
-	// a collector forwards other apps, and a Fibre nobody claimed
 	other := resourceData("fibre-host-1", "someone-else", f.sum("upload_shard.rejected", 99, "reason", "x"))
 	stranger := resourceData("fibre-host-9", "fibre", f.sum("upload_shard.rejected", 77, "reason", "x"))
 	good.ResourceMetrics = append(good.ResourceMetrics, other.ResourceMetrics[0], stranger.ResourceMetrics[0])
@@ -596,13 +593,13 @@ func TestFibreReceiverRoutes(t *testing.T) {
 			t.Errorf("%s kept the metrics: %v, want %v", tc.path, got, tc.kept)
 		}
 	}
-	// a success is a valid empty ExportMetricsServiceResponse
+	// success returns an empty ExportMetricsServiceResponse
 	resp := post(t, server.URL+"/v1/metrics", bytes.NewReader(body), protobufHeader)
 	answer, _ := io.ReadAll(resp.Body)
 	if resp.Header.Get("Content-Type") != "application/x-protobuf" || len(answer) != 0 {
 		t.Errorf("answer %q with type %q", answer, resp.Header.Get("Content-Type"))
 	}
-	// traces are accepted and dropped, whatever they hold
+	// accept and discard traces
 	resp = post(t, server.URL+"/v1/traces", strings.NewReader("not even protobuf"), nil)
 	answer, _ = io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || len(answer) != 0 {
@@ -654,14 +651,12 @@ func TestFibreReceiverRejects(t *testing.T) {
 	if got := post(t, url, strings.NewReader("this is not protobuf at all"), protobufHeader).StatusCode; got != 400 {
 		t.Errorf("garbage answered %d, want 400", got)
 	}
-	// valid protobuf that isn't a metrics request is still garbage here
 	if got := post(t, url, bytes.NewReader(append([]byte{0x0a, 0x7f}, make([]byte, 3)...)), protobufHeader).StatusCode; got != 400 {
 		t.Errorf("a truncated message answered %d, want 400", got)
 	}
 	if got := post(t, url, strings.NewReader("plain text"), map[string]string{"Content-Type": "application/x-protobuf", "Content-Encoding": "gzip"}).StatusCode; got != 400 {
 		t.Errorf("gzip that isn't gzip answered %d, want 400", got)
 	}
-	// an empty export is a valid, empty request
 	if got := post(t, url, bytes.NewReader(nil), protobufHeader).StatusCode; got != 200 {
 		t.Errorf("an empty body answered %d, want 200", got)
 	}
@@ -709,11 +704,11 @@ func TestFibreReceiverTokenIsChecked(t *testing.T) {
 	if len(r.st.senders) != 0 {
 		t.Fatal("metrics without the token were kept")
 	}
-	// the token is checked before anything else about the body, a wrong type or a huge body is still a 401
+	// authenticate before checking body type or size
 	if got := post(t, url, strings.NewReader("{}"), map[string]string{"Content-Type": "application/json"}).StatusCode; got != 401 {
 		t.Errorf("unauthorized json answered %d, want 401", got)
 	}
-	// and the body isn't read at all
+	// do not read an unauthorized body
 	req := httptest.NewRequest(http.MethodPost, "/v1/metrics", unreadable{t})
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
@@ -721,7 +716,6 @@ func TestFibreReceiverTokenIsChecked(t *testing.T) {
 	if rec.Code != 401 {
 		t.Errorf("an unauthorized request answered %d, want 401", rec.Code)
 	}
-	// and the same for traces
 	if got := post(t, server.URL+"/v1/traces", nil, nil).StatusCode; got != 401 {
 		t.Errorf("unauthorized traces answered %d, want 401", got)
 	}
@@ -752,11 +746,10 @@ func TestFibreReceiverSizeLimits(t *testing.T) {
 	url := server.URL + "/v1/metrics"
 	gzipped := map[string]string{"Content-Type": "application/x-protobuf", "Content-Encoding": "gzip"}
 
-	// one byte over as received, with a Content-Length
 	if got := post(t, url, bytes.NewReader(make([]byte, fibreMaxBody+1)), protobufHeader).StatusCode; got != 413 {
 		t.Errorf("a body over 1 MiB answered %d, want 413", got)
 	}
-	// and with no Content-Length at all, a chunked body can't get past the reader's limit
+	// chunked bodies use the same size limit
 	chunked := io.MultiReader(bytes.NewReader(make([]byte, fibreMaxBody+1)))
 	if got := post(t, url, chunked, protobufHeader).StatusCode; got != 413 {
 		t.Errorf("a chunked body over 1 MiB answered %d, want 413", got)
@@ -769,12 +762,12 @@ func TestFibreReceiverSizeLimits(t *testing.T) {
 	if got := post(t, url, bytes.NewReader(bomb), gzipped).StatusCode; got != 413 {
 		t.Errorf("a body over 4 MiB unzipped answered %d, want 413", got)
 	}
-	// exactly at the limit isn't over it: zeros aren't a valid request, but the size gate lets it through to the parser
+	// at the size limit, parsing still rejects invalid protobuf
 	atLimit := gz(t, make([]byte, fibreMaxUnzipped))
 	if got := post(t, url, bytes.NewReader(atLimit), gzipped).StatusCode; got == 413 {
 		t.Errorf("a body of exactly 4 MiB unzipped was refused as too big")
 	}
-	// gzip bigger than 1 MiB as received, however it would unzip
+	// reject gzip over 1 MiB before decompression
 	noise := make([]byte, fibreMaxBody+1024)
 	if _, err := rand.Read(noise); err != nil {
 		t.Fatal(err)
@@ -926,7 +919,7 @@ func TestFibreReceiverServesPlainHTTP(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("stopped with %v", err)
 	}
-	// a listen address that is taken is an error, not a silent no-op
+	// an occupied listen address returns an error
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -938,7 +931,7 @@ func TestFibreReceiverServesPlainHTTP(t *testing.T) {
 	}
 }
 
-// fibre_enabled can sit in alert_defaults for every chain; one without x/valaddr never reads "silent"
+// TestNoMetricsAlarmsOnAChainWithoutFibre: chains without x/valaddr do not raise silence alerts.
 func TestNoMetricsAlarmsOnAChainWithoutFibre(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.fibreLoaded, r.cc.fibreUnsupported = false, true
@@ -954,7 +947,7 @@ func TestNoMetricsAlarmsOnAChainWithoutFibre(t *testing.T) {
 	r.quiet(r.alarms(), "nothing more for a chain without Fibre")
 }
 
-// silence waits for the provider check: a small node_down_alert_minutes must not beat it
+// TestSilentWaitsForStageOne: silence waits for the provider check, even with a short node-down threshold.
 func TestSilentWaitsForStageOne(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.fibreLoaded = false
@@ -969,7 +962,6 @@ func TestFibreSilentAlarm(t *testing.T) {
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	r.advance(2 * time.Minute)
 	r.quiet(r.alarms(), "two minutes after start")
-	// nothing has arrived since tenderduty started
 	r.advance(time.Minute)
 	if got, want := r.msg(kindSilent), "Fibre has sent no metrics for over 3 minutes on celestia"; got != want {
 		t.Fatalf("message %q, want %q", got, want)
@@ -985,7 +977,7 @@ func TestFibreSilentAlarm(t *testing.T) {
 	r.quiet(r.alarms(), "two minutes since the last export")
 	r.advance(time.Minute)
 	r.raised(r.alarms(), kindSilent, "last metrics 3m ago", "🔇", "Fibre silent")
-	// silence holds everything else: no window rule raises or clears on stale numbers
+	// stale metrics hold all window rules
 	r.advance(time.Hour)
 	if sent := r.alarms(); len(sent) != 0 {
 		t.Fatalf("an hour of silence sent %s", describe(sent))
@@ -993,7 +985,6 @@ func TestFibreSilentAlarm(t *testing.T) {
 	if got := (&alertMsg{chain: "Chain", message: r.msg(kindSilent)}).summary(); got != r.msg(kindSilent)+"\nlast metrics 1h 3m ago" {
 		t.Errorf("summary is %q", got)
 	}
-	// one minute is a singular
 	r.c.NodeDownMin = 1
 	if got := r.msg(kindSilent); got != "Fibre has sent no metrics for over 1 minute on celestia" {
 		t.Errorf("message %q", got)
@@ -1014,7 +1005,7 @@ func TestFibreStorageIsOffByDefault(t *testing.T) {
 	f.occupancy, f.budget, f.rejected = i64(990), i64(1000), 40
 	f.run(1)
 	r.quiet(r.alarms(), "99% used and uploads turned away, with the alert off")
-	// an alarm raised before it was turned off clears as no longer watched, it didn't get better
+	// disabled alarms clear as no longer watched
 	alarms.AllAlarms["Chain"] = map[string]time.Time{r.msg(kindStorage): time.Now()}
 	sent := r.alarms()
 	if len(sent) != 1 || !sent[0].resolved || sent[0].message != r.msg(kindStorage) {
@@ -1022,6 +1013,38 @@ func TestFibreStorageIsOffByDefault(t *testing.T) {
 	}
 	if _, label := sent[0].header(); label != "No longer watched" {
 		t.Fatalf("the alarm cleared as %q", label)
+	}
+}
+
+func TestRestoredLegacyFibreStorageAlarmResolves(t *testing.T) {
+	r := newFibreRig(t)
+	r.cc.Alerts.FibreInstance = "fibre-host-1"
+	r.cc.Alerts.FibreStoragePercent = 90
+	old := "Fibre storage is nearly full on celestia, the budget the chain gives this validator is almost used up"
+	alarms.AllAlarms["Chain"] = map[string]time.Time{old: r.clock.now.Add(-time.Hour)}
+	r.cc.clearOrphanedAlarms(r.vi, "norpc")
+	r.quiet(r.alarms(), "restored legacy alarm waits for evidence")
+	if !r.active(old) {
+		t.Fatal("legacy alarm cleared before metrics arrived")
+	}
+	f := r.feed(time.Minute)
+	f.occupancy, f.budget = i64(100), i64(1000)
+	f.send()
+	f.run(29)
+	r.quiet(r.alarms(), "legacy alarm waits for 30 watched minutes")
+	f.run(1)
+	sent := r.alarms()
+	if len(sent) != 1 || !sent[0].resolved || sent[0].message != old || sent[0].uniqueId != "valcons1fibremetricsstorage" {
+		t.Fatalf("legacy alarm resolved as %s", describe(sent))
+	}
+	if _, label := sent[0].header(); label != "Shard budget OK" {
+		t.Fatalf("resolution label %q", label)
+	}
+	if got := sent[0].summary(); got != "Fibre shards are back under 75% of the budget on celestia, no uploads turned away for 30 minutes" {
+		t.Fatalf("resolution text %q", got)
+	}
+	if r.active(old) || r.active(r.msg(kindStorage)) {
+		t.Fatal("shard budget alarm remains active")
 	}
 }
 
@@ -1036,12 +1059,12 @@ func TestFibreStorageAlarm(t *testing.T) {
 
 	f.occupancy = i64(900_000_000)
 	f.run(1)
-	if got, want := r.msg(kindStorage), "Fibre storage is nearly full on celestia, the budget the chain gives this validator is almost used up"; got != want {
+	if got, want := r.msg(kindStorage), "Fibre shard budget is nearly full on celestia, the budget the chain gives this validator is almost used up"; got != want {
 		t.Fatalf("message %q, want %q", got, want)
 	}
-	r.raised(r.alarms(), kindStorage, "900 MB of 1 GB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "900 MB of 1 GB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 
-	// between 75% and 90% it stays up however long it has been quiet, so a network hovering at the limit sends nothing
+	// hold between 75% and 90% to avoid flapping
 	f.occupancy = i64(800_000_000)
 	f.run(45)
 	r.quiet(r.alarms(), "80% of the budget")
@@ -1056,16 +1079,15 @@ func TestFibreStorageAlarm(t *testing.T) {
 	r.quiet(r.alarms(), "back over 90%, already raised")
 	f.occupancy = i64(749_999_999)
 	f.run(1)
-	r.cleared(r.alarms(), kindStorage, "Storage OK", "Fibre storage is back under 75% of its budget on celestia, no uploads turned away for 30 minutes")
+	r.cleared(r.alarms(), kindStorage, "Shard budget OK", "Fibre shards are back under 75% of the budget on celestia, no uploads turned away for 30 minutes")
 
-	// a different threshold
 	r.cc.Alerts.FibreStoragePercent = 50
 	f.occupancy, f.budget = i64(1_500_000_000), i64(3_000_000_000)
 	f.run(1)
-	r.raised(r.alarms(), kindStorage, "1.5 GB of 3 GB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "1.5 GB of 3 GB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 	f.occupancy = i64(1_049_999_999)
 	f.run(1)
-	r.cleared(r.alarms(), kindStorage, "Storage OK", "Fibre storage is back under 35% of its budget on celestia, no uploads turned away for 30 minutes")
+	r.cleared(r.alarms(), kindStorage, "Shard budget OK", "Fibre shards are back under 35% of the budget on celestia, no uploads turned away for 30 minutes")
 }
 
 func TestFibreStorageBudgetZeroNeverRaises(t *testing.T) {
@@ -1073,18 +1095,18 @@ func TestFibreStorageBudgetZeroNeverRaises(t *testing.T) {
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	r.cc.Alerts.FibreStoragePercent = 90
 	f := r.feed(time.Minute)
-	// 0 is the limiter being off (--unlimited-budget), never a full disk
+	// zero budget disables the limiter
 	f.occupancy, f.budget = i64(5_000_000_000_000), i64(0)
 	f.run(40)
 	r.quiet(r.alarms(), "budget 0")
 
-	// the limiter being switched off clears a raised alarm, as nothing was turned away for 30 watched minutes
+	// unlimited budget clears after 30 observed minutes without rejections
 	f.occupancy, f.budget = i64(950), i64(1000)
 	f.run(1)
-	r.raised(r.alarms(), kindStorage, "950 B of 1 KB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "950 B of 1 KB, 0 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 	f.budget = i64(0)
 	f.run(1)
-	r.cleared(r.alarms(), kindStorage, "Storage OK", "Fibre storage is back under 75% of its budget on celestia, no uploads turned away for 30 minutes")
+	r.cleared(r.alarms(), kindStorage, "Shard budget OK", "Fibre shards are back under 75% of the budget on celestia, no uploads turned away for 30 minutes")
 }
 
 func TestFibreStorageRejections(t *testing.T) {
@@ -1096,10 +1118,10 @@ func TestFibreStorageRejections(t *testing.T) {
 	f.run(1)
 	r.quiet(r.alarms(), "10% used")
 
-	// an upload turned away raises it however empty the budget looks
+	// a rejection raises the alarm even below the storage threshold
 	f.rejected = 3
 	f.run(1)
-	r.raised(r.alarms(), kindStorage, "100 MB of 1 GB, 3 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "100 MB of 1 GB, 3 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 	// out of the last 10 minutes, still inside the 30 it takes to clear
 	f.run(29)
 	r.quiet(r.alarms(), "29 minutes after the rejection")
@@ -1107,12 +1129,12 @@ func TestFibreStorageRejections(t *testing.T) {
 		t.Fatal("cleared before 30 minutes without a rejection")
 	}
 	f.run(1)
-	r.cleared(r.alarms(), kindStorage, "Storage OK", "Fibre storage is back under 75% of its budget on celestia, no uploads turned away for 30 minutes")
+	r.cleared(r.alarms(), kindStorage, "Shard budget OK", "Fibre shards are back under 75% of the budget on celestia, no uploads turned away for 30 minutes")
 
 	// a rejection while it is up starts the 30 minutes again
 	f.rejected = 4
 	f.run(1)
-	r.raised(r.alarms(), kindStorage, "100 MB of 1 GB, 1 upload turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "100 MB of 1 GB, 1 upload turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 	f.run(20)
 	f.rejected = 5
 	f.run(1)
@@ -1120,7 +1142,7 @@ func TestFibreStorageRejections(t *testing.T) {
 	f.run(29)
 	r.quiet(r.alarms(), "29 minutes after the second rejection")
 	f.run(1)
-	r.cleared(r.alarms(), kindStorage, "Storage OK", "Fibre storage is back under 75% of its budget on celestia, no uploads turned away for 30 minutes")
+	r.cleared(r.alarms(), kindStorage, "Shard budget OK", "Fibre shards are back under 75% of the budget on celestia, no uploads turned away for 30 minutes")
 }
 
 func TestFibreStorageWithoutGauges(t *testing.T) {
@@ -1130,7 +1152,7 @@ func TestFibreStorageWithoutGauges(t *testing.T) {
 	f := r.feed(time.Minute)
 	f.rejected = 2
 	f.run(1)
-	r.raised(r.alarms(), kindStorage, "2 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre storage full")
+	r.raised(r.alarms(), kindStorage, "2 uploads turned away in the last 10 minutes. "+storageSecondLine, "🗄️", "Fibre shard budget full")
 	// nothing says how full it is, so a quiet spell isn't enough
 	f.run(60)
 	r.quiet(r.alarms(), "no occupancy gauge")
@@ -1190,7 +1212,7 @@ func TestFibreAdaptiveWindow(t *testing.T) {
 	})
 	t.Run("each rule counts its own samples", func(t *testing.T) {
 		r, f := quietFeed(t)
-		// 4 failed signatures an hour for 10 hours: the signature rule needs 5 exports, the slow rule has no samples at all
+		// five exports reach 20 failures; the slow-signing rule has no successful samples
 		for i := 0; i < 10; i++ {
 			f.signFailed += 4
 			f.send()
@@ -1348,7 +1370,7 @@ func TestFibreSigningAlarm(t *testing.T) {
 		f.signSlow = 20
 		f.run(1)
 		r.raised(r.only(r.alarms(), kindSigning), kindSigning, "20 of 20 signatures took over 10ms in the last 10 minutes", "🐢", "Signing slow")
-		// fewer than 20 successful ones never clears it, however good they are
+		// fewer than 20 successful samples cannot clear the alarm
 		f.run(15)
 		f.signFast = 5
 		f.run(1)
@@ -1390,7 +1412,6 @@ func TestFibreSigningAlarm(t *testing.T) {
 		f.signSlow += 5
 		f.send()
 		r.raised(r.alarms(), kindSigning, "20 of 20 signatures took over 10ms over the last 3h 0m", "🐢", "Signing slow")
-		// 5 fast ones leave 15 slow in the last 20
 		r.advance(time.Hour)
 		f.signFast += 5
 		f.send()
@@ -1398,7 +1419,6 @@ func TestFibreSigningAlarm(t *testing.T) {
 		if !r.active(r.msg(kindSigning)) {
 			t.Fatal("cleared with a quarter of the last 20 fast")
 		}
-		// 10 fast and 10 slow is half
 		r.advance(time.Hour)
 		f.signFast += 5
 		f.send()
@@ -1425,10 +1445,10 @@ func TestFibreObjectStorageAlarm(t *testing.T) {
 		r, f := quietFeed(t)
 		f.backendOK, f.timeout = 2, 1
 		f.send()
-		if got := r.msg(kindObject); got != "Fibre object storage requests are failing on celestia" {
+		if got := r.msg(kindObject); got != "Fibre storage backend requests are failing on celestia" {
 			t.Fatalf("message %q", got)
 		}
-		r.raised(r.alarms(), kindObject, "timeout 1, throttled 0, error 0 of 3 requests in the last 10 minutes", "🚨", "Object storage errors")
+		r.raised(r.alarms(), kindObject, "object: 1 of 3 requests failed in the last 10 minutes (timeout 1)\n"+fibreBackendAdvice("object"), "🚨", "Storage backend errors")
 	})
 	t.Run("one failure in 10 000 requests doesn't raise", func(t *testing.T) {
 		r, f := quietFeed(t)
@@ -1440,7 +1460,7 @@ func TestFibreObjectStorageAlarm(t *testing.T) {
 		r, f := quietFeed(t)
 		f.backendOK, f.timeout, f.throttled, f.err = 9500, 300, 100, 100
 		f.send()
-		r.raised(r.alarms(), kindObject, "timeout 300, throttled 100, error 100 of 10000 requests in the last 10 minutes", "🚨", "Object storage errors")
+		r.raised(r.alarms(), kindObject, "object: 500 of 10000 requests failed in the last 10 minutes (timeout 300, throttled 100, error 100)\n"+fibreBackendAdvice("object"), "🚨", "Storage backend errors")
 		for i := 0; i < 9; i++ {
 			f.backendOK += 1000
 			f.run(1)
@@ -1448,14 +1468,13 @@ func TestFibreObjectStorageAlarm(t *testing.T) {
 		r.quiet(r.alarms(), "the failures are still in the window")
 		f.backendOK += 1000
 		f.run(1)
-		r.cleared(r.alarms(), kindObject, "Object storage OK", "Fibre object storage requests are succeeding again on celestia")
+		r.cleared(r.alarms(), kindObject, "Storage backend OK", "Fibre storage backend requests are succeeding again on celestia")
 	})
 	t.Run("every outcome is a request", func(t *testing.T) {
-		// 11 failures: over 1% of 1011 requests, under 1% of 1111
 		r, f := quietFeed(t)
 		f.ignoredOutcomes, f.timeout = 1000, 11
 		f.send()
-		r.raised(r.alarms(), kindObject, "timeout 11, throttled 0, error 0 of 1011 requests in the last 10 minutes", "🚨", "Object storage errors")
+		r.raised(r.alarms(), kindObject, "object: 11 of 1011 requests failed in the last 10 minutes (timeout 11)\n"+fibreBackendAdvice("object"), "🚨", "Storage backend errors")
 		r, f = quietFeed(t)
 		f.ignoredOutcomes, f.timeout = 1100, 11
 		f.send()
@@ -1488,23 +1507,21 @@ func TestFibreStorageErrorsAlarm(t *testing.T) {
 	if got := r.msg(kindStorageErrors); got != "Fibre storage operations are failing on celestia" {
 		t.Fatalf("message %q", got)
 	}
-	r.raised(r.alarms(), kindStorageErrors, "put 1, get 2, prune 0 failed in the last 10 minutes", "🚨", "Storage errors")
+	r.raised(r.alarms(), kindStorageErrors, "put 1, prune 0 failed in the last 10 minutes", "🚨", "Storage errors")
 	f.run(11)
 	r.cleared(r.alarms(), kindStorageErrors, "Storage OK", "Fibre storage operations are succeeding again on celestia")
 
-	// a prune failure alone raises it
 	r = newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	f = r.feed(time.Minute)
 	f.prune = 1
 	f.send()
-	r.raised(r.alarms(), kindStorageErrors, "put 0, get 0, prune 1 failed in the last 10 minutes", "🚨", "Storage errors")
+	r.raised(r.alarms(), kindStorageErrors, "put 0, prune 1 failed in the last 10 minutes", "🚨", "Storage errors")
 }
 
 func TestFibreIdleAlarm(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
-	// off by default
 	f := r.feed(time.Minute)
 	stale := r.clock.now.Add(-5 * time.Hour).Unix()
 	f.lastSuccess = i64(stale)
@@ -1514,7 +1531,7 @@ func TestFibreIdleAlarm(t *testing.T) {
 	r.cc.Alerts.FibreIdleMinutes = 30
 	stale = r.clock.now.Add(-30 * time.Minute).Unix()
 	f.lastSuccess = i64(stale)
-	f.run(1) // 31 minutes now
+	f.run(1)
 	if got := r.msg(kindIdle); got != "Fibre has had no successful upload for over 30 minutes on celestia" {
 		t.Fatalf("message %q", got)
 	}
@@ -1523,7 +1540,7 @@ func TestFibreIdleAlarm(t *testing.T) {
 	f.run(1)
 	r.cleared(r.alarms(), kindIdle, "Uploads arriving", "Fibre stored an upload again on celestia")
 
-	// no timestamp seen yet is not a reason to alert
+	// no idle alert before the first successful upload
 	r = newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	r.cc.Alerts.FibreIdleMinutes = 30
@@ -1533,7 +1550,7 @@ func TestFibreIdleAlarm(t *testing.T) {
 	r.quiet(r.alarms(), "no last_success_timestamp")
 }
 
-// alarms are restored from the state file, metrics are not: nothing clears until this process has seen evidence
+// TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence: restored alarms wait for metrics observed by this process.
 func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -1567,7 +1584,7 @@ func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 		sort.Strings(kinds)
 		return kinds
 	}
-	// Fibre exports a fresh last-success time with every export, so the idle alarm has nothing to say
+	// each export reports a fresh last-success time
 	f := r.feed(48 * time.Hour)
 	tick := func(n int) {
 		for i := 0; i < n; i++ {
@@ -1576,15 +1593,14 @@ func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 		}
 	}
 
-	// nothing at all has arrived yet
 	r.quiet(r.alarms(), "at start")
 	stays("at start", all...)
 	r.advance(2 * time.Minute)
 	r.quiet(r.alarms(), "two minutes in")
 	stays("two minutes in", all...)
 
-	// the first export is healthy, and its counters are a baseline. Silent and idle have what they need, the rest
-	// hasn't been seen long enough or has nothing counted
+	// the first export establishes baselines; silent and idle can clear immediately
+	// other rules need enough samples or observed time
 	f.signFast, f.occupancy, f.budget = 3000, i64(100), i64(1000)
 	f.lastSuccess = i64(r.clock.now.Unix())
 	f.send()
@@ -1593,7 +1609,7 @@ func TestRestartKeepsFibreMetricsAlarmsUntilThereIsEvidence(t *testing.T) {
 	}
 	stays("after one export", kindStorage, kindSignFailed, kindSigning, kindStorageErrors, kindObject)
 
-	// a few minutes of quiet isn't the whole 10 minutes
+	// clearing requires the full 10-minute window
 	tick(9)
 	r.quiet(r.alarms(), "nine minutes in")
 	stays("nine minutes in", kindStorage, kindSignFailed, kindSigning, kindStorageErrors, kindObject)
@@ -1654,7 +1670,6 @@ func TestRestoredSilentAlarmStaysUntilAnExportArrives(t *testing.T) {
 	if !r.active(r.msg(kindSilent)) {
 		t.Fatal("a restored silent alarm cleared with no export")
 	}
-	// the first loop after a restart sends the restored alarms again
 	r.cc.fibreMetricsAlarms(r.vi, true)
 	if len(r.c.alertChan) != 1 {
 		t.Fatalf("reconcile sent %d alerts", len(r.c.alertChan))
@@ -1691,7 +1706,7 @@ func TestFibreMetricsMessagesAreDistinct(t *testing.T) {
 			t.Errorf("%q was taken for a metrics message", message)
 		}
 	}
-	// a host called like a metrics message can't confuse the two
+	// metrics and provider prefixes must remain distinct
 	for _, host := range []string{"storage", "has", "uploads"} {
 		if isFibreMetricsMessage(fibreDownMessage(host, "mocha-5")) || isFibreMetricsMessage(fibreIdentityMessage(host, "mocha-5")) {
 			t.Errorf("host %q made a stage 1 message a metrics one", host)
@@ -1863,7 +1878,7 @@ func TestValidateFibreMetrics(t *testing.T) {
 				t.Errorf("cert %q key %q: fatal %v, %v", tc.cert, tc.key, fatal, problems)
 			}
 		}
-		// the receiver being off doesn't excuse half a pair
+		// TLS still requires both certificate and key when the receiver is off
 		c := fibreValidateConfig("", "")
 		c.FibreMetrics.TLSCert = "c.pem"
 		if fatal, _ := validateConfig(c); !fatal {
@@ -1876,7 +1891,7 @@ func TestValidateFibreMetrics(t *testing.T) {
 			wantPercent, wantIdle int
 			warnings              []string
 		}{
-			{0, 0, 0, 0, nil}, // off
+			{0, 0, 0, 0, nil},
 			{75, 45, 75, 45, nil},
 			{100, 0, 100, 0, nil},
 			{1, 0, 1, 0, nil},
@@ -1947,5 +1962,47 @@ func TestFibreMetricsConfigLoads(t *testing.T) {
 	}
 	if a := c.AlertDefaults; a.FibreInstance != "host" || a.FibreStoragePercent != 80 || a.FibreIdleMinutes != 15 {
 		t.Fatalf("alert defaults %+v", a)
+	}
+}
+
+func TestFibreStoreGetFailuresDoNotAlert(t *testing.T) {
+	r := newFibreRig(t)
+	r.cc.Alerts.FibreInstance = "fibre-host-1"
+	f := r.feed(time.Minute)
+	f.get = 3
+	f.send()
+	r.quiet(r.alarms(), "store get failures alone")
+	if got := r.st.snapshot("Chain").Window.storeGet; got != 3 {
+		t.Fatalf("store get failures = %d, want 3", got)
+	}
+	f.put = 1
+	f.run(1)
+	r.raised(r.alarms(), kindStorageErrors, "put 1, prune 0 failed in the last 10 minutes", "🚨", "Storage errors")
+}
+
+func TestFibreExportNotifiesDashboard(t *testing.T) {
+	r := newFibreRig(t)
+	r.c.EnableDash = true
+	r.c.updateChan = make(chan *dash.ChainStatus, 1)
+	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", runtimeGauge("go.goroutine.count", runtimePoint(56))))
+	select {
+	case update := <-r.c.updateChan:
+		if update.MsgType != "fibre" || update.Name != "Chain" || update.Fibre.MetricsAt != r.clock.now.Unix() {
+			t.Fatalf("export notification: %+v", update)
+		}
+		if r.st.snapshot("Chain").Resources["go_goroutines"] != 56 {
+			t.Fatal("notification preceded stored export")
+		}
+	default:
+		t.Fatal("export did not notify the dashboard")
+	}
+	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "another-app"))
+	if len(r.c.updateChan) != 0 {
+		t.Fatal("another app sent a Fibre notification")
+	}
+	r.c.updateChan <- &dash.ChainStatus{MsgType: "update"}
+	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre"))
+	if len(r.c.updateChan) != 1 {
+		t.Fatal("slow dashboard changed queued updates")
 	}
 }

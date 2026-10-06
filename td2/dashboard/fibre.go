@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// A nil field is an interval with no observation.
+// FibrePoint a nil field is an interval with no observation.
 type FibrePoint struct {
 	Time      int64              `json:"time"`
 	Metrics   map[string]float64 `json:"metrics"`
@@ -27,14 +27,28 @@ type FibreHistory struct {
 	Chains []FibreChainHistory `json:"chains"`
 }
 
-// withoutDetails is what hide_logs leaves of a status: the host is on chain, the rest comes from the node or Fibre itself.
+// hide_logs removes failure details; runtime metrics and version stay public.
 func (f *FibreStatus) withoutDetails() *FibreStatus {
 	if f == nil {
 		return nil
 	}
 	copy := *f
-	copy.DownReason, copy.IdentityError, copy.Version, copy.Resources = "", "", "", nil
+	copy.DownReason, copy.IdentityError = "", ""
 	return &copy
+}
+
+type FibreNotification struct {
+	MessageType string `json:"msgType"`
+	Name        string `json:"name"`
+	MetricsAt   int64  `json:"metrics_at"`
+}
+
+func fibreNotification(status *ChainStatus) []byte {
+	if status == nil || status.MsgType != "fibre" || status.Fibre == nil {
+		return nil
+	}
+	body, _ := json.Marshal(FibreNotification{MessageType: "fibre", Name: status.Name, MetricsAt: status.Fibre.MetricsAt})
+	return body
 }
 
 // hideFibreDetails wraps the history provider for hide_logs.

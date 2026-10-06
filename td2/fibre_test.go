@@ -93,7 +93,7 @@ func TestVerifyFibreIdentity(t *testing.T) {
 	}
 }
 
-// captured from Mocha: Kynraze is registered, a validator that isn't gets an empty info and no found field
+// TestParseFibreProvider: mocha omits found for unregistered validators.
 func TestParseFibreProvider(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -116,7 +116,7 @@ func TestParseFibreProvider(t *testing.T) {
 	}
 }
 
-// a node answering every abci_query with a value, or an error code when value is nil
+// Answer every abci_query with value, or an error code when nil.
 func fibreNode(t *testing.T, value []byte, queries *int) *rpchttp.HTTP {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +143,7 @@ func fibreChain() *ChainConfig {
 	return &ChainConfig{ChainId: "celestia", valInfo: &ValInfo{Valcons: "celestiavalcons1test"}}
 }
 
-// fibre_enabled can sit in alert_defaults for every chain
+// TestChainWithoutFibreIsAskedOnce: fibre_enabled can sit in alert_defaults for every chain
 func TestChainWithoutFibreIsAskedOnce(t *testing.T) {
 	queries := 0
 	client := signalNode(t, "sdk", 6, &queries)
@@ -155,7 +155,7 @@ func TestChainWithoutFibreIsAskedOnce(t *testing.T) {
 	}
 }
 
-// a flaky node must not raise or clear alarms
+// TestFibreFailureIsRetried: a flaky node must not raise or clear alarms
 func TestFibreFailureIsRetried(t *testing.T) {
 	for _, tc := range []struct {
 		codespace string
@@ -303,21 +303,21 @@ func TestRefreshFibre(t *testing.T) {
 		t.Fatalf("a healthy host gave %+v", s)
 	}
 
-	// another validator's key: reachable, but it does not prove anything
+	// another validator's key does not verify this host
 	chain.valInfo.ConsKey, _, _ = ed25519.GenerateKey(rand.Reader)
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(good), &queries))
 	if s := chain.fibre; !s.Reachable || s.IdentityOK || s.IdentityError == "" {
 		t.Fatalf("a host that is not ours gave %+v", s)
 	}
 
-	// no key known: the identity is not checked and it is not a failure
+	// unknown consensus key leaves identity unchecked
 	chain.valInfo.ConsKey = nil
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(good), &queries))
 	if s := chain.fibre; !s.Reachable || s.KeyKnown || !s.IdentityOK {
 		t.Fatalf("no key gave %+v", s)
 	}
 
-	// down since the first failure, not each one, and a new host starts over
+	// retain the first failure time; reset it when the host changes
 	dead := closedPort(t)
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(dead), &queries))
 	first := chain.fibre.DownSince
@@ -330,6 +330,7 @@ func TestRefreshFibre(t *testing.T) {
 		t.Fatalf("down since moved from %v to %v", first, chain.fibre.DownSince)
 	}
 	other := closedPort(t)
+	time.Sleep(20 * time.Millisecond) // a new host gets a later timestamp on coarse clocks
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(other), &queries))
 	if !chain.fibre.DownSince.After(first) {
 		t.Fatalf("a new host kept the old down since %v", chain.fibre.DownSince)
@@ -373,7 +374,7 @@ func TestFibreAlarms(t *testing.T) {
 		{"identity fails", healthy, forged, []string{identity}, nil},
 		{"identity fails with no key to check", healthy, unchecked, nil, []string{identity}},
 		{"identity recovers", forged, healthy, nil, []string{identity}},
-		// a host that stops answering proves nothing about its identity, both stay until it answers
+		// an unreachable host retains the previous identity result and alarm
 		{"goes down after failing identity", forged, downFor(10 * time.Minute), []string{down, identity}, nil},
 		{"unregisters while down", downFor(10 * time.Minute), unregistered, []string{notRegistered}, []string{down}},
 	} {
@@ -381,7 +382,7 @@ func TestFibreAlarms(t *testing.T) {
 			c := auditConfig(t)
 			c.NodeDownMin = 5
 			cc := &ChainConfig{name: "Chain", ChainId: chain, fibre: tc.before, fibreLoaded: true}
-			cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+			cc.Alerts.FibreAlerts, cc.Alerts.FibreSeverity = true, "warning"
 			c.Chains["Chain"] = cc
 			valInfo := &ValInfo{Valcons: "cons"}
 			cc.fibreAlarms(valInfo, false)
@@ -399,7 +400,6 @@ func TestFibreAlarms(t *testing.T) {
 					t.Errorf("%q should have resolved", message)
 				}
 			}
-			// nothing is left once the condition stops holding
 			cc.stateMux.Lock()
 			cc.fibre = healthy
 			cc.stateMux.Unlock()
@@ -439,7 +439,7 @@ func TestFibreAlarmIds(t *testing.T) {
 	}
 }
 
-// the new host's alarm is raised before the old one resolves; they must not share a dedup key
+// TestChangedFibreHostKeepsItsIncident: the old host resolves before the new host raises; their dedup keys must differ.
 func TestChangedFibreHostKeepsItsIncident(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -453,7 +453,7 @@ func TestChangedFibreHostKeepsItsIncident(t *testing.T) {
 			c := auditConfig(t)
 			c.NodeDownMin = 5
 			cc := &ChainConfig{name: "Chain", ChainId: "mocha-5", fibre: tc.state, fibreLoaded: true}
-			cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+			cc.Alerts.FibreAlerts, cc.Alerts.FibreSeverity = true, "warning"
 			c.Chains["Chain"] = cc
 			valInfo := &ValInfo{Valcons: "cons"}
 			alarms.AllAlarms["Chain"] = map[string]time.Time{tc.old("1.2.3.4:7980", "mocha-5"): time.Now()}
@@ -502,13 +502,13 @@ func TestFibreAlertsShowWhy(t *testing.T) {
 	if got, want := (&alertMsg{chain: "Chain", message: down}).summary(), down+"\n"+cc.fibre.DownReason; got != want {
 		t.Errorf("summary is %q, want %q", got, want)
 	}
-	// the reason belongs to the host checked last, an older host's alarm doesn't borrow it
+	// use the last host's failure reason only
 	if got := (&alertMsg{chain: "Chain", message: fibreDownMessage("9.9.9.9:7980", "mocha-5")}).summary(); strings.Contains(got, "\n") {
 		t.Errorf("another host's alarm got this host's reason: %q", got)
 	}
 }
 
-// The state isn't saved, so after a restart a down host looks new: restored alarms must stay until it answers.
+// TestRestartKeepsFibreAlarmsWhileTheHostIsDown: restored down alarms wait for reachability because DownSince is not persisted.
 func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 	dead := closedPort(t)
 	for _, tc := range []struct {
@@ -525,7 +525,7 @@ func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 			queries := 0
 			chain := fibreChain()
 			chain.name, chain.ChainId = "Chain", "mocha-5"
-			chain.Alerts.FibreAlerts, chain.Alerts.FibrePriority = true, "warning"
+			chain.Alerts.FibreAlerts, chain.Alerts.FibreSeverity = true, "warning"
 			c.Chains["Chain"] = chain
 			alarms.AllAlarms["Chain"] = map[string]time.Time{tc.restored: time.Now().Add(-time.Hour)}
 
@@ -543,14 +543,13 @@ func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 		})
 	}
 
-	// and once it answers again it does clear
 	c := auditConfig(t)
 	consPub, consPriv, _ := ed25519.GenerateKey(rand.Reader)
 	good := serveFibre(t, fibreCertificateFor(t, consPriv, "mocha-5", true))
 	queries := 0
 	chain := fibreChain()
 	chain.name, chain.ChainId, chain.valInfo.ConsKey = "Chain", "mocha-5", consPub
-	chain.Alerts.FibreAlerts, chain.Alerts.FibrePriority = true, "warning"
+	chain.Alerts.FibreAlerts, chain.Alerts.FibreSeverity = true, "warning"
 	c.Chains["Chain"] = chain
 	alarms.AllAlarms["Chain"] = map[string]time.Time{fibreDownMessage(good, "mocha-5"): time.Now().Add(-time.Hour)}
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(good), &queries))
@@ -560,7 +559,7 @@ func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 	}
 }
 
-// x/valaddr takes DNS names as well as IPs, and the identity check doesn't care which
+// TestFibreHostByName: x/valaddr takes DNS names as well as IPs, and the identity check doesn't care which
 func TestFibreHostByName(t *testing.T) {
 	consPub, consPriv, _ := ed25519.GenerateKey(rand.Reader)
 	_, port, _ := net.SplitHostPort(serveFibre(t, fibreCertificateFor(t, consPriv, "mocha-5", true)))
@@ -624,7 +623,7 @@ func TestFibreIdentityKeptWhileHostIsDown(t *testing.T) {
 	host := listener.Addr().String()
 	chain := fibreChain()
 	chain.name, chain.ChainId, chain.valInfo.ConsKey = "Chain", "mocha-5", consPub
-	chain.Alerts.FibreAlerts, chain.Alerts.FibrePriority = true, "warning"
+	chain.Alerts.FibreAlerts, chain.Alerts.FibreSeverity = true, "warning"
 	c.Chains["Chain"] = chain
 	queries := 0
 	node := fibreNode(t, fibreRegistration(host), &queries)
@@ -673,7 +672,7 @@ func TestReplacedFibreHostIsNotCalledUp(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := auditConfig(t)
 			cc := &ChainConfig{name: "Chain", ChainId: "mocha-5", fibre: tc.after, fibreLoaded: true}
-			cc.Alerts.FibreAlerts, cc.Alerts.FibrePriority = true, "warning"
+			cc.Alerts.FibreAlerts, cc.Alerts.FibreSeverity = true, "warning"
 			c.Chains["Chain"] = cc
 			alarms.AllAlarms["Chain"] = map[string]time.Time{tc.old: time.Now()}
 			cc.fibreAlarms(&ValInfo{Valcons: "cons"}, false)

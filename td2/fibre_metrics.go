@@ -18,17 +18,18 @@ import (
 	"time"
 	"unicode/utf8"
 
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	fibreMaxBody     = 1 << 20 // as received, real exports are tens of KB
+	fibreMaxBody     = 1 << 20 // received bytes; real exports are tens of KB
 	fibreMaxUnzipped = 4 << 20 // after gunzip
-	fibreMaxDecoding = 4       // requests read and decoded at once, the rest get a 503
-	fibreMaxSenders  = 64      // per chain, the least recently seen goes
-	fibreMaxIgnored  = 256     // instances remembered as unclaimed, the least recently seen goes
+	fibreMaxDecoding = 4       // concurrent decoders; excess requests get 503
+	fibreMaxSenders  = 64      // per chain; evict the oldest sender
+	fibreMaxIgnored  = 256     // unclaimed instances; evict the oldest
 	fibreMaxIdentity = 128     // bytes of service.instance.id and service.version
 	fibreMinSamples  = 20
 	fibreMetricPfx   = "fibre.server."
@@ -36,11 +37,11 @@ const (
 )
 
 const (
-	fibreWindow = 10 * time.Minute // what the count rules look at, and where the ratio rules start
-	fibreKeep   = 24 * time.Hour   // how far back a ratio rule may reach for samples on a quiet network
-	// per sender; past it the older half is merged
+	fibreWindow = 10 * time.Minute // count window and initial ratio window
+	fibreKeep   = 24 * time.Hour   // maximum ratio window on quiet networks
+	// per sender; merge the older half at the cap
 	fibreMaxDeltas = 5000
-	// storage alarm clears after this long without a rejection and this many percent under its threshold
+	// storage clears after this quiet period and percentage-point gap
 	fibreStorageQuiet = 30 * time.Minute
 	fibreStorageGap   = 15
 )
@@ -49,13 +50,13 @@ type fibreDelta struct {
 	extra                                          *fibreExtra
 	at                                             time.Time
 	rejected                                       int64
-	signTotal, signFailed                          int64 // every signature, and the ones that failed
+	signTotal, signFailed                          int64
 	signOK, signFast                               int64 // the successful ones, and those at or under 10ms
 	storePut, storeGet, prune                      int64 // the ones that failed
-	backendTotal                                   int64 // every outcome
+	backendTotal                                   int64
 	backendTimeout, backendThrottled, backendError int64
 
-	// shown in status; the seconds are time taken by successful operations, for averages
+	// seconds measure successful operations for status averages
 	uploadOK, uploadFailed     int64
 	uploadSec                  float64
 	uploadBytes                int64
@@ -110,7 +111,7 @@ func (d *fibreDelta) add(o fibreDelta) {
 	}
 }
 
-// What a ratio rule is judged on: the last 10 minutes, reaching back (newest first) up to 24h until it holds 20 samples.
+// Use 10 minutes, extending up to 24 hours to reach 20 samples.
 type fibreSpan struct {
 	Sum   fibreDelta
 	Reach time.Duration // age of the oldest delta taken
@@ -160,42 +161,50 @@ func (d fibreDelta) empty() bool {
 type fibreSeries struct {
 	start uint64
 	value uint64
-	sum   float64 // of a histogram: seconds that went with the count
+	sum   float64 // histogram seconds paired with the count
 	seen  time.Time
 }
 
 type fibreSender struct {
-	histSeries    map[string]fibreHistogramBaseline
-	resources     map[string]float64
-	chain         string
-	version       string
-	since         time.Time // the first export this process got from it
-	lastReceived  time.Time
-	series        map[string]fibreSeries
-	window        []fibreDelta
-	occupancy     int64
-	budget        int64
-	lastSuccess   int64
-	uploadsNow    int64 // in flight now, the last value exported
-	downloadsNow  int64
-	haveSuccess   bool
-	haveOccupancy bool
-	haveBudget    bool
-	haveUploads   bool
-	haveDownloads bool
+	backends        map[string]*fibreBackend
+	fallbackSuccess int64
+	reportedSuccess int64
+	histSeries      map[string]fibreHistogramBaseline
+	resources       map[string]float64
+	chain           string
+	version         string
+	since           time.Time // the first export this process got from it
+	lastReceived    time.Time
+	series          map[string]fibreSeries
+	window          []fibreDelta
+	occupancy       int64
+	budget          int64
+	lastSuccess     int64
+	uploadsNow      int64 // latest in-flight value
+	downloadsNow    int64
+	haveSuccess     bool
+	haveOccupancy   bool
+	haveBudget      bool
+	haveUploads     bool
+	haveDownloads   bool
 }
 
 type fibreStore struct {
+	backendTotals map[string]map[string]*fibreBackend
+	endorsing     map[string]*fibreEndorsing
+	latestMissed  map[string][]dash.FibreMissedBlob
+
+	short      map[string]map[string]map[int64]*fibreHour
 	histograms map[string]map[string]fibreHistogram
 	mu         sync.Mutex
-	raw        map[string]map[string]*fibreRawSeries // per chain, what export_raw keeps
+	raw        map[string]map[string]*fibreRawSeries // export_raw series per chain
 	rawNotes   map[string]bool
-	rawSkipped uint64 // export_raw series dropped for a limit
+	rawSkipped uint64 // export_raw series dropped at a limit
 	started    time.Time
 	now        func() time.Time
 	senders    map[string]*fibreSender
-	ignored    map[string]time.Time // instance, last seen
-	oversized  map[string]time.Time // sender address, last logged
+	ignored    map[string]time.Time // instance to last-seen time
+	oversized  map[string]time.Time // sender address to last-log time
 	hours      map[string]map[int64]*fibreHour
 	totals     map[string]map[string]float64
 	outcomes   map[string]map[string]float64
@@ -204,14 +213,17 @@ type fibreStore struct {
 
 func newFibreStore() *fibreStore {
 	return &fibreStore{
-		started: time.Now(), now: time.Now, senders: make(map[string]*fibreSender), ignored: make(map[string]time.Time),
+		endorsing:    make(map[string]*fibreEndorsing),
+		latestMissed: make(map[string][]dash.FibreMissedBlob),
+		started:      time.Now(), now: time.Now, senders: make(map[string]*fibreSender), ignored: make(map[string]time.Time),
 		hours: make(map[string]map[int64]*fibreHour), totals: make(map[string]map[string]float64),
 		histograms: make(map[string]map[string]fibreHistogram),
+		short:      map[string]map[string]map[int64]*fibreHour{"1h": make(map[string]map[int64]*fibreHour), "24h": make(map[string]map[int64]*fibreHour)},
 		outcomes:   make(map[string]map[string]float64), reach: make(map[string][]fibreReach),
 	}
 }
 
-// Created on first use so silence counts from about when tenderduty started.
+// Initialize on first use so silence starts near process startup.
 func (c *Config) fibreData() *fibreStore {
 	c.fibreOnce.Do(func() {
 		if c.fibreStore == nil {
@@ -222,6 +234,8 @@ func (c *Config) fibreData() *fibreStore {
 }
 
 type fibreSnapshot struct {
+	BackendNames []string
+	BackendSpans map[string]fibreSpan
 	Resources    map[string]float64
 	Found        bool
 	LastReceived time.Time
@@ -234,13 +248,13 @@ type fibreSnapshot struct {
 	HaveSuccess  bool
 	Window       fibreDelta // the last 10 minutes, for the rules that count
 	Rejected30   int64      // rejections in the last 30 minutes
-	Sign         fibreSpan  // every signature
-	SignOK       fibreSpan  // the successful ones
-	Backend      fibreSpan  // every object storage request
+	Sign         fibreSpan
+	SignOK       fibreSpan
+	Backend      fibreSpan
 
-	HaveOccupancy, HaveBudget bool // a budget of 0 is the limiter being off, so HaveBudget says it was reported
+	HaveOccupancy, HaveBudget bool // HaveBudget distinguishes a reported zero (unlimited) from missing data
 	Ten, Day                  fibreSummary
-	UploadsNow, DownloadsNow  int64 // requests being handled at the last export
+	UploadsNow, DownloadsNow  int64 // in-flight requests at last export
 	HaveInFlight              bool
 }
 
@@ -268,6 +282,14 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 		Occupancy: best.occupancy, Budget: best.budget, HaveStorage: best.haveOccupancy && best.haveBudget, HaveSuccess: best.haveSuccess,
 		HaveOccupancy: best.haveOccupancy, HaveBudget: best.haveBudget, UploadsNow: best.uploadsNow, DownloadsNow: best.downloadsNow,
 		HaveInFlight: best.haveUploads || best.haveDownloads}
+	snap.BackendSpans = make(map[string]fibreSpan)
+	for name := range st.backendTotals[chain] {
+		snap.BackendNames = append(snap.BackendNames, name)
+	}
+	sort.Strings(snap.BackendNames)
+	for name, backend := range best.backends {
+		snap.BackendSpans[name] = fibreSpanOf(backend.window, now, func(d fibreDelta) int64 { return d.backendTotal })
+	}
 	snap.Resources = make(map[string]float64)
 	addFibreValues(snap.Resources, best.resources)
 	if best.haveSuccess {
@@ -286,7 +308,7 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 		}
 	}
 	snap.Ten.Sum = snap.Window
-	// merged at the cap, not cut, so it covers everything since the first export
+	// merge at the cap to keep history from the first export
 	seen := max(now.Sub(best.since), 0)
 	snap.Ten.Covers, snap.Day.Covers = min(fibreWindow, seen), min(fibreKeep, seen)
 	snap.Sign = fibreSpanOf(best.window, now, func(d fibreDelta) int64 { return d.signTotal })
@@ -295,7 +317,7 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 	return snap
 }
 
-// The chain naming the hostname, else the only chain with Fibre alerts that names none.
+// Match the hostname, or the sole unnamed chain with Fibre alerts.
 func (c *Config) fibreChainFor(instance string) string {
 	c.chainsMux.RLock()
 	defer c.chainsMux.RUnlock()
@@ -370,7 +392,7 @@ func fibreCount(dp *metricsv1.NumberDataPoint) uint64 {
 	return uint64(math.Round(v))
 }
 
-// Also reads a sum, for senders that report a gauge that way.
+// Read sums for senders that use them for gauges.
 func fibreGauge(m *metricsv1.Metric) (int64, bool) {
 	var points []*metricsv1.NumberDataPoint
 	switch {
@@ -416,14 +438,14 @@ func clampInt64(v uint64) int64 {
 	return int64(v)
 }
 
-// A changed start time or a lower value is a restart: all of it is new. So is a series first seen on a known sender.
-// On this process's first export, history counts only if Fibre started within the window.
+// New series, changed start times and lower counters count as fresh observations.
+// Import the first cumulative export only when Fibre started within the window.
 func (s *fibreSender) step(key string, start, value uint64, cumulative, known bool, now time.Time) int64 {
 	n, _ := s.advance(key, start, value, 0, cumulative, known, now)
 	return n
 }
 
-// step for a histogram: the seconds follow the count, so a restart resets both.
+// Histogram counts and seconds reset together.
 func (s *fibreSender) advance(key string, start, value uint64, sum float64, cumulative, known bool, now time.Time) (int64, float64) {
 	if math.IsNaN(sum) || sum < 0 {
 		sum = 0
@@ -453,7 +475,7 @@ func (s *fibreSender) counter(name string, m *metricsv1.Metric, known bool, now 
 	return n
 }
 
-// Split on the success attribute, summed over the others (upload size). A series without it, the SDK's overflow one, is skipped.
+// Sum by success, ignoring upload size; skip series without success, including SDK overflow.
 type fibreDurations struct {
 	ok, failed int64
 	okSec      float64
@@ -479,7 +501,7 @@ func (s *fibreSender) durations(name string, m *metricsv1.Metric, known bool, no
 	return out
 }
 
-// A cumulative up-down sum is the current number, not growth; a sender reporting changes is added up.
+// Cumulative up-down sums are current values; delta sums accumulate.
 func (s *fibreSender) inFlight(m *metricsv1.Metric, current int64) int64 {
 	sum := m.GetSum()
 	var total int64
@@ -512,6 +534,7 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 	}
 	s.chain, s.version, s.lastReceived = chain, version, now
 	d := fibreDelta{at: now, extra: &fibreExtra{Histograms: make(map[string]fibreHistogram), Gauges: make(map[string]float64), Counters: make(map[string]float64)}}
+	s.reportedSuccess = 0
 	st.recordExtra(s, &d, metrics, known, now)
 	for _, m := range metrics {
 		name, ok := strings.CutPrefix(m.GetName(), fibreMetricPfx)
@@ -531,7 +554,7 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 			}
 		case "upload_shard.last_success_timestamp":
 			if v, ok := fibreGauge(m); ok {
-				s.lastSuccess, s.haveSuccess = v, true
+				s.reportedSuccess = max(v, 0)
 			}
 		case "upload_shard.rejected":
 			d.rejected += s.counter(name, m, known, now)
@@ -599,6 +622,14 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 		case "backend.get.duration":
 			hist := m.GetHistogram()
 			for _, dp := range hist.GetDataPoints() {
+				backend := fibreBackendName(dp.GetAttributes())
+				b := st.backendTotal(chain, backend)
+				if s.backends == nil {
+					s.backends = make(map[string]*fibreBackend)
+				}
+				if s.backends[backend] == nil {
+					s.backends[backend] = &fibreBackend{}
+				}
 				outcome, _ := fibreAttr(dp.GetAttributes(), "outcome")
 				n := s.step(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), dp.GetCount(), temporalityCumulative(hist.GetAggregationTemporality()), known, now)
 				d.backendTotal += n // success, not_found and canceled are requests too
@@ -611,6 +642,20 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 					outcome = "unknown"
 				}
 				st.outcomes[chain][outcome] += float64(n)
+				if b.outcomes == nil {
+					b.outcomes = make(map[string]float64)
+				}
+				b.outcomes[outcome] += float64(n)
+				bd := fibreDelta{at: now, backendTotal: n}
+				switch outcome {
+				case "timeout":
+					bd.backendTimeout = n
+				case "throttled":
+					bd.backendThrottled = n
+				case "error":
+					bd.backendError = n
+				}
+				s.backends[backend].append(bd, now)
 				switch outcome {
 				case "timeout":
 					d.backendTimeout += n
@@ -622,6 +667,14 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 			}
 		}
 	}
+	if d.uploadOK > 0 {
+		s.fallbackSuccess = now.Unix()
+	}
+	s.lastSuccess = s.fallbackSuccess
+	if s.reportedSuccess > 0 {
+		s.lastSuccess = s.reportedSuccess
+	}
+	s.haveSuccess = s.lastSuccess > 0
 	st.recordHour(chain, &d, s, metrics)
 	kept := s.window[:0]
 	for _, old := range s.window {
@@ -634,7 +687,7 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 	if len(s.window) > fibreMaxDeltas {
 		s.window = compactDeltas(s.window)
 	}
-	// series carry the upload size as a label, so ones that stopped coming are dropped
+	// drop upload-size series that stopped arriving
 	for key, series := range s.series {
 		if now.Sub(series.seen) >= fibreKeep {
 			delete(s.series, key)
@@ -642,7 +695,7 @@ func (st *fibreStore) record(chain, instance, version string, metrics []*metrics
 	}
 }
 
-// Drops the chain's least recently seen sender when it has the most allowed. Caller holds the lock.
+// Drop the oldest sender at the cap. Caller holds the lock.
 func (st *fibreStore) makeRoom(chain string) {
 	count, found := 0, false
 	var oldest string
@@ -661,7 +714,7 @@ func (st *fibreStore) makeRoom(chain string) {
 	}
 }
 
-// Remembers an unclaimed instance, the least recently seen goes at the cap. True the first time.
+// Remember an unclaimed instance, evicting the oldest at the cap; true on first sight.
 func (st *fibreStore) noteIgnored(instance string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -694,7 +747,7 @@ func clipBytes(s string, n int) string {
 	return s[:n]
 }
 
-// Merges the older half pairwise: coarser but still covers the day. The older half is well past the count rules' 10 minutes.
+// Merge the older half pairwise to retain day coverage beyond the 10-minute count window.
 func compactDeltas(window []fibreDelta) []fibreDelta {
 	half := len(window) / 2
 	out := make([]fibreDelta, 0, (half+1)/2+len(window)-half)
@@ -709,7 +762,7 @@ func compactDeltas(window []fibreDelta) []fibreDelta {
 	return append(out, window[half:]...)
 }
 
-// Ignores other apps' metrics a collector forwards, and a Fibre no chain claims.
+// Ignore other apps and unclaimed Fibre senders.
 func (c *Config) ingestFibreMetrics(data *metricsv1.MetricsData) {
 	st := c.fibreData()
 	settings := c.settings()
@@ -738,13 +791,19 @@ func (c *Config) ingestFibreMetrics(data *metricsv1.MetricsData) {
 			metrics = append(metrics, sm.GetMetrics()...)
 		}
 		st.record(chain, instance, version, metrics)
+		if c.EnableDash {
+			select {
+			case c.updateChan <- &dash.ChainStatus{MsgType: "fibre", Name: chain, Fibre: &dash.FibreStatus{MetricsAt: st.now().Unix()}}:
+			default:
+			}
+		}
 		if raw {
 			st.recordRaw(chain, rm)
 		}
 	}
 }
 
-// OTLP/HTTP receiver. Paths match by suffix so a reverse proxy's prefix works.
+// OTLP/HTTP paths match by suffix for reverse proxy prefixes.
 func (c *Config) fibreMetricsHandler() http.Handler {
 	decoding := make(chan struct{}, fibreMaxDecoding)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -759,7 +818,6 @@ func (c *Config) fibreMetricsHandler() http.Handler {
 			http.Error(w, "use POST", http.StatusMethodNotAllowed)
 			return
 		}
-		// before reading the body
 		if token := c.settings().FibreMetrics.Token; token != "" &&
 			subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
@@ -813,7 +871,7 @@ func (c *Config) fibreMetricsHandler() http.Handler {
 	})
 }
 
-// An empty ExportMetricsServiceResponse.
+// Return an empty ExportMetricsServiceResponse.
 func respondFibreOK(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
@@ -839,7 +897,7 @@ func fibreOversizeMessage(size int64, unzipped bool) string {
 	return "Fibre export is over the 1 MiB limit"
 }
 
-// True when the sender has not been logged for an hour; the least recently logged goes at the cap.
+// Log each sender at most hourly, evicting the oldest at the cap.
 func (st *fibreStore) noteOversized(sender string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -994,14 +1052,14 @@ func validateFibreMetrics(c *Config) (fatal bool, problems []string) {
 	return
 }
 
-// messages are alarm keys; none may start like a provider message ("Fibre at ", "Validator is not")
+// Alarm keys must not use the provider prefixes "Fibre at " or "Validator is not".
 const (
 	fibreSilentPrefix        = "Fibre has sent no metrics for over "
-	fibreStoragePrefix       = "Fibre storage is nearly full on "
+	fibreStoragePrefix       = "Fibre shard budget is nearly full on "
 	fibreSignFailedPrefix    = "Fibre could not sign payment promises on "
 	fibreSigningPrefix       = "Fibre signing is slower than 10ms on "
 	fibreStorageErrorsPrefix = "Fibre storage operations are failing on "
-	fibreObjectPrefix        = "Fibre object storage requests are failing on "
+	fibreObjectPrefix        = "Fibre storage backend requests are failing on "
 	fibreIdlePrefix          = "Fibre has had no successful upload for over "
 )
 
@@ -1025,7 +1083,16 @@ var fibreMetricsKinds = []struct{ kind, prefix string }{
 	{kindIdle, fibreIdlePrefix},
 }
 
+func fibreMetricsCurrentMessage(message string) string {
+	const oldPrefix = "Fibre storage is nearly full on "
+	if strings.HasPrefix(message, oldPrefix) {
+		return fibreStoragePrefix + strings.TrimPrefix(message, oldPrefix)
+	}
+	return message
+}
+
 func fibreMetricsKind(message string) string {
+	message = fibreMetricsCurrentMessage(message)
 	for _, k := range fibreMetricsKinds {
 		if strings.HasPrefix(message, k.prefix) {
 			return k.kind
@@ -1056,7 +1123,6 @@ func (cc *ChainConfig) fibreMetricsMessage(kind string) string {
 	return fmt.Sprintf("%s%s on %s", fibreIdlePrefix, plural(cc.alertSettings().FibreIdleMinutes, "minute"), cc.ChainId)
 }
 
-// storage and idle are opt-in
 func (cc *ChainConfig) fibreMetricsKindsOn() []string {
 	kinds := []string{kindSilent, kindSignFailed, kindSigning, kindStorageErrors, kindObject}
 	if cc.alertSettings().FibreStoragePercent > 0 {
@@ -1073,17 +1139,17 @@ func fibreMetricsAlarmId(valInfo *ValInfo, message string) string {
 }
 
 const (
-	fibreHold = iota // no evidence either way, an alarm keeps its state
+	fibreHold = iota // hold the alarm state without evidence
 	fibreRaise
 	fibreClear
 )
 
-// Alarms are restored from the state file but metrics are not, so a kind is held until an export says otherwise.
+// Restored window alarms wait for fresh metrics.
 func (cc *ChainConfig) fibreVerdicts(snap fibreSnapshot, started, now time.Time) map[string]int {
 	silentAfter := time.Duration(td.settings().NodeDownMin) * time.Minute
 	v := make(map[string]int)
 	switch since := snap.LastReceived; {
-	// silence counts from tenderduty's start while nothing has arrived
+	// count silence from startup before the first export
 	case since.IsZero() && now.Sub(started) >= silentAfter, !since.IsZero() && now.Sub(since) >= silentAfter:
 		v[kindSilent] = fibreRaise
 	case since.IsZero():
@@ -1092,7 +1158,7 @@ func (cc *ChainConfig) fibreVerdicts(snap fibreSnapshot, started, now time.Time)
 		v[kindSilent] = fibreClear
 	}
 	fresh := !snap.LastReceived.IsZero() && now.Sub(snap.LastReceived) < silentAfter
-	// a quiet spell counts only once this process has watched all of it
+	// clear only after observing the full quiet period
 	watched := func(d time.Duration) bool { return fresh && now.Sub(snap.Since) >= d }
 	for _, kind := range cc.fibreMetricsKindsOn() {
 		if kind == kindSilent {
@@ -1105,7 +1171,7 @@ func (cc *ChainConfig) fibreVerdicts(snap fibreSnapshot, started, now time.Time)
 	}
 	w := snap.Window
 	// raises on any count, clears once the window is quiet and fully seen
-	switch n := w.storePut + w.storeGet + w.prune; {
+	switch n := w.storePut + w.prune; {
 	case n > 0:
 		v[kindStorageErrors] = fibreRaise
 	case watched(fibreWindow):
@@ -1134,8 +1200,7 @@ func (cc *ChainConfig) fibreVerdicts(snap fibreSnapshot, started, now time.Time)
 	return v
 }
 
-// Over 1% raises. Clears only with enough samples, or after a watched day (a quiet network's last failure is out of the
-// window by then); otherwise hold.
+// Clear at or below 1% with 20 samples or a watched day; otherwise hold.
 func fibreShare(failed, total int64, watchedDay bool) int {
 	switch {
 	case failed > 0 && failed*100 > total:
@@ -1146,7 +1211,7 @@ func fibreShare(failed, total int64, watchedDay bool) int {
 	return fibreHold
 }
 
-// Percent of budget storage must fall under to clear; a threshold of 15 or less has no room for the gap.
+// Clear below the threshold minus 15 points, or the threshold when it is at most 15.
 func (cc *ChainConfig) fibreStorageLow() int {
 	if low := cc.alertSettings().FibreStoragePercent - fibreStorageGap; low >= 1 {
 		return low
@@ -1154,14 +1219,13 @@ func (cc *ChainConfig) fibreStorageLow() int {
 	return cc.alertSettings().FibreStoragePercent
 }
 
-// Raises at the threshold or on a rejection in the last 10 minutes. Clears under the lower threshold with none for 30
-// watched minutes, so a network hovering at the limit doesn't flap.
+// Raise at the threshold or recent rejection; clear below the lower threshold after 30 rejection-free minutes.
 func (cc *ChainConfig) fibreStorageVerdict(snap fibreSnapshot, watched30 bool) int {
 	full := snap.HaveStorage && snap.Budget > 0 && snap.Occupancy*100 >= int64(cc.alertSettings().FibreStoragePercent)*snap.Budget
 	if full || snap.Window.rejected > 0 {
 		return fibreRaise
 	}
-	// a budget of 0 is the limiter being off, not an empty disk
+	// zero budget disables the limiter
 	low := snap.HaveStorage && (snap.Budget <= 0 || snap.Occupancy*100 < int64(cc.fibreStorageLow())*snap.Budget)
 	if low && snap.Rejected30 == 0 && watched30 {
 		return fibreClear
@@ -1174,7 +1238,7 @@ func (cc *ChainConfig) fibreMetricsResolution(message string, snap fibreSnapshot
 	case kindSilent:
 		return resolution{"✅", "Fibre sending", "Fibre metrics are arriving again on " + cc.ChainId}
 	case kindStorage:
-		return resolution{"✅", "Storage OK", fmt.Sprintf("Fibre storage is back under %d%% of its budget on %s, no uploads turned away for 30 minutes", cc.fibreStorageLow(), cc.ChainId)}
+		return resolution{"✅", "Shard budget OK", fmt.Sprintf("Fibre shards are back under %d%% of the budget on %s, no uploads turned away for 30 minutes", cc.fibreStorageLow(), cc.ChainId)}
 	case kindSignFailed:
 		return resolution{"✅", "Signing OK", "Fibre is signing payment promises again on " + cc.ChainId}
 	case kindSigning:
@@ -1182,15 +1246,19 @@ func (cc *ChainConfig) fibreMetricsResolution(message string, snap fibreSnapshot
 	case kindStorageErrors:
 		return resolution{"✅", "Storage OK", "Fibre storage operations are succeeding again on " + cc.ChainId}
 	case kindObject:
-		return resolution{"✅", "Object storage OK", "Fibre object storage requests are succeeding again on " + cc.ChainId}
+		return resolution{"✅", "Storage backend OK", "Fibre storage backend requests are succeeding again on " + cc.ChainId}
 	}
 	return resolution{"✅", "Uploads arriving", "Fibre stored an upload again on " + cc.ChainId}
 }
 
-// Like fibreAlarms.
 func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	active := make(map[string]bool)
 	for message := range activeMessages(cc.name, "Fibre ") {
+		if strings.HasPrefix(message, "Fibre object storage requests are failing on ") {
+			id := valInfo.Valcons + "fibremetricsobjectstorage"
+			td.record(cc.name, message, "info", true, true, &id)
+			continue
+		}
 		if isFibreMetricsMessage(message) {
 			active[message] = true
 		}
@@ -1198,8 +1266,7 @@ func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	unsupported, providerChecked := cc.fibreUnsupported, cc.fibreLoaded
 	cc.stateMux.RUnlock()
-	// no x/valaddr: no Fibre to hear from. fibre_enabled can sit in alert_defaults for every chain; these must not read
-	// "silent", and anything restored clears.
+	// Chains without x/valaddr clear restored metrics alarms.
 	if unsupported {
 		for message := range active {
 			resolve(cc.name, message, orphanResolution(message))
@@ -1218,6 +1285,12 @@ func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	wanted := make(map[string]string)
 	for kind, verdict := range verdicts {
 		message := cc.fibreMetricsMessage(kind)
+		for restored := range active {
+			if fibreMetricsCurrentMessage(restored) == message {
+				message = restored
+				break
+			}
+		}
 		if verdict == fibreRaise || verdict == fibreHold && active[message] {
 			wanted[message] = fibreMetricsAlarmId(valInfo, message)
 		}
@@ -1228,7 +1301,7 @@ func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok {
-			// turned off since it was raised: not better, just no longer watched
+			// disabled alarms clear as no longer watched
 			if on[fibreMetricsKind(message)] {
 				resolve(cc.name, message, cc.fibreMetricsResolution(message, snap))
 			} else {
@@ -1241,7 +1314,7 @@ func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	for message, id := range wanted {
 		if !active[message] || reconcile {
 			id := id
-			td.alert(cc.name, message, cc.alertSettings().FibrePriority, false, &id)
+			td.alert(cc.name, message, cc.alertSettings().FibreSeverity, false, &id)
 		}
 	}
 }
@@ -1254,7 +1327,7 @@ func fibreMetricsLabel(msg *alertMsg) (icon, state string) {
 	case kindSilent:
 		return "🔇", "Fibre silent"
 	case kindStorage:
-		return "🗄️", "Fibre storage full"
+		return "🗄️", "Fibre shard budget full"
 	case kindSignFailed:
 		return "✍️", "Signing failed"
 	case kindSigning:
@@ -1262,7 +1335,7 @@ func fibreMetricsLabel(msg *alertMsg) (icon, state string) {
 	case kindStorageErrors:
 		return "🚨", "Storage errors"
 	case kindObject:
-		return "🚨", "Object storage errors"
+		return "🚨", "Storage backend errors"
 	}
 	return "💤", "No uploads"
 }
@@ -1318,10 +1391,10 @@ func fibreMetricsDetail(chain, message string) string {
 			return fmt.Sprintf("%d of %d signatures took over 10ms %s", s.Sum.signOK-s.Sum.signFast, s.Sum.signOK, s.text())
 		}
 	case kindStorageErrors:
-		return fmt.Sprintf("put %d, get %d, prune %d failed in the last 10 minutes", w.storePut, w.storeGet, w.prune)
+		return fmt.Sprintf("put %d, prune %d failed in the last 10 minutes", w.storePut, w.prune)
 	case kindObject:
 		if s := snap.Backend; s.Sum.backendTotal > 0 {
-			return fmt.Sprintf("timeout %d, throttled %d, error %d of %d requests %s", s.Sum.backendTimeout, s.Sum.backendThrottled, s.Sum.backendError, s.Sum.backendTotal, s.text())
+			return fibreBackendDetail(snap)
 		}
 	case kindIdle:
 		if snap.HaveSuccess {

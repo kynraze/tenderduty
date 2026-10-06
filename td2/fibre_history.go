@@ -15,9 +15,11 @@ import (
 
 const fibreRollupKeep = 30 * 24 * time.Hour
 
-// Only small hourly aggregates survive a restart; cumulative sender baselines do not.
+// Chart aggregates persist; sender baselines do not.
 type fibreHour struct {
 	Extra         *fibreExtra        `json:"extra,omitempty"`
+	MaxHeap       float64            `json:"max_heap,omitempty"`
+	MaxStack      float64            `json:"max_stack,omitempty"`
 	MaxMemory     float64            `json:"max_memory,omitempty"`
 	MaxGoroutines float64            `json:"max_goroutines,omitempty"`
 	Time          int64              `json:"time"`
@@ -126,13 +128,17 @@ func (st *fibreStore) hour(chain string, now time.Time) *fibreHour {
 	return st.hours[chain][at]
 }
 
-// Receiver lock held, so bucket and history reflect the same export.
+// Receiver lock held so buckets and history use the same export.
 func (st *fibreStore) recordHour(chain string, d *fibreDelta, s *fibreSender, metrics []*metricsv1.Metric) {
 	h := st.hour(chain, d.at)
 	h.Exports++
 	if d.extra != nil {
 		h.Extra = mergeFibreExtra(h.Extra, d.extra)
-		h.MaxMemory = max(h.MaxMemory, d.extra.Gauges["go_memory_used_bytes"])
+		if memory, ok := d.extra.Gauges["go_memory_used_bytes"]; ok && memory >= h.MaxMemory {
+			h.MaxMemory = memory
+			h.MaxHeap = d.extra.Gauges["go_memory_heap_bytes"]
+			h.MaxStack = d.extra.Gauges["go_memory_stack_bytes"]
+		}
 		h.MaxGoroutines = max(h.MaxGoroutines, d.extra.Gauges["go_goroutines"])
 		if st.histograms[chain] == nil {
 			st.histograms[chain] = make(map[string]fibreHistogram)
@@ -174,7 +180,7 @@ func (st *fibreStore) recordHour(chain string, d *fibreDelta, s *fibreSender, me
 			}
 		}
 	}
-	// Fibre exports uploads_rejected only after the first rejection; while uploads are counted, none was refused.
+	// Fibre omits uploads_rejected until the first rejection.
 	if _, ok := known["uploads_ok"]; ok {
 		if _, ok := known["uploads_rejected"]; !ok {
 			known["uploads_rejected"] = values["uploads_rejected"]
@@ -239,6 +245,15 @@ func (st *fibreStore) savedHours() json.RawMessage {
 }
 
 func (st *fibreStore) restoreHours(raw json.RawMessage) {
+	st.restoreBuckets(raw, st.hours, fibreRollupKeep, time.Hour)
+}
+
+func (st *fibreStore) restoreShort(raw json.RawMessage, span string) {
+	duration, step := fibreRange(span)
+	st.restoreBuckets(raw, st.short[span], duration-step, step)
+}
+
+func (st *fibreStore) restoreBuckets(raw json.RawMessage, dst map[string]map[int64]*fibreHour, duration, step time.Duration) {
 	var chains map[string]json.RawMessage
 	if json.Unmarshal(raw, &chains) != nil {
 		return
@@ -247,6 +262,9 @@ func (st *fibreStore) restoreHours(raw json.RawMessage) {
 	defer st.mu.Unlock()
 	now := st.now()
 	fields := fibreValues(fibreDelta{})
+	for _, result := range []string{"endorsed", "missed", "unknown"} {
+		fields["endorsements_"+result] = 0
+	}
 	for chain, rawHours := range chains {
 		if len(chain) > 256 {
 			continue
@@ -257,11 +275,11 @@ func (st *fibreStore) restoreHours(raw json.RawMessage) {
 		}
 		for key, b := range hours {
 			at, err := strconv.ParseInt(key, 10, 64)
-			if err != nil || at < now.Add(-fibreRollupKeep).Truncate(time.Hour).Unix() || at > now.Truncate(time.Hour).Unix() {
+			if err != nil || at < now.Truncate(step).Add(-duration).Unix() || at > now.Truncate(step).Unix() {
 				continue
 			}
 			var h fibreHour
-			if json.Unmarshal(b, &h) != nil || h.Time != at || at%3600 != 0 || h.Exports < 0 || h.Checks < 0 || h.Reachable < 0 || h.Reachable > h.Checks || h.Verified < 0 || h.Verified > h.Checks {
+			if json.Unmarshal(b, &h) != nil || h.Time != at || at%int64(step/time.Second) != 0 || h.Exports < 0 || h.Checks < 0 || h.Reachable < 0 || h.Reachable > h.Checks || h.Verified < 0 || h.Verified > h.Checks {
 				continue
 			}
 			if (h.Occupancy != nil && *h.Occupancy < 0) || (h.Budget != nil && *h.Budget < 0) || h.MaxOccupancy < 0 || h.MaxUploads < 0 {
@@ -269,24 +287,122 @@ func (st *fibreStore) restoreHours(raw json.RawMessage) {
 			}
 			valid := true
 			for k, v := range h.Counts {
-				if _, ok := fields[k]; !ok || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+				if _, ok := fields[k]; !ok || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) || (strings.HasPrefix(k, "endorsements_") && (math.Trunc(v) != v || v >= float64(math.MaxInt64))) {
 					valid = false
 					break
 				}
 			}
-			if !valid || !validFibreExtra(h.Extra) || h.MaxMemory < 0 || h.MaxGoroutines < 0 {
+			if !valid || !validFibreExtra(h.Extra) || h.MaxHeap < 0 || h.MaxStack < 0 || math.IsNaN(h.MaxHeap) || math.IsInf(h.MaxHeap, 0) || math.IsNaN(h.MaxStack) || math.IsInf(h.MaxStack, 0) || h.MaxMemory < 0 || h.MaxGoroutines < 0 || math.IsNaN(h.MaxMemory) || math.IsInf(h.MaxMemory, 0) || math.IsNaN(h.MaxGoroutines) || math.IsInf(h.MaxGoroutines, 0) {
 				continue
 			}
 			if h.Counts == nil {
 				h.Counts = make(map[string]float64)
 			}
-			if st.hours[chain] == nil {
-				st.hours[chain] = make(map[int64]*fibreHour)
+			if dst[chain] == nil {
+				dst[chain] = make(map[int64]*fibreHour)
 			}
-			st.hours[chain][at] = &h
+			dst[chain][at] = &h
 		}
 	}
-	st.trimHours(now)
+	for chain, buckets := range dst {
+		for at := range buckets {
+			if at < now.Truncate(step).Add(-duration).Unix() || at > now.Truncate(step).Unix() {
+				delete(buckets, at)
+			}
+		}
+		if len(buckets) == 0 {
+			delete(dst, chain)
+		}
+	}
+}
+
+// Caller holds the lock; aggregation leaves sender selection and samples unchanged.
+func (st *fibreStore) shortBuckets(chain, span string) map[int64]*fibreHour {
+	duration, step := fibreRange(span)
+	end := st.now().Truncate(step).Unix()
+	start := end - int64((duration-step)/time.Second)
+	buckets := make(map[int64]*fibreHour)
+	for at, h := range st.short[span][chain] {
+		if at < start || at > end {
+			delete(st.short[span][chain], at)
+			continue
+		}
+		copy := *h
+		copy.Counts = make(map[string]float64)
+		addFibreValues(copy.Counts, h.Counts)
+		copy.Extra = mergeFibreExtra(nil, h.Extra)
+		buckets[at] = &copy
+	}
+	bucket := func(at time.Time) *fibreHour {
+		key := at.Truncate(step).Unix()
+		if key < start || key > end {
+			return nil
+		}
+		if buckets[key] == nil {
+			buckets[key] = &fibreHour{Time: key, Counts: make(map[string]float64)}
+		}
+		return buckets[key]
+	}
+	var best *fibreSender
+	for _, sender := range st.senders {
+		if sender.chain == chain && (best == nil || sender.lastReceived.After(best.lastReceived)) {
+			best = sender
+		}
+	}
+	if best != nil {
+		for _, d := range best.window {
+			h := bucket(d.at)
+			if h == nil {
+				continue
+			}
+			h.Exports++
+			addFibreValues(h.Counts, knownFibreValues(d))
+			h.Extra = mergeFibreExtra(h.Extra, d.extra)
+			if d.haveOccupancy {
+				v := d.occupancy
+				h.Occupancy = &v
+			}
+			if d.haveBudget {
+				v := d.budget
+				h.Budget = &v
+			}
+		}
+	}
+	for _, sample := range st.reach[chain] {
+		if h := bucket(sample.at); h != nil {
+			h.Checks++
+			if sample.reachable {
+				h.Reachable++
+			}
+		}
+	}
+	return buckets
+}
+
+func (st *fibreStore) savedShort(span string) json.RawMessage {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	chains := make(map[string]bool)
+	for chain := range st.short[span] {
+		chains[chain] = true
+	}
+	for _, sender := range st.senders {
+		chains[sender.chain] = true
+	}
+	for chain := range st.reach {
+		chains[chain] = true
+	}
+	saved := make(map[string]map[int64]*fibreHour)
+	for chain := range chains {
+		if buckets := st.shortBuckets(chain, span); len(buckets) > 0 {
+			saved[chain] = buckets
+		}
+	}
+	if len(saved) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(saved)
+	return b
 }
 
 func fibreRange(span string) (time.Duration, time.Duration) {
@@ -302,7 +418,7 @@ func fibreRange(span string) (time.Duration, time.Duration) {
 	}
 }
 
-// A quiet interval's latency also counts up to fibreLatencyBack earlier intervals, until it has fibreLatencyMin operations.
+// Include up to fibreLatencyBack earlier intervals to reach fibreLatencyMin operations.
 const (
 	fibreLatencyMin  = 50
 	fibreLatencyBack = 5
@@ -331,7 +447,7 @@ func (st *fibreStore) series(chain, span string) []dash.FibrePoint {
 	return points
 }
 
-// Like series, plus p50/p95 of the whole range: a p95 over one or two operations jumps.
+// Whole-range percentiles avoid jumps from intervals with few operations.
 func (st *fibreStore) seriesAndLatency(chain, span string) ([]dash.FibrePoint, map[string]float64) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -373,28 +489,12 @@ func (st *fibreStore) seriesAndLatency(chain, span string) ([]dash.FibrePoint, m
 		}
 	}
 	if span == "1h" || span == "24h" {
-		var best *fibreSender
-		for _, s := range st.senders {
-			if s.chain == chain && (best == nil || s.lastReceived.After(best.lastReceived)) {
-				best = s
-			}
-		}
-		if best != nil {
-			for _, d := range best.window {
-				var occ, budget *int64
-				if d.haveOccupancy {
-					v := d.occupancy
-					occ = &v
-				}
-				if d.haveBudget {
-					v := d.budget
-					budget = &v
-				}
-				i := index(d.at)
-				add(i, knownFibreValues(d), occ, budget)
-				if i >= 0 {
-					extras[i] = mergeFibreExtra(extras[i], d.extra)
-				}
+		for at, h := range st.shortBuckets(chain, span) {
+			i := index(time.Unix(at, 0))
+			add(i, h.Counts, h.Occupancy, h.Budget)
+			if i >= 0 {
+				extras[i] = h.Extra
+				checks[i], reachable[i] = h.Checks, h.Reachable
 			}
 		}
 	} else {
@@ -413,7 +513,13 @@ func (st *fibreStore) seriesAndLatency(chain, span string) ([]dash.FibrePoint, m
 			extras[i] = mergeFibreExtra(extras[i], h.Extra)
 			if h.Extra != nil {
 				if _, ok := h.Extra.Gauges["go_memory_used_bytes"]; ok {
-					extras[i].Gauges["go_memory_max_bytes"] = max(extras[i].Gauges["go_memory_max_bytes"], h.MaxMemory)
+					if h.MaxMemory >= extras[i].Gauges["go_memory_max_bytes"] {
+						extras[i].Gauges["go_memory_max_bytes"] = h.MaxMemory
+						if _, split := h.Extra.Gauges["go_memory_heap_bytes"]; split {
+							extras[i].Gauges["go_memory_heap_max_bytes"] = h.MaxHeap
+							extras[i].Gauges["go_memory_stack_max_bytes"] = h.MaxStack
+						}
+					}
 				}
 				if _, ok := h.Extra.Gauges["go_goroutines"]; ok {
 					extras[i].Gauges["go_goroutines_max"] = max(extras[i].Gauges["go_goroutines_max"], h.MaxGoroutines)
@@ -425,17 +531,13 @@ func (st *fibreStore) seriesAndLatency(chain, span string) ([]dash.FibrePoint, m
 	}
 	// Short ranges use the minute reachability history, independent of metrics exports.
 	if span == "1h" || span == "24h" {
-		for _, sample := range st.reach[chain] {
-			i := index(sample.at)
-			if i >= 0 {
-				checks[i]++
-				if sample.reachable {
-					reachable[i]++
-				}
-			}
-		}
-		// Checks run about once a minute, so one can skip a minute: fill a lone gap from the earlier check.
+		// Fill a single missing minute from the earlier reachability check.
 		for i := 1; i+1 < len(points); i++ {
+			previous := st.short[span][chain][points[i-1].Time]
+			next := st.short[span][chain][points[i+1].Time]
+			if previous != nil && previous.Checks > 0 && (next == nil || next.Checks == 0) {
+				continue
+			}
 			if checks[i] == 0 && checks[i-1] > 0 && checks[i+1] > 0 && step <= time.Minute {
 				checks[i], reachable[i] = checks[i-1], reachable[i-1]
 			}

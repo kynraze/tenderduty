@@ -482,7 +482,7 @@ func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []
 		}
 	}
 	if !weekly && latest != nil && latest.Occupancy != nil && latest.Budget != nil && *latest.Budget > 0 {
-		lines = append(lines, fmt.Sprintf("🗃 %.1f of %.1f GiB (%.0f%%)", float64(*latest.Occupancy)/(1<<30), float64(*latest.Budget)/(1<<30), 100*float64(*latest.Occupancy)/float64(*latest.Budget)))
+		lines = append(lines, fmt.Sprintf("🗃 Shards %.1f of %.1f GiB (%.0f%%)", float64(*latest.Occupancy)/(1<<30), float64(*latest.Budget)/(1<<30), 100*float64(*latest.Occupancy)/float64(*latest.Budget)))
 	}
 	return lines
 }

@@ -300,7 +300,7 @@ func TestFibrePrometheusDeltasAndKnownValues(t *testing.T) {
 	f.backendOK, f.timeout, f.ignoredOutcomes = 10, 2, 3
 	r.c.ingestFibreMetrics(f.statusData(statusTotals{uploadsA: 8, uploadSecA: .1}))
 	values = gatheredFibre(t, r.c)
-	if values["tenderduty_fibre_uploads_total/ok"] != 50 || values["tenderduty_fibre_object_storage_requests_total/success"] != 10 || values["tenderduty_fibre_object_storage_requests_total/timeout"] != 2 || values["tenderduty_fibre_object_storage_requests_total/canceled"] != 3 {
+	if values["tenderduty_fibre_uploads_total/ok"] != 50 || values["tenderduty_fibre_storage_backend_requests_total/success"] != 10 || values["tenderduty_fibre_storage_backend_requests_total/timeout"] != 2 || values["tenderduty_fibre_storage_backend_requests_total/canceled"] != 3 {
 		t.Fatalf("counter deltas did not add: %+v", values)
 	}
 	r.cc.Alerts.FibreAlerts = false
@@ -318,7 +318,7 @@ func TestFibrePrometheusWithoutExports(t *testing.T) {
 	if _, ok := values["tenderduty_fibre_registered"]; !ok {
 		t.Fatal("chain-side metrics missing")
 	}
-	for _, suffix := range []string{"occupancy_bytes", "budget_bytes", "metrics_age_seconds", "uploads_total/ok", "uploads_in_flight", "go_memory_used_bytes", "go_memory_limit_bytes", "go_gc_goal_bytes", "go_goroutines", "go_processor_limit", "go_gogc", "go_memory_allocated_bytes_total", "go_memory_allocations_total", "prune_entries_total", "object_storage_bytes_total", "object_storage_in_flight", "upload_seconds_count", "download_seconds_count", "sign_seconds_count", "store_put_seconds_count", "store_get_seconds_count", "prune_seconds_count", "go_schedule_seconds_count"} {
+	for _, suffix := range []string{"occupancy_bytes", "budget_bytes", "metrics_age_seconds", "uploads_total/ok", "uploads_in_flight", "go_memory_used_bytes", "go_memory_limit_bytes", "go_gc_goal_bytes", "go_goroutines", "go_processor_limit", "go_gogc", "go_memory_allocated_bytes_total", "go_memory_allocations_total", "prune_entries_total", "storage_backend_bytes_total", "storage_backend_in_flight", "upload_seconds_count", "download_seconds_count", "sign_seconds_count", "store_put_seconds_count", "store_get_seconds_count", "prune_seconds_count", "go_schedule_seconds_count"} {
 		if _, ok := values["tenderduty_fibre_"+suffix]; ok {
 			t.Fatalf("unobserved %s exported", suffix)
 		}

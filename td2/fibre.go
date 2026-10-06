@@ -27,7 +27,7 @@ type fibreState struct {
 	IdentityOK    bool
 	IdentityError string
 	DownSince     time.Time // zero while the host answers
-	DownReason    string    // why the last handshake failed
+	DownReason    string
 	NoKeyLogged   bool
 }
 
@@ -35,7 +35,7 @@ func fibreDialReason(err error) string {
 	var netErr net.Error
 	var dnsErr *net.DNSError
 	switch {
-	// before the timeout case: a lookup timeout is DNS, not the host
+	// classify lookup timeouts as DNS errors
 	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
 		return "DNS lookup failed, " + dnsErr.Name + " does not resolve"
 	case errors.As(err, &dnsErr):
@@ -85,8 +85,8 @@ const (
 	fibreLivenessDen = 3
 )
 
-// Mirrors celestia-app's Set.AssignedRows: ceil(4096 * power * 3 / total) clamped to 148..4096, 0 without power.
-// minimum reports that the 148 floor applied.
+// Mirrors celestia-app's AssignedRows: ceil(4096 * power * 3 / total), clamped to 148..4096.
+// minimum reports whether the floor applied; zero power gets no rows.
 func fibreRows(power, total int64) (rows int, minimum bool) {
 	if power <= 0 || total <= 0 {
 		return 0, false
@@ -105,7 +105,7 @@ func fibreRows(power, total int64) (rows int, minimum bool) {
 	return min(rows, fibreOriginalRows), minimum
 }
 
-// fullStake * rows / 4096 as Fibre's deriveBudget; the product can pass 64 bits, so 128-bit math.
+// Fibre derives budget as fullStake * rows / 4096; the product needs 128-bit math.
 func fibreBudget(fullStake int64, rows int) int64 {
 	if fullStake <= 0 || rows <= 0 {
 		return 0
@@ -135,7 +135,7 @@ func parseFibreFullStake(b []byte) (int64, error) {
 	return int64(stake), err
 }
 
-// A failure keeps the last value, is logged once and never touches an alarm.
+// Failed reads keep the last budget and log once per failure streak.
 func (cc *ChainConfig) refreshFibreParams(ctx context.Context, client *rpchttp.HTTP) {
 	value, err := abciQuery(ctx, client, "/celestia.fibre.v1.Query/Params", nil)
 	var stake int64
@@ -154,9 +154,9 @@ func (cc *ChainConfig) refreshFibreParams(ctx context.Context, client *rpchttp.H
 	switch {
 	case err == nil || logged:
 	case moduleMissing(err):
-		l(cc.ChainId, "has no x/fibre, not showing the storage budget the chain gives the validator")
+		l(cc.ChainId, "has no x/fibre, not showing the shard budget the chain gives the validator")
 	default:
-		l(cc.ChainId, "could not read the Fibre params, keeping the last storage budget:", err)
+		l(cc.ChainId, "could not read the Fibre params, keeping the last shard budget:", err)
 	}
 }
 
@@ -169,7 +169,7 @@ func getFibreProvider(ctx context.Context, client *rpchttp.HTTP, valcons string)
 	return parseFibreProvider(value)
 }
 
-// Fibre serves gRPC over TLS 1.3 only, with no health endpoint: a finished handshake is what reachable means.
+// Fibre uses TLS 1.3 without a health endpoint; reachability means a completed handshake.
 func fibreCertificate(ctx context.Context, host string) (*x509.Certificate, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: 10 * time.Second},
@@ -241,7 +241,7 @@ func verifyFibreIdentity(cert *x509.Certificate, consKey []byte, chainID string,
 	return nil
 }
 
-// The host is dialed from where tenderduty runs. A chain without x/valaddr is logged once and not asked again.
+// Dial from tenderduty; stop querying chains without x/valaddr after logging once.
 func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 	cc.stateMux.RLock()
 	unsupported := cc.fibreUnsupported
@@ -337,8 +337,7 @@ func isFibreIdentity(message string) bool {
 	return strings.HasPrefix(message, fibreHostPrefix) && strings.Contains(message, fibreIdentityInfix)
 }
 
-// Derived from the message so restored alarms resolve with the same id. Host-specific, or a new host's alarm would share
-// a pagerduty dedup key with the old one being resolved.
+// Host-specific IDs keep restored alarms separate from replacement hosts.
 func fibreAlarmId(valInfo *ValInfo, message string) string {
 	switch {
 	case strings.HasPrefix(message, fibreNotRegisteredPrefix):
@@ -415,7 +414,7 @@ func fibreDetail(chain, message string) string {
 	return cc.fibre.DownReason
 }
 
-// Like signalAlarms: the wanted set is recomputed and compared with the active one.
+// Compare wanted alarms with active alarms.
 func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	state, loaded := cc.fibre, cc.fibreLoaded
@@ -439,7 +438,7 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 		if !state.Reachable && (active[down] || !state.DownSince.IsZero() && time.Since(state.DownSince) >= time.Duration(td.settings().NodeDownMin)*time.Minute) {
 			want(down)
 		}
-		// refreshFibre carries the identity check over while the host is down; a restart loses it
+		// retain the identity alarm during downtime, including after a restart
 		if state.KeyKnown && !state.IdentityOK || !state.Reachable && active[identity] {
 			want(identity)
 		}
@@ -462,7 +461,7 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 	for message, id := range wanted {
 		if !active[message] || reconcile {
 			id := id
-			td.alert(cc.name, message, cc.alertSettings().FibrePriority, false, &id)
+			td.alert(cc.name, message, cc.alertSettings().FibreSeverity, false, &id)
 		}
 	}
 }

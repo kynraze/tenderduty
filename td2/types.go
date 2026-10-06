@@ -573,20 +573,20 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		}
 		if v.Alerts.FibreAlerts && (v.Alerts.FibreStoragePercent < 0 || v.Alerts.FibreStoragePercent > 100) {
 			v.Alerts.FibreStoragePercent = 0
-			problems = append(problems, fmt.Sprintf("warning: %s fibre_storage_percent is not between 0 and 100, the storage full alert is off", k))
+			problems = append(problems, fmt.Sprintf("warning: %s fibre_storage_percent is not between 0 and 100, the shard budget full alert is off", k))
 		}
 		// warn only on negative values; unset uses the default
 		if v.Alerts.FibreEndorsementBlobs < 1 {
 			if v.Alerts.FibreEndorsementBlobs < 0 {
-				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_blobs must be at least 1, using 20", k))
+				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_blobs must be at least 1, using 50", k))
 			}
-			v.Alerts.FibreEndorsementBlobs = 20
+			v.Alerts.FibreEndorsementBlobs = 50
 		}
 		if v.Alerts.FibreEndorsementMinutes < 1 {
 			if v.Alerts.FibreEndorsementMinutes < 0 {
-				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_minutes must be at least 1, using 30", k))
+				problems = append(problems, fmt.Sprintf("warning: %s fibre_endorsement_minutes must be at least 1, using 120", k))
 			}
-			v.Alerts.FibreEndorsementMinutes = 30
+			v.Alerts.FibreEndorsementMinutes = 120
 		}
 		if v.Alerts.FibreAlerts && v.Alerts.FibreIdleMinutes < 0 {
 			v.Alerts.FibreIdleMinutes = 0

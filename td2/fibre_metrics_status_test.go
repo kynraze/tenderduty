@@ -132,7 +132,7 @@ func TestFibreMetricsStatusCounters(t *testing.T) {
 		t.Fatalf("in flight is %d and %d, it is the last value", snap.UploadsNow, snap.DownloadsNow)
 	}
 
-	// restart: a new start time and lower totals are all new, seconds too, nothing negative
+	// restart: count the new totals and durations as fresh observations
 	r.advance(time.Minute)
 	f.start = uint64(r.clock.now.Add(-10 * time.Second).UnixNano())
 	third := statusTotals{uploadsA: 2, uploadSecA: 0.06, uploadBytes: 2 << 20, putOK: 1, putSec: 0.02, signOK: 4, signFast: 4, signSec: 0.008}
@@ -169,7 +169,6 @@ func TestFibreMetricsStatusFirstExportIsABaseline(t *testing.T) {
 	if !snap.Ten.Sum.empty() || !snap.Day.Sum.empty() {
 		t.Fatalf("what Fibre did before tenderduty started counted: %+v", snap.Day.Sum)
 	}
-	// in flight is a value, nothing to baseline
 	if snap.UploadsNow != 2 {
 		t.Fatalf("in flight is %d", snap.UploadsNow)
 	}
@@ -195,16 +194,15 @@ func TestFibreMetricsStatusWindows(t *testing.T) {
 	if snap.Ten.Sum.uploadOK != 7 || snap.Day.Sum.uploadOK != 37 {
 		t.Fatalf("10 minutes counted %d and 24 hours %d uploads", snap.Ten.Sum.uploadOK, snap.Day.Sum.uploadOK)
 	}
-	// the exports started 3h13m ago: the day is what tenderduty has seen of it, the 10 minutes are all there
+	// day coverage starts 3h13m ago; the 10-minute window is complete
 	if snap.Ten.Covers != fibreWindow || snap.Day.Covers != 3*time.Hour+13*time.Minute {
 		t.Fatalf("10 minutes cover %v and the day %v", snap.Ten.Covers, snap.Day.Covers)
 	}
-	// the alarms' own window is what it was
 	if snap.Window != snap.Ten.Sum {
 		t.Fatalf("window %+v is not the 10 minutes %+v", snap.Window, snap.Ten.Sum)
 	}
 
-	// after more than a day the oldest falls out and the day is the whole 24 hours
+	// after a day, trim the oldest delta and report 24-hour coverage
 	r.advance(23*time.Hour + 50*time.Minute)
 	snap = r.st.snapshot("Chain")
 	if snap.Day.Covers != fibreKeep || snap.Day.Sum.uploadOK != 7 {
@@ -212,7 +210,7 @@ func TestFibreMetricsStatusWindows(t *testing.T) {
 	}
 }
 
-// past fibreMaxDeltas the older history is merged, not cut: no count is lost
+// TestFibreMetricsStatusCoversWhatIsKept: merging at fibreMaxDeltas retains all counts.
 func TestFibreMetricsStatusCoversWhatIsKept(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -273,7 +271,7 @@ func TestFibreMetricsStatusUpDownCounters(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	f := r.feed(time.Minute)
-	// a sender with attributes on it has several series, together they are the number in flight
+	// sum in-flight values across series attributes
 	m := f.upDown("upload_shard.in_flight", 2)
 	m.GetSum().DataPoints = append(m.GetSum().DataPoints, &metricsv1.NumberDataPoint{Attributes: kvs("kind", "x"), Value: &metricsv1.NumberDataPoint_AsInt{AsInt: 3}})
 	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", m))
@@ -290,11 +288,10 @@ func TestFibreMetricsStatusUpDownCounters(t *testing.T) {
 	if snap := r.st.snapshot("Chain"); snap.UploadsNow != 0 {
 		t.Fatalf("in flight is %d", snap.UploadsNow)
 	}
-	// a metric with no points says nothing
 	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", &metricsv1.Metric{Name: "fibre.server.upload_shard.in_flight"}))
 }
 
-// the alarm fixtures carry these too: 9 uploads of 1 MiB at 20ms, a failed one, 2 in flight
+// TestFibreMetricsStatusFixtures: the alarm fixtures carry these too: 9 uploads of 1 MiB at 20ms, a failed one, 2 in flight
 func TestFibreMetricsStatusFixtures(t *testing.T) {
 	r := newFibreRig(t)
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
@@ -317,7 +314,6 @@ func TestFibreMetricsStatusFixtures(t *testing.T) {
 	}
 	r.advance(time.Minute)
 	r.c.ingestFibreMetrics(&second)
-	// one more failed upload in the second export, the rest didn't move
 	d = r.st.snapshot("Chain").Ten.Sum
 	if d.uploadOK != 9 || d.uploadFailed != 2 {
 		t.Fatalf("export 2 counted %+v", d)

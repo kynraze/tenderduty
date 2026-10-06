@@ -91,7 +91,7 @@ func addFibreHistogram(a, b fibreHistogram) fibreHistogram {
 	return a
 }
 
-// Copy on merge: compacting or aggregating history must not mutate earlier intervals.
+// Copy merged histograms to leave earlier intervals unchanged.
 func mergeFibreExtra(a, b *fibreExtra) *fibreExtra {
 	if a == nil && b == nil {
 		return nil
@@ -171,7 +171,7 @@ func (s *fibreSender) histogramDelta(key string, dp *metricsv1.HistogramDataPoin
 		return delta, true
 	}
 	if seen && !compatible {
-		// New schema: baseline only, don't import old cumulative values.
+		// a changed schema establishes a new baseline
 		h.Count, h.Sum = 0, 0
 		h.Buckets = make([]uint64, len(h.Buckets))
 		return h, true
@@ -208,6 +208,12 @@ func (st *fibreStore) recordExtra(s *fibreSender, d *fibreDelta, metrics []*metr
 				}
 			}
 		}
+		if m.GetName() == "go.memory.used" {
+			for field, v := range fibreMemoryValues(m) {
+				d.extra.Gauges[field] = v
+				s.resources[field] = v
+			}
+		}
 		if field, ok := fibreRuntimeGauges[m.GetName()]; ok {
 			v, have := fibreRuntimeValue(name, m)
 			if have {
@@ -234,15 +240,45 @@ func (st *fibreStore) recordExtra(s *fibreSender, d *fibreDelta, metrics []*metr
 			if len(m.GetSum().GetDataPoints()) > 0 {
 				d.extra.Counters["go_memory_allocations"] = float64(s.counter(m.GetName(), m, known, now))
 			}
-		case "fibre.server.backend.get.bytes":
-			if len(m.GetSum().GetDataPoints()) > 0 {
-				d.extra.Counters["object_storage_bytes"] = float64(s.counter(name, m, known, now))
+		case "fibre.server.backend.get.bytes", "fibre.server.backend.get.in_flight":
+			points := m.GetSum().GetDataPoints()
+			if m.GetGauge() != nil {
+				points = m.GetGauge().GetDataPoints()
 			}
-		case "fibre.server.backend.get.in_flight":
-			if len(m.GetSum().GetDataPoints()) > 0 {
-				v := s.inFlight(m, int64(s.resources["object_storage_in_flight"]))
-				d.extra.Gauges["object_storage_in_flight"] = float64(v)
-				s.resources["object_storage_in_flight"] = float64(v)
+			var total float64
+			for _, dp := range points {
+				backend := fibreBackendName(dp.GetAttributes())
+				b := st.backendTotal(s.chain, backend)
+				if s.backends == nil {
+					s.backends = make(map[string]*fibreBackend)
+				}
+				if s.backends[backend] == nil {
+					s.backends[backend] = &fibreBackend{}
+				}
+				current := s.backends[backend]
+				if m.GetName() == "fibre.server.backend.get.bytes" {
+					n := s.step(fibreSeriesKey(name, dp.GetAttributes()), dp.GetStartTimeUnixNano(), fibreCount(dp), temporalityCumulative(m.GetSum().GetAggregationTemporality()), known, now)
+					b.bytes += float64(n)
+					b.haveBytes = true
+					total += float64(n)
+				} else {
+					v := int64(math.Round(fibreNumber(dp)))
+					if m.GetSum() != nil && !temporalityCumulative(m.GetSum().GetAggregationTemporality()) {
+						v += current.inFlight
+					}
+					current.inFlight, current.haveInFlight = max(v, 0), true
+				}
+			}
+			if len(points) > 0 {
+				if m.GetName() == "fibre.server.backend.get.bytes" {
+					d.extra.Counters["object_storage_bytes"] = total
+				} else {
+					for _, b := range s.backends {
+						total += float64(b.inFlight)
+					}
+					d.extra.Gauges["object_storage_in_flight"] = total
+					s.resources["object_storage_in_flight"] = total
+				}
 			}
 		}
 	}
@@ -258,6 +294,14 @@ func (st *fibreStore) recordExtra(s *fibreSender, d *fibreDelta, metrics []*metr
 
 // Memory types are separate series; take the latest value of each before summing.
 func fibreRuntimeValue(name string, m *metricsv1.Metric) (float64, bool) {
+	if name == "go.memory.used" {
+		values := fibreMemoryValues(m)
+		var total float64
+		for _, v := range values {
+			total += v
+		}
+		return total, len(values) > 0
+	}
 	points := m.GetGauge().GetDataPoints()
 	if m.GetSum() != nil {
 		points = m.GetSum().GetDataPoints()
@@ -265,12 +309,6 @@ func fibreRuntimeValue(name string, m *metricsv1.Metric) (float64, bool) {
 	latest := make(map[string]*metricsv1.NumberDataPoint)
 	for _, dp := range points {
 		key := ""
-		if name == "go.memory.used" {
-			key, _ = fibreAttr(dp.GetAttributes(), "go.memory.type")
-			if key != "stack" && key != "other" {
-				continue
-			}
-		}
 		if prev := latest[key]; prev == nil || dp.GetTimeUnixNano() >= prev.GetTimeUnixNano() {
 			latest[key] = dp
 		}
@@ -286,7 +324,39 @@ func fibreRuntimeValue(name string, m *metricsv1.Metric) (float64, bool) {
 	return total, len(latest) > 0
 }
 
-// Rejects unbounded or unknown persisted fields; old hours without extras pass.
+func fibreMemoryValues(m *metricsv1.Metric) map[string]float64 {
+	points := m.GetGauge().GetDataPoints()
+	if m.GetSum() != nil {
+		points = m.GetSum().GetDataPoints()
+	}
+	latest := make(map[string]*metricsv1.NumberDataPoint)
+	for _, dp := range points {
+		kind, _ := fibreAttr(dp.GetAttributes(), "go.memory.type")
+		field := ""
+		switch kind {
+		case "heap", "other":
+			field = "go_memory_heap_bytes"
+		case "stack":
+			field = "go_memory_stack_bytes"
+		default:
+			continue
+		}
+		if prev := latest[field]; prev == nil || dp.GetTimeUnixNano() >= prev.GetTimeUnixNano() {
+			latest[field] = dp
+		}
+	}
+	values := make(map[string]float64)
+	for field, dp := range latest {
+		v := fibreNumber(dp)
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return nil
+		}
+		values[field] = v
+	}
+	return values
+}
+
+// Reject unknown or unbounded persisted fields; older hours may omit extras.
 func validFibreExtra(e *fibreExtra) bool {
 	if e == nil {
 		return true
@@ -300,7 +370,7 @@ func validFibreExtra(e *fibreExtra) bool {
 			return false
 		}
 	}
-	gauges := map[string]bool{"go_memory_no_limit": true, "object_storage_in_flight": true}
+	gauges := map[string]bool{"go_memory_no_limit": true, "object_storage_in_flight": true, "go_memory_heap_bytes": true, "go_memory_stack_bytes": true}
 	for _, field := range fibreRuntimeGauges {
 		gauges[field] = true
 	}

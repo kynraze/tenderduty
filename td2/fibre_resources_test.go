@@ -56,7 +56,7 @@ func TestFibreHistogramDeltasRestartsAndBounds(t *testing.T) {
 	if h.Count != 10 || math.Abs(h.Sum-.5) > 1e-12 || h.Buckets[0] != 4 || h.Buckets[1] != 5 {
 		t.Fatalf("growth did not accumulate: %+v", h)
 	}
-	// Counts dropping without a changed start, then an explicit start change, both count fresh observations.
+	// Lower counts and changed start times both reset the baseline.
 	feed(start, bounds, []uint64{1, 1, 0}, .05)
 	feed(uint64(r.clock.now.UnixNano()), bounds, []uint64{1, 0, 0}, .005)
 	h = r.st.histograms["Chain"]["upload"]
@@ -97,7 +97,7 @@ func TestFibreHistogramSizeSeriesAndFailures(t *testing.T) {
 	}
 }
 
-// a quiet minute takes in earlier minutes, so one slow signature doesn't make p95 jump
+// TestFibreRangeLatencyAddsTheBucketsUp: include earlier minutes to avoid p95 jumps from a single signature.
 func TestFibreRangeLatencyAddsTheBucketsUp(t *testing.T) {
 	r := statusRig(t, false, nil)
 	start := uint64(r.clock.now.Add(-time.Minute).UnixNano())
@@ -212,7 +212,7 @@ func TestFibreNewPrometheusFamilies(t *testing.T) {
 	}
 	r.st.record("Chain", "fibre-host-1", "", metrics)
 	values := gatheredFibre(t, r.c)
-	if values["tenderduty_fibre_prune_entries_total"] != 5 || values["tenderduty_fibre_object_storage_bytes_total"] != 100 || values["tenderduty_fibre_object_storage_in_flight"] != 3 {
+	if values["tenderduty_fibre_prune_entries_total"] != 5 || values["tenderduty_fibre_storage_backend_bytes_total"] != 100 || values["tenderduty_fibre_storage_backend_in_flight"] != 3 {
 		t.Fatalf("dropped metrics still missing: %+v", values)
 	}
 	registry := prometheus.NewPedanticRegistry()
@@ -242,7 +242,7 @@ func TestFibreNewPrometheusFamilies(t *testing.T) {
 	}
 	for suffix, kind := range map[string]string{
 		"go_memory_used_bytes": "GAUGE", "go_memory_limit_bytes": "GAUGE", "go_gc_goal_bytes": "GAUGE", "go_goroutines": "GAUGE", "go_processor_limit": "GAUGE", "go_gogc": "GAUGE",
-		"go_memory_allocated_bytes_total": "COUNTER", "go_memory_allocations_total": "COUNTER", "prune_entries_total": "COUNTER", "object_storage_bytes_total": "COUNTER", "object_storage_in_flight": "GAUGE",
+		"go_memory_allocated_bytes_total": "COUNTER", "go_memory_allocations_total": "COUNTER", "prune_entries_total": "COUNTER", "storage_backend_bytes_total": "COUNTER", "storage_backend_in_flight": "GAUGE",
 	} {
 		if seen["tenderduty_fibre_"+suffix] != kind {
 			t.Fatalf("%s type = %s, want %s", suffix, seen["tenderduty_fibre_"+suffix], kind)
@@ -386,12 +386,40 @@ func TestFibreLatencyWindowWidensOnlyWhenQuiet(t *testing.T) {
 	if got := fibreLatencyWindow(extras, 7, "upload").Count; got != 100 {
 		t.Fatalf("busy interval took in others: %d", got)
 	}
-	// 5 back at most, the empty one is skipped
 	if got := fibreLatencyWindow(extras, 6, "upload").Count; got != 25 {
 		t.Fatalf("quiet interval got %d, want 25", got)
 	}
 	extras[5].Histograms["upload"] = fibreHistogram{Bounds: []float64{0.02}, Buckets: []uint64{5, 0}, Count: 5}
 	if got := fibreLatencyWindow(extras, 6, "upload").Count; got != 5 {
 		t.Fatalf("other bounds were added: %d", got)
+	}
+}
+
+func TestFibreMemorySplitAndHourlyPeak(t *testing.T) {
+	for _, kind := range []string{"heap", "other"} {
+		r := statusRig(t, false, nil)
+		feed := func(heap, stack int64) {
+			r.st.record("Chain", "fibre-host-1", "", []*metricsv1.Metric{
+				runtimeGauge("go.memory.used", runtimePoint(heap, latencyAttr("go.memory.type", kind)), runtimePoint(stack, latencyAttr("go.memory.type", "stack"))),
+			})
+		}
+		feed(800, 200)
+		r.advance(time.Minute)
+		feed(100, 50)
+		points := r.st.series("Chain", "1h")
+		last := points[len(points)-1].Metrics
+		if last["go_memory_used_bytes"] != 150 || last["go_memory_heap_bytes"] != 100 || last["go_memory_stack_bytes"] != 50 {
+			t.Fatalf("%s split: %+v", kind, last)
+		}
+		store := newFibreStore()
+		store.now = r.clock.Now
+		store.restoreHours(r.st.savedHours())
+		for _, span := range []string{"7d", "30d"} {
+			points = store.series("Chain", span)
+			last = points[len(points)-1].Metrics
+			if last["go_memory_max_bytes"] != 1000 || last["go_memory_heap_max_bytes"] != 800 || last["go_memory_stack_max_bytes"] != 200 {
+				t.Fatalf("%s %s peak: %+v", kind, span, last)
+			}
+		}
 	}
 }

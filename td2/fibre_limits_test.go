@@ -86,7 +86,6 @@ func TestFibreSendersPerChainAreCapped(t *testing.T) {
 	if len(r.st.senders) != fibreMaxSenders+1 {
 		t.Fatalf("%d senders", len(r.st.senders))
 	}
-	// the oldest is refreshed, so the next one to go is host-1
 	r.advance(time.Second)
 	export("host-0")
 	r.advance(time.Second)
@@ -123,7 +122,7 @@ func TestFibreIgnoredInstancesAreCapped(t *testing.T) {
 		r.advance(time.Second)
 		r.st.noteIgnored(fmt.Sprintf("stranger-%d", i))
 		if i == fibreMaxIgnored/2 {
-			r.st.noteIgnored("stranger-0") // seen again, stays
+			r.st.noteIgnored("stranger-0")
 		}
 	}
 	if len(r.st.ignored) != fibreMaxIgnored {
@@ -157,7 +156,7 @@ func TestFibreInstanceAndVersionAreCut(t *testing.T) {
 	if v := r.st.snapshot("Chain").Version; len(v) == 0 || len(v) > fibreMaxIdentity {
 		t.Fatalf("status shows %d bytes of version", len(v))
 	}
-	// not claimed by any chain: remembered cut as well
+	// unclaimed senders are bounded too
 	r.cc.Alerts.FibreInstance = "fibre-host-1"
 	r.c.ingestFibreMetrics(export(long+"x", "v1"))
 	for instance := range r.st.ignored {
@@ -194,7 +193,6 @@ func TestFibreRawSeriesLimits(t *testing.T) {
 		}
 		return attrs
 	}
-	// the resource adds service.name and service.instance.id
 	export("", labels(fibreRawMaxLabels-2)...)
 	if n := len(r.st.raw["Chain"]); n != 1 || r.st.rawSkipped != 0 {
 		t.Fatalf("a series with exactly %d labels: %d kept, %d skipped", fibreRawMaxLabels, n, r.st.rawSkipped)
@@ -221,7 +219,6 @@ func TestFibreRawSeriesLimits(t *testing.T) {
 	if len(found.help) != fibreRawMaxHelp || len(found.labels["big"]) != fibreRawMaxValue || len(found.labels["multi"]) > fibreRawMaxValue || !utf8.ValidString(found.labels["multi"]) {
 		t.Fatalf("help %d bytes, big %d, multi %d", len(found.help), len(found.labels["big"]), len(found.labels["multi"]))
 	}
-	// a metric name over the limit goes too
 	r.c.ingestFibreMetrics(&metricsv1.MetricsData{ResourceMetrics: []*metricsv1.ResourceMetrics{{
 		Resource: &resourcev1.Resource{Attributes: kvs("service.name", "fibre", "service.instance.id", "fibre-host-1")},
 		ScopeMetrics: []*metricsv1.ScopeMetrics{{Metrics: []*metricsv1.Metric{
@@ -231,7 +228,6 @@ func TestFibreRawSeriesLimits(t *testing.T) {
 	if r.st.rawSkipped != 3 {
 		t.Fatalf("%d skipped, want 3", r.st.rawSkipped)
 	}
-	// and the scrape still works
 	if body := scrape(t, r.c); !strings.Contains(body, "thing") {
 		t.Fatalf("scrape lost the kept series:\n%s", body)
 	}

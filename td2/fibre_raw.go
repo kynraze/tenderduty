@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	// per chain, bounds memory against unbounded label values
+	// per chain, limits label memory
 	fibreRawMaxSeries = 20000
 	// as the collector's exporter expires series
 	fibreRawStale = 10 * time.Minute
-	// per series; one over the label limit, or with a name over the length, is skipped
+	// skip series exceeding label-count or name-length limits
 	fibreRawMaxLabels = 32
 	fibreRawMaxName   = 256 // bytes of a metric or label name
 	fibreRawMaxValue  = 256 // bytes of a label value, cut
@@ -78,7 +78,7 @@ func fibreRawHas(tokens []string, t string) bool {
 	return false
 }
 
-// Follows the Collector's Prometheus exporter naming: unit appended unless present, counters end in _total, ratio gauges marked.
+// Use Collector naming: append units, _total for counters and ratio for gauges.
 func fibreRawName(name, unit string, counter, gauge bool) string {
 	tokens := fibreRawTokens(name)
 	if len(tokens) == 0 {
@@ -138,7 +138,7 @@ func fibreRawLabel(key string) string {
 	return label
 }
 
-// Sorted by key so a collision after sanitizing always has the same winner.
+// Sort keys to resolve sanitized-name collisions consistently.
 func fibreRawAdd(labels map[string]string, attrs []*commonv1.KeyValue) {
 	sorted := append([]*commonv1.KeyValue(nil), attrs...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].GetKey() < sorted[j].GetKey() })
@@ -314,7 +314,7 @@ func (st *fibreStore) recordRaw(chain string, rm *metricsv1.ResourceMetrics) {
 						s.sum += sum
 						continue
 					}
-					// cumulative or first export: a restart shows as the new value, as through the collector
+					// cumulative values replace the baseline on restart
 					s.bounds, s.counts = append([]float64(nil), bounds...), append([]uint64(nil), counts...)
 					s.count, s.sum = dp.GetCount(), sum
 				}
@@ -340,7 +340,7 @@ func fibreRawReservedName(name string) bool {
 	return false
 }
 
-// Describes nothing: the names are whatever Fibre exports.
+// Metric names come from Fibre, so Describe emits no descriptors.
 type fibreRawCollector struct {
 	config *Config
 }
@@ -386,7 +386,7 @@ func (fc *fibreRawCollector) Collect(ch chan<- prometheus.Metric) {
 		chains = append(chains, cs)
 	}
 	st.mu.Unlock()
-	// one help and type per family, no duplicate label sets, or the whole scrape fails
+	// avoid duplicate families and label sets, which fail the scrape
 	kinds, helps, seen := make(map[string]fibreRawKind), make(map[string]string), make(map[string]bool)
 	for _, cs := range chains {
 		for _, s := range cs.list {

@@ -1,6 +1,7 @@
 package tenderduty
 
 import (
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -12,10 +13,13 @@ type fibreCollector struct {
 }
 
 var fibrePromLabels = map[string]string{
+	"endorsements_total":              "result",
 	"prune_entries_total":             "",
-	"object_storage_bytes_total":      "",
-	"object_storage_in_flight":        "",
+	"storage_backend_bytes_total":     "backend",
+	"storage_backend_in_flight":       "backend",
 	"go_memory_used_bytes":            "",
+	"go_memory_heap_bytes":            "",
+	"go_memory_stack_bytes":           "",
 	"go_memory_limit_bytes":           "",
 	"go_gc_goal_bytes":                "",
 	"go_goroutines":                   "",
@@ -31,35 +35,35 @@ var fibrePromLabels = map[string]string{
 	"prune_seconds":                   "",
 	"go_schedule_seconds":             "",
 
-	"rows":                          "",
-	"rows_total":                    "",
-	"row_share":                     "",
-	"chain_budget_bytes":            "",
-	"budget_bytes":                  "",
-	"occupancy_bytes":               "",
-	"registered":                    "",
-	"reachable":                     "",
-	"identity_verified":             "",
-	"metrics_age_seconds":           "",
-	"uploads_in_flight":             "",
-	"downloads_in_flight":           "",
-	"last_upload_timestamp_seconds": "",
-	"uploads_total":                 "result",
-	"upload_bytes_total":            "",
-	"downloads_total":               "result",
-	"download_bytes_total":          "",
-	"signatures_total":              "result",
-	"signatures_fast_total":         "",
-	"sign_seconds_total":            "",
-	"store_errors_total":            "op",
-	"object_storage_requests_total": "outcome",
+	"rows":                           "",
+	"rows_total":                     "",
+	"row_share":                      "",
+	"chain_budget_bytes":             "",
+	"budget_bytes":                   "",
+	"occupancy_bytes":                "",
+	"registered":                     "",
+	"reachable":                      "",
+	"identity_verified":              "",
+	"metrics_age_seconds":            "",
+	"uploads_in_flight":              "",
+	"downloads_in_flight":            "",
+	"last_upload_timestamp_seconds":  "",
+	"uploads_total":                  "result",
+	"upload_bytes_total":             "",
+	"downloads_total":                "result",
+	"download_bytes_total":           "",
+	"signatures_total":               "result",
+	"signatures_fast_total":          "",
+	"sign_seconds_total":             "",
+	"store_errors_total":             "op",
+	"storage_backend_requests_total": "backend,outcome",
 }
 
 func (*fibreCollector) Describe(ch chan<- *prometheus.Desc) {
 	for suffix, extra := range fibrePromLabels {
 		labels := []string{"name", "chain_id", "moniker"}
 		if extra != "" {
-			labels = append(labels, extra)
+			labels = append(labels, strings.Split(extra, ",")...)
 		}
 		ch <- prometheus.NewDesc("tenderduty_fibre_"+suffix, "Fibre "+suffix, labels, nil)
 	}
@@ -87,9 +91,9 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 		emit := func(suffix string, value float64, kind prometheus.ValueType, extra ...string) {
 			names := []string{"name", "chain_id", "moniker"}
 			values := append([]string(nil), labels...)
-			if len(extra) == 2 {
-				names = append(names, extra[0])
-				values = append(values, extra[1])
+			for i := 0; i+1 < len(extra); i += 2 {
+				names = append(names, extra[i])
+				values = append(values, extra[i+1])
 			}
 			desc := prometheus.NewDesc("tenderduty_fibre_"+suffix, "Fibre "+suffix, names, nil)
 			ch <- prometheus.MustNewConstMetric(desc, kind, value, values...)
@@ -118,6 +122,13 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 			gauge("chain_budget_bytes", float64(r.Budget))
 		}
 		st := c.fibreData()
+		st.mu.Lock()
+		endorsements := make(map[string]float64)
+		addFibreValues(endorsements, st.totals[cc.name])
+		st.mu.Unlock()
+		for _, result := range []string{"endorsed", "missed", "unknown"} {
+			emit("endorsements_total", endorsements["endorsements_"+result], prometheus.CounterValue, "result", result)
+		}
 		m := r.Metrics
 		if !m.Found {
 			continue
@@ -149,15 +160,24 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		totals := make(map[string]float64)
 		addFibreValues(totals, st.totals[cc.name])
-		outcomes := make(map[string]float64)
-		addFibreValues(outcomes, st.outcomes[cc.name])
+		for backend, b := range st.backendTotals[cc.name] {
+			if b.haveBytes {
+				emit("storage_backend_bytes_total", b.bytes, prometheus.CounterValue, "backend", backend)
+			}
+			for outcome, v := range b.outcomes {
+				emit("storage_backend_requests_total", v, prometheus.CounterValue, "backend", backend, "outcome", outcome)
+			}
+			if sender != nil && sender.backends[backend] != nil && sender.backends[backend].haveInFlight {
+				emit("storage_backend_in_flight", float64(sender.backends[backend].inFlight), prometheus.GaugeValue, "backend", backend)
+			}
+		}
 		histograms := make(map[string]fibreHistogram)
 		for op, h := range st.histograms[cc.name] {
 			histograms[op] = h
 		}
 		st.mu.Unlock()
 		for field, v := range resources {
-			if field != "go_memory_no_limit" {
+			if field != "go_memory_no_limit" && field != "object_storage_in_flight" {
 				gauge(field, v)
 			}
 		}
@@ -191,7 +211,6 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 		counter("downloads_failed", "downloads_total", "result", "failed")
 		counter("bytes_served", "download_bytes_total")
 		counter("prune_entries", "prune_entries_total")
-		counter("object_storage_bytes", "object_storage_bytes_total")
 		counter("go_memory_allocated_bytes", "go_memory_allocated_bytes_total")
 		counter("go_memory_allocations", "go_memory_allocations_total")
 		counter("signatures_ok", "signatures_total", "result", "ok")
@@ -201,8 +220,5 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 		counter("store_put_errors", "store_errors_total", "op", "put")
 		counter("store_get_errors", "store_errors_total", "op", "get")
 		counter("prune_errors", "store_errors_total", "op", "prune")
-		for outcome, v := range outcomes {
-			emit("object_storage_requests_total", v, prometheus.CounterValue, "outcome", outcome)
-		}
 	}
 }
