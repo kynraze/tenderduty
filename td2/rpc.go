@@ -80,7 +80,7 @@ func (cc *ChainConfig) newRpc() error {
 			return cc.context().Err()
 		}
 		if msg, failed, syncing := tryUrl(endpoint.Url); failed {
-			endpoint.markDown(msg, syncing)
+			cc.markNodeDown(endpoint, msg, syncing)
 			continue
 		}
 		endpoint.markHealthy()
@@ -129,7 +129,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 				go func(node *NodeConfig) {
 					defer checks.Done()
 					alert := func(msg string) {
-						status := node.markDown(fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
+						status := cc.markNodeDown(node, fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
 						if !node.AlertIfDown {
 							// even if we aren't alerting, we want to display the status in the dashboard.
 							return
@@ -147,6 +147,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 					cwt, cancel := context.WithTimeout(ctx, 10*time.Second)
 					status, e := c.Status(cwt)
 					cancel()
+					cc.refreshNodeBinary(ctx, node, c, time.Now())
 					if e != nil {
 						alert("down")
 						return
@@ -174,13 +175,13 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 			if err != nil {
 				l("❓ refreshing signing info for", cc.ValAddress, err)
 			}
-			if client := cc.clientSnapshot(); client != nil && (cc.alertSettings().GovAlerts || cc.alertSettings().UpgradeAlerts || cc.alertSettings().SignalAlerts || cc.alertSettings().FibreAlerts || td.reportsEnabled()) {
+			if client := cc.clientSnapshot(); client != nil && (cc.alertSettings().GovAlerts || cc.alertSettings().UpgradeAlerts || cc.alertSettings().FibreAlerts || td.reportsEnabled()) {
 				ctx, cancel := context.WithTimeout(cc.context(), 30*time.Second)
 				cc.refreshProposals(ctx, client)
 				if cc.alertSettings().UpgradeAlerts || td.reportsEnabled() {
 					cc.refreshUpgrade(ctx, client)
 				}
-				if cc.alertSettings().SignalAlerts || td.reportsEnabled() {
+				if cc.alertSettings().UpgradeAlerts || td.reportsEnabled() {
 					cc.refreshSignal(ctx, client)
 				}
 				if cc.alertSettings().FibreAlerts {

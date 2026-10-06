@@ -14,7 +14,7 @@ import (
 
 const unreachableRegistry = "http://127.0.0.1:1/"
 
-// useRegistries points both registries at the given URLs and starts from an empty path map and node cache.
+// useRegistries sets both URLs and clears the registry map and node cache.
 func useRegistries(t *testing.T, mainnet, testnet string) {
 	t.Helper()
 	oldMainnet, oldTestnet := registryJson, testnetRegistryJson
@@ -41,7 +41,7 @@ func useRegistries(t *testing.T, mainnet, testnet string) {
 	})
 }
 
-// registryServer serves pages by path, "/" being the chain list, and 404s the rest.
+// registryServer serves known paths and returns 404 otherwise.
 func registryServer(t *testing.T, pages map[string]string) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +146,7 @@ func TestChainInBothRegistriesUsesMainnet(t *testing.T) {
 	if known, _ := reportNetworks.Load("both-1"); known != false {
 		t.Fatal("mainnet entry was marked testnet")
 	}
-	// a testnet entry from an earlier refresh gives way, and a mainnet one is kept while mainnet is down
+	// mainnet entries replace testnet duplicates and survive mainnet outages
 	pathMux.Lock()
 	cosmosPaths["both-1"] = registryPath{path: "bothtestnet", testnet: true}
 	pathMux.Unlock()
@@ -219,7 +219,7 @@ func TestAddChainNotInRegistryHint(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "chains.d")
 	configFile := filepath.Join(parent, "config.yml")
-	if err := os.WriteFile(configFile, []byte("alert_defaults:\n  signal_enabled: yes\n"), 0600); err != nil {
+	if err := os.WriteFile(configFile, []byte("alert_defaults:\n  upgrade_enabled: yes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
@@ -248,7 +248,7 @@ func TestAddChainNotInRegistryHint(t *testing.T) {
 		t.Fatalf("testnet wasn't set: %v\n%s", err, data)
 	}
 
-	// -name says the operator chose, and a registry that can't be reached is another case
+	// an explicit name skips registry naming
 	output.Reset()
 	options.Name = "Chosen"
 	if err := addChain(context.Background(), options, &output, addChainTestnetFetchers("newchain-1")); err != nil || strings.Contains(output.String(), "Not in the chain registry") {

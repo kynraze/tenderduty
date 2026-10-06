@@ -17,7 +17,8 @@ func TestCommandAllowed(t *testing.T) {
 	}{
 		{-1001234, "supergroup", 42, true},
 		{-1001234, "supergroup", 7, false},
-		{-1001234, "channel", 0, false},
+		{-1001234, "channel", 0, true},
+		{-999, "channel", 0, false},
 		{-999, "supergroup", 42, false},
 	} {
 		if got := c.commandAllowed(tc.chat, tc.chatType, tc.from); got != tc.want {

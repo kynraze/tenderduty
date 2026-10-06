@@ -28,6 +28,7 @@ type signalState struct {
 	Power          uint64
 	Threshold      uint64
 	Total          uint64
+	BinaryVersion  string
 	Signalled      bool
 	UpgradeVersion uint64
 	UpgradeHeight  int64 // 0 when no upgrade is scheduled
@@ -102,7 +103,7 @@ func (e *abciError) Error() string {
 	return e.path + ": " + e.log
 }
 
-// errNoSignal means the chain has no x/signal, which never changes.
+// errNoSignal means the query found no x/signal module.
 var errNoSignal = errors.New("no x/signal on this chain")
 
 func abciQuery(ctx context.Context, client *rpchttp.HTTP, path string, data []byte) ([]byte, error) {
@@ -127,7 +128,7 @@ func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (
 	if err != nil {
 		return nil, err
 	}
-	state := &signalState{Version: info.Response.AppVersion + 1}
+	state := &signalState{Version: info.Response.AppVersion + 1, BinaryVersion: info.Response.Version}
 
 	value, err := abciQuery(ctx, client, "/celestia.signal.v1.Query/VersionTally", protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), state.Version))
 	if moduleMissing(err) {
@@ -166,7 +167,7 @@ func getSignalState(ctx context.Context, client *rpchttp.HTTP, valoper string) (
 	return state, nil
 }
 
-// refreshSignal skips chains without x/signal after logging once, so signal_enabled can sit in alert_defaults.
+// refreshSignal logs missing x/signal once and skips later queries.
 func (cc *ChainConfig) refreshSignal(ctx context.Context, client *rpchttp.HTTP) {
 	cc.stateMux.RLock()
 	unsupported := cc.signalUnsupported
@@ -183,13 +184,32 @@ func (cc *ChainConfig) refreshSignal(ctx context.Context, client *rpchttp.HTTP) 
 		return
 	}
 	if err != nil {
-		l(cc.ChainId, "could not read the version signalling:", err)
+		cc.stateMux.Lock()
+		failed := cc.signalReadFailed
+		cc.signalReadFailed = true
+		cc.stateMux.Unlock()
+		if !failed {
+			l(cc.ChainId, "could not read the version signalling:", err)
+		}
+		// Query failures can be unrelated to the node stopping.
+		info, rpcErr := client.ABCIInfo(ctx)
+		cc.stateMux.Lock()
+		cc.signalRPCFailed = rpcErr != nil
+		if rpcErr == nil && cc.signal.UpgradeHeight > 0 {
+			cc.signal.BinaryVersion = info.Response.Version
+		}
+		cc.stateMux.Unlock()
 		return
 	}
 	cc.stateMux.Lock()
 	previous, height, blockTime := cc.signal, cc.lastBlockNum, cc.blockTime
+	failed := cc.signalReadFailed
+	cc.signalReadFailed, cc.signalRPCFailed = false, false
 	cc.signal, cc.signalLoaded = *state, true
 	cc.stateMux.Unlock()
+	if failed {
+		l(cc.ChainId, "version signalling readable again")
+	}
 	if previous.UpgradeHeight > 0 && state.UpgradeHeight != previous.UpgradeHeight {
 		outcome := "Cancelled"
 		if height >= previous.UpgradeHeight {
@@ -211,6 +231,37 @@ func signalMissingMessage(version uint64) string {
 	return fmt.Sprintf("Validator has not signalled version %d", version)
 }
 
+func signalRemindMessage(version uint64) string {
+	return signalMissingMessage(version) + ", upgrade soon"
+}
+
+func isSignalReminder(message string) bool {
+	return strings.HasPrefix(message, signalMissingPrefix) && strings.HasSuffix(message, ", upgrade soon")
+}
+
+func signalDetail(chain, message string) string {
+	if !strings.HasPrefix(message, signalMissingPrefix) {
+		return ""
+	}
+	const action = "upgrade celestia-appd, then send the signal tx"
+	td.chainsMux.RLock()
+	cc := td.Chains[chain]
+	td.chainsMux.RUnlock()
+	if cc == nil {
+		return action
+	}
+	cc.stateMux.RLock()
+	state := cc.signal
+	cc.stateMux.RUnlock()
+	if state.Total == 0 {
+		return action
+	}
+	percent := func(power uint64) string {
+		return strconv.FormatFloat(math.Round(float64(power)/float64(state.Total)*10000)/100, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%s%% signalled, the upgrade unlocks at %s%%: %s", percent(state.Power), percent(state.Threshold), action)
+}
+
 func signalThresholdMessage(version uint64) string {
 	return fmt.Sprintf("Version %d reached the upgrade threshold", version)
 }
@@ -230,24 +281,28 @@ func isSignalUpgrade(message string) bool {
 }
 
 func isSignalMessage(message string) bool {
-	return isSignalUpgrade(message) || strings.HasPrefix(message, signalMissingPrefix) ||
+	return strings.HasPrefix(message, "Node stopped at the version ") || isSignalUpgrade(message) || strings.HasPrefix(message, signalMissingPrefix) ||
 		strings.HasPrefix(message, "Version ") && (strings.HasSuffix(message, " signalling has started") || strings.HasSuffix(message, " reached the upgrade threshold"))
 }
 
 var signalVersion = regexp.MustCompile(`ersion (\d+)`)
 
-// signalAlarmId derives the id from the message, so alarms restored from state resolve with the same one.
+// signalAlarmId rebuilds IDs for restored alarms.
 func signalAlarmId(valInfo *ValInfo, message string) string {
 	version := ""
 	if match := signalVersion.FindStringSubmatch(message); match != nil {
 		version = match[1]
 	}
 	switch {
+	case strings.HasPrefix(message, "Node stopped at the version "):
+		return valInfo.Valcons + "signalstopped" + version
+	case isSignalReminder(message):
+		return valInfo.Valcons + "signalremind" + version
 	case strings.HasPrefix(message, signalMissingPrefix):
 		return valInfo.Valcons + "signalmissing" + version
 	case strings.HasSuffix(message, " reached the upgrade threshold"):
 		return valInfo.Valcons + "signalthreshold" + version
-	// by height like upgradeAlarmId: a rescheduled upgrade must not share the pagerduty dedup key of the one it replaces
+	// include height so rescheduled upgrades have separate PagerDuty incidents
 	case strings.HasSuffix(message, " is close"):
 		return valInfo.Valcons + "signalupgradesoon" + messageHeight(message)
 	case isSignalUpgrade(message):
@@ -258,9 +313,20 @@ func signalAlarmId(valInfo *ValInfo, message string) string {
 
 func signalLabel(msg *alertMsg) (icon, state string) {
 	switch {
+	case strings.HasPrefix(msg.message, "Node stopped at the version "):
+		if msg.resolved {
+			return "✅", "Blocks advancing"
+		}
+		return "🚨", "Node stopped"
 	case isSignalUpgrade(msg.message):
 		if msg.resolved {
-			return upgradeResolvedLabel(msg.chain, msg.message)
+			if r, ok := storedResolution(msg.chain, msg.message); ok {
+				return r.icon, r.label
+			}
+			if outcome, ok := upgradeOutcomes.Load(msg.chain + "@" + messageHeight(msg.message)); ok && outcome == "Cancelled" {
+				return "🚫", "Cancelled"
+			}
+			return "✅", "Height reached"
 		}
 		if strings.HasSuffix(msg.message, " is close") {
 			return "⏰", "Upgrade soon"
@@ -270,6 +336,8 @@ func signalLabel(msg *alertMsg) (icon, state string) {
 		return "✅", "Signalled"
 	case msg.resolved:
 		return "✅", "Resolved"
+	case isSignalReminder(msg.message):
+		return "🔔", "Signal reminder"
 	case strings.HasPrefix(msg.message, signalMissingPrefix):
 		return "⚠️", "Not signalled"
 	case strings.HasSuffix(msg.message, " reached the upgrade threshold"):
@@ -278,40 +346,45 @@ func signalLabel(msg *alertMsg) (icon, state string) {
 	return "📣", "Signalling"
 }
 
-// signalAlarms works like upgradeAlarms.
 func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 	cc.stateMux.RLock()
 	state, loaded, height := cc.signal, cc.signalLoaded, cc.lastBlockNum
 	cc.stateMux.RUnlock()
-	if !loaded {
+	if !loaded || !cc.alertSettings().UpgradeAlerts {
 		return
 	}
-	wanted := make(map[string]string)
-	priority := make(map[string]string)
-	want := func(message, priorityName string) {
-		wanted[message], priority[message] = signalAlarmId(valInfo, message), priorityName
+	wanted, priority := make(map[string]string), make(map[string]string)
+	want := func(message, severity string) {
+		wanted[message], priority[message] = signalAlarmId(valInfo, message), severity
 	}
-	scheduled := state.UpgradeHeight > 0 && height < state.UpgradeHeight
-	started := state.Total > 0 && float64(state.Power)/float64(state.Total)*100 >= float64(cc.alertSettings().SignalPercent)
-	if started {
-		want(signalStartMessage(state.Version), cc.alertSettings().SignalPriority)
-		if !state.Signalled {
-			want(signalMissingMessage(state.Version), cc.alertSettings().SignalPriority)
+	settings := cc.alertSettings()
+	scheduled := state.UpgradeHeight > height && state.UpgradeHeight > 0
+	thresholdReached := state.Threshold > 0 && state.Power >= state.Threshold
+	if state.UpgradeHeight == 0 && !state.Signalled && state.Total > 0 {
+		percent := float64(state.Power) / float64(state.Total) * 100
+		if percent >= float64(settings.SignalPercent) {
+			want(signalMissingMessage(state.Version), "warning")
+		}
+		if settings.SignalRemindPercent > settings.SignalPercent && percent >= float64(settings.SignalRemindPercent) && !thresholdReached {
+			want(signalRemindMessage(state.Version), "critical")
 		}
 	}
-	if state.Threshold > 0 && state.Power >= state.Threshold && state.UpgradeHeight == 0 {
-		want(signalThresholdMessage(state.Version), "critical")
+	version := state.UpgradeVersion
+	if version == 0 {
+		version = state.Version
 	}
 	if scheduled {
-		version := state.UpgradeVersion
-		if version == 0 {
-			version = state.Version
-		}
 		want(signalUpgradeMessage(version, state.UpgradeHeight), "critical")
-		if eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, state.UpgradeHeight)); ok && time.Until(eta.(time.Time)) <= time.Duration(cc.alertSettings().SignalRemindMinutes)*time.Minute {
-			want(signalUpgradeSoonMessage(version, state.UpgradeHeight), "critical")
+		soon := signalUpgradeSoonMessage(version, state.UpgradeHeight)
+		if !cc.signalNodesReady(state.BinaryVersion, version) {
+			// retain an active reminder despite ETA changes until nodes are ready
+			eta, ok := upgradeETAs.Load(fmt.Sprintf("%s@%d", cc.name, state.UpgradeHeight))
+			if ok && time.Until(eta.(time.Time)) <= time.Duration(settings.SignalRemindMinutes)*time.Minute || alarmIsActive(cc.name, soon) {
+				want(soon, "critical")
+			}
 		}
 	}
+	cc.signalStoppedAlarm(valInfo, state, reconcile)
 	active := activeMessages(cc.name, "Version ")
 	for message := range activeMessages(cc.name, signalMissingPrefix) {
 		active[message] = true
@@ -322,38 +395,40 @@ func (cc *ChainConfig) signalAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
-	// alarms of one version clear together, only the one that says the most is announced
-	// a threshold cleared by a scheduled upgrade is announced by the upgrade alarm
-	announce := make(map[string]string) // version to the message that announces it
+	announce := make(map[string]string)
+	quiet := func(message string) bool {
+		return strings.HasSuffix(message, " signalling has started") || strings.HasSuffix(message, " reached the upgrade threshold") ||
+			strings.HasPrefix(message, signalMissingPrefix) && state.UpgradeHeight > 0 ||
+			isSignalReminder(message) && thresholdReached && !state.Signalled
+	}
+	for message := range active {
+		if _, ok := wanted[message]; ok || !isSignalMessage(message) || quiet(message) {
+			continue
+		}
+		if match := signalVersion.FindStringSubmatch(message); match != nil {
+			if best, ok := announce[match[1]]; !ok || signalRank(message) < signalRank(best) {
+				announce[match[1]] = message
+			}
+		}
+	}
 	for message := range active {
 		if _, ok := wanted[message]; ok || !isSignalMessage(message) {
 			continue
 		}
-		version := signalVersion.FindStringSubmatch(message)
-		if version == nil {
+		id := signalAlarmId(valInfo, message)
+		match := signalVersion.FindStringSubmatch(message)
+		r, ok := cc.signalResolution(message, state, valInfo.Moniker)
+		if !ok && isSignalUpgrade(message) {
 			continue
 		}
-		if best, ok := announce[version[1]]; !ok || signalRank(message) < signalRank(best) {
-			announce[version[1]] = message
+		if ok {
+			resolve(cc.name, message, r)
 		}
-	}
-	for message := range active {
-		if _, ok := wanted[message]; !ok && isSignalMessage(message) {
-			if r, ok := cc.signalResolution(message, state, valInfo.Moniker); ok {
-				resolve(cc.name, message, r)
-			}
-			id := signalAlarmId(valInfo, message)
-			version := signalVersion.FindStringSubmatch(message)
-			scheduledNow := false
-			for raised := range wanted {
-				scheduledNow = scheduledNow || isSignalUpgrade(raised) && !active[raised] && version != nil && signalVersion.FindStringSubmatch(raised)[1] == version[1]
-			}
-			if version != nil && announce[version[1]] != message || strings.HasSuffix(message, " reached the upgrade threshold") && scheduledNow {
-				td.resolveQuietly(cc.name, message, &id)
-				continue
-			}
-			td.alert(cc.name, message, "info", true, &id)
+		if quiet(message) || match != nil && announce[match[1]] != message {
+			td.resolveQuietly(cc.name, message, &id)
+			continue
 		}
+		td.alert(cc.name, message, "info", true, &id)
 	}
 }
 
@@ -366,16 +441,38 @@ func signalRank(message string) int {
 		return 1
 	case strings.HasSuffix(message, " signalling has started"):
 		return 2
-	case strings.HasPrefix(message, signalMissingPrefix):
+	case isSignalReminder(message):
 		return 3
+	case strings.HasPrefix(message, signalMissingPrefix):
+		return 4
 	}
-	return 4
+	return 5
 }
 
-// signalResolution says why a signalling alarm cleared, a scheduled upgrade's own message needs none.
+// signalResolution says why the alarm cleared.
 func (cc *ChainConfig) signalResolution(message string, state signalState, moniker string) (resolution, bool) {
 	if isSignalUpgrade(message) {
-		return resolution{}, false
+		height, _ := strconv.ParseInt(messageHeight(message), 10, 64)
+		cc.stateMux.RLock()
+		current := cc.lastBlockNum
+		cc.stateMux.RUnlock()
+		if current >= height || state.Version > signalMessageVersion(message) {
+			return resolution{"✅", "Height reached", "upgrade height reached" + cc.notUpgradedNodes(signalMessageVersion(message))}, true
+		}
+		if strings.HasSuffix(message, " is close") && cc.signalNodesReady(state.BinaryVersion, signalMessageVersion(message)) {
+			if cc.hasOwnNodes() {
+				return resolution{"✅", "All nodes ready", "all nodes ready"}, true
+			}
+			return resolution{"✅", "Node ready", signalBinaryDetail(state.BinaryVersion, signalMessageVersion(message))}, true
+		}
+		// cancelled only when a successful read shows the upgrade gone or moved
+		cc.stateMux.RLock()
+		unconfirmed := cc.signalReadFailed
+		cc.stateMux.RUnlock()
+		if unconfirmed || state.UpgradeHeight == height {
+			return resolution{}, false
+		}
+		return resolution{"🚫", "Cancelled", "upgrade cancelled or rescheduled"}, true
 	}
 	match := signalVersion.FindStringSubmatch(message)
 	if match == nil {
@@ -392,10 +489,146 @@ func (cc *ChainConfig) signalResolution(message string, state signalState, monik
 	switch {
 	case strings.HasPrefix(message, signalMissingPrefix) && state.Signalled:
 		return resolution{"✅", "Signalled", fmt.Sprintf("%s signalled version %d on %s", moniker, version, cc.ChainId)}, true
+	case isSignalReminder(message) && state.UpgradeHeight > 0:
+		return resolution{"⬆️", "Upgrade scheduled", fmt.Sprintf("Version %d upgrade is scheduled at height %s", version, thousands(state.UpgradeHeight))}, true
+	case isSignalReminder(message) && state.Threshold > 0 && state.Power >= state.Threshold:
+		return resolution{"🚦", "Threshold reached", signalThresholdMessage(version)}, true
+	case isSignalReminder(message):
+		return resolution{"✅", "Resolved", fmt.Sprintf("Version %d signalling dropped below %d%%", version, cc.alertSettings().SignalRemindPercent)}, true
 	case strings.HasSuffix(message, " reached the upgrade threshold") && state.UpgradeHeight > 0:
 		return resolution{"⬆️", "Upgrade scheduled", fmt.Sprintf("Version %d upgrade is scheduled at height %s", version, thousands(state.UpgradeHeight))}, true
 	case strings.HasSuffix(message, " reached the upgrade threshold"):
 		return resolution{"✅", "Resolved", fmt.Sprintf("Version %d fell back under the upgrade threshold", version)}, true
 	}
 	return resolution{"✅", "Resolved", fmt.Sprintf("Version %d signalling dropped below %d%%", version, cc.alertSettings().SignalPercent)}, true
+}
+
+var binaryMajor = regexp.MustCompile(`^v?(\d+)(?:\.|-|$)`)
+
+func parseBinaryMajor(version string) (uint64, bool) {
+	match := binaryMajor.FindStringSubmatch(strings.TrimSpace(version))
+	if match == nil {
+		return 0, false
+	}
+	major, err := strconv.ParseUint(match[1], 10, 64)
+	return major, err == nil
+}
+
+func signalMessageVersion(message string) uint64 {
+	match := signalVersion.FindStringSubmatch(message)
+	if match == nil {
+		return 0
+	}
+	version, _ := strconv.ParseUint(match[1], 10, 64)
+	return version
+}
+
+func signalBinaryReady(binary string, version uint64) bool {
+	major, known := parseBinaryMajor(binary)
+	return known && major >= version
+}
+
+func signalBinaryDetail(binary string, version uint64) string {
+	if _, known := parseBinaryMajor(binary); !known {
+		return ""
+	}
+	binary = strings.TrimPrefix(strings.TrimSpace(binary), "v")
+	if signalBinaryReady(binary, version) {
+		return "node ready: celestia-app " + binary
+	}
+	return fmt.Sprintf("node runs celestia-app %s, version %d needs v%d or later", binary, version, version)
+}
+
+func signalUpgradeDetail(chain, message string) string {
+	td.chainsMux.RLock()
+	cc := td.Chains[chain]
+	td.chainsMux.RUnlock()
+	if cc == nil {
+		return ""
+	}
+	cc.stateMux.RLock()
+	binary := cc.signal.BinaryVersion
+	cc.stateMux.RUnlock()
+	if cc.hasOwnNodes() {
+		return cc.ownNodeDetails(signalMessageVersion(message), strings.HasSuffix(message, " is close"))
+	}
+	return signalBinaryDetail(binary, signalMessageVersion(message))
+}
+
+func signalStoppedMessage(version uint64) string {
+	return fmt.Sprintf("Node stopped at the version %d upgrade height", version)
+}
+
+func (cc *ChainConfig) signalStoppedAlarm(val *ValInfo, state signalState, reconcile bool) {
+	own := cc.hasOwnNodes()
+	now := time.Now()
+	cc.stateMux.Lock()
+	height := cc.lastBlockNum
+	switch {
+	case state.UpgradeHeight > 0:
+		cc.signalLast = signalUpgrade{Version: signalScheduledVersion(state), Height: state.UpgradeHeight}
+	case cc.signalLast.Height > 0 && !cc.signalReadFailed && height < cc.signalLast.Height-signalStopMargin, cc.signalLast.Height > 0 && height >= cc.signalLast.Height+signalLastKeep:
+		cc.signalLast = signalUpgrade{}
+	}
+	if state.UpgradeHeight > 0 && height <= state.UpgradeHeight && (cc.signalWatch.Height != state.UpgradeHeight || cc.signalWatch.Version != signalScheduledVersion(state)) {
+		version := state.UpgradeVersion
+		if version == 0 {
+			version = state.Version
+		}
+		cc.signalWatch = signalUpgrade{Version: version, Height: state.UpgradeHeight}
+		cc.signalWatchHeight, cc.signalWatchSince = height, now
+		cc.signalWatchReady = signalBinaryReady(state.BinaryVersion, version)
+	} else if cc.signalWatch.Height > height && state.UpgradeHeight == 0 && !cc.signalReadFailed {
+		cc.signalWatch = signalUpgrade{}
+	}
+	watch := cc.signalWatch
+	if watch.Height > 0 && height != cc.signalWatchHeight {
+		cc.signalWatchHeight, cc.signalWatchSince = height, now
+	}
+	if watch.Height > height {
+		cc.signalWatchReady = signalBinaryReady(state.BinaryVersion, watch.Version)
+	}
+	if !own && cc.signalStoppedHeight > 0 && height > cc.signalStoppedHeight {
+		cc.signalWatch = signalUpgrade{}
+		cc.signalStoppedHeight = 0
+		watch = cc.signalWatch
+	}
+	stopped := !own && watch.Height > 0 && height >= watch.Height && state.Version <= watch.Version && !cc.signalWatchReady &&
+		(cc.signalStoppedHeight == height || cc.signalRPCFailed || cc.noNodes || !cc.lastBlockTime.IsZero() && now.Sub(cc.lastBlockTime) >= 2*time.Minute && now.Sub(cc.signalWatchSince) >= 2*time.Minute)
+	if stopped {
+		cc.signalStoppedHeight = height
+	}
+	cc.stateMux.Unlock()
+	wanted := ""
+	if stopped {
+		wanted = signalStoppedMessage(watch.Version)
+	}
+	for message := range activeMessages(cc.name, "Node stopped at the version ") {
+		if message == wanted {
+			continue
+		}
+		id := signalAlarmId(val, message)
+		if own {
+			td.resolveQuietly(cc.name, message, &id)
+			continue
+		}
+		resolve(cc.name, message, resolution{"✅", "Blocks advancing", "blocks advancing again"})
+		td.alert(cc.name, message, "info", true, &id)
+	}
+	if wanted != "" && (!alarmIsActive(cc.name, wanted) || reconcile) {
+		id := signalAlarmId(val, wanted)
+		td.alert(cc.name, wanted, "critical", false, &id)
+	}
+}
+
+const (
+	signalStopMargin = 120  // blocks before the upgrade height still counted as stopped by it
+	signalLastKeep   = 1000 // blocks past the upgrade height the upgrade is remembered
+)
+
+func signalScheduledVersion(state signalState) uint64 {
+	if state.UpgradeVersion > 0 {
+		return state.UpgradeVersion
+	}
+	return state.Version
 }

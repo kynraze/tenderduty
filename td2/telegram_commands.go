@@ -12,16 +12,17 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// telegram's limit is 4096 characters, longer replies are split on lines
+// split replies on lines to fit Telegram's 4096-character limit
 const telegramMessageLimit = 4000
 
-// commandAllowed: the chat must be the configured one, and in a group or channel the sender an admin.
+// commandAllowed: the chat must be the configured one, and in a group the sender an admin.
+// Only a channel's admins can post in it, and Telegram doesn't say which one.
 func (c *Config) commandAllowed(chatId int64, chatType string, fromId int64) bool {
 	telegram := c.settings().Telegram
 	if strconv.FormatInt(chatId, 10) != strings.TrimSpace(telegram.Channel) {
 		return false
 	}
-	if chatType == "private" {
+	if chatType == "private" || chatType == "channel" {
 		return true
 	}
 	for _, admin := range telegram.Admins {
@@ -43,7 +44,7 @@ func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 	return "", nil
 }
 
-// telegramCommand answers one command with HTML. It only changes who gets pinged, so monitoring can't be touched from telegram.
+// telegramCommand answers HTML commands and updates mentions only.
 func (c *Config) telegramCommand(command, args string, now time.Time, from tgMention) string {
 	switch command {
 	case "mentionme":
@@ -80,7 +81,7 @@ func (c *Config) telegramCommand(command, args string, now time.Time, from tgMen
 	return c.statusSummary()
 }
 
-// chainState is the dot before a chain: red for active alerts or jailed, yellow when unwatchable, white when not in the active set, else green.
+// chainState returns a status dot and label.
 func (cc *ChainConfig) chainState(name string, info *ValInfo) (dot, label string) {
 	switch {
 	case info.Tombstoned:
@@ -146,7 +147,7 @@ func statusField(icon, label, value string) string {
 	return icon + " <b>" + label + ":</b> " + value
 }
 
-// statusDetail is the sections of /status <chain>: validator, Fibre when watched, active alerts.
+// statusDetail shows validator, optional Fibre and active alert sections.
 func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	info, _ := cc.validatorState()
 	cc.stateMux.RLock()
@@ -194,6 +195,21 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 		rpc = "🟡"
 	}
 	lines = append(lines, statusField("🔌", "RPC", fmt.Sprintf("%s %d/%d healthy", rpc, healthyNodes, len(cc.Nodes))))
+	if !td.HideLogs {
+		for _, node := range cc.Nodes {
+			status := node.snapshot()
+			text := nodeEndpoint(node.Url)
+			if node.AlertIfDown {
+				text += " · " + nodeBinaryLabel(status)
+			}
+			if status.down {
+				text += " · down"
+			} else {
+				text += " · healthy"
+			}
+			lines = append(lines, statusField("🔌", "Node", text))
+		}
+	}
 	if fibre := cc.fibreReport(now); fibre != nil {
 		lines = append(append(lines, ""), fibre.telegramLines()...)
 	}
@@ -276,6 +292,9 @@ func (c *Config) telegramCommandsContext(ctx context.Context) {
 				}
 			}
 			if !c.commandAllowed(message.Chat.ID, message.Chat.Type, from.ID) {
+				if strconv.FormatInt(message.Chat.ID, 10) == strings.TrimSpace(c.settings().Telegram.Channel) {
+					l(fmt.Sprintf("telegram: /%s from user id %d ignored, not in telegram.admins", message.Command(), from.ID))
+				}
 				continue
 			}
 			for _, part := range splitMessage(c.telegramCommand(message.Command(), message.CommandArguments(), time.Now(), from)) {

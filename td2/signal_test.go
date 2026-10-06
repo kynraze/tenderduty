@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// captured from Celestia mainnet, 3 Oct 2026: version 10, nobody had signalled
+// TestParseTallyAbsentVotingPowerIsZero: captured from Celestia mainnet, 3 Oct 2026: version 10, nobody had signalled
 func TestParseTallyAbsentVotingPowerIsZero(t *testing.T) {
 	b, err := hex.DecodeString("109ced96bc0118d49ce8e101")
 	if err != nil {
@@ -121,18 +122,19 @@ func TestSignalAlarms(t *testing.T) {
 		eta          time.Duration
 		active, gone []string
 	}{
-		{"signalling starts", base, signalState{Version: 10, Power: 100, Threshold: 670, Total: 1000}, 0, []string{started, missing}, nil},
+		{"signalling starts", base, signalState{Version: 10, Power: 100, Threshold: 670, Total: 1000}, 0, []string{missing}, []string{started, threshold}},
 		{"below the percentage", base, signalState{Version: 10, Power: 99, Threshold: 670, Total: 1000}, 0, nil, []string{started, missing}},
-		{"our validator signals", signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000}, signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000, Signalled: true}, 0, []string{started}, []string{missing}},
-		{"threshold reached", signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000, Signalled: true}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true}, 0, []string{started, threshold}, nil},
+		{"our validator signals", signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000}, signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000, Signalled: true}, 0, nil, []string{started, missing}},
+		{"threshold reached", signalState{Version: 10, Power: 300, Threshold: 670, Total: 1000, Signalled: true}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true}, 0, nil, []string{started, threshold}},
 		{"upgrade scheduled", signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true, UpgradeVersion: 10, UpgradeHeight: 1000}, 0, []string{scheduled}, []string{threshold}},
 		{"upgrade is close", signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true, UpgradeVersion: 10, UpgradeHeight: 1000}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true, UpgradeVersion: 10, UpgradeHeight: 1000}, 30 * time.Minute, []string{scheduled, soon}, []string{threshold}},
-		{"upgrade cancelled", signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true, UpgradeVersion: 10, UpgradeHeight: 1000}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true}, 0, []string{threshold}, []string{scheduled, soon}},
+		{"upgrade cancelled", signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true, UpgradeVersion: 10, UpgradeHeight: 1000}, signalState{Version: 10, Power: 700, Threshold: 670, Total: 1000, Signalled: true}, 0, nil, []string{threshold, scheduled, soon}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := auditConfig(t)
 			chain := &ChainConfig{name: "Chain", ChainId: "celestia", lastBlockNum: 500, signal: tc.before, signalLoaded: true}
-			chain.Alerts.SignalAlerts, chain.Alerts.SignalPercent, chain.Alerts.SignalRemindMinutes, chain.Alerts.SignalPriority = true, 10, 60, "warning"
+			chain.Alerts.SignalPercent, chain.Alerts.SignalRemindMinutes = 10, 60
+			chain.Alerts.UpgradeAlerts = true
 			c.Chains["Chain"] = chain
 			valInfo := &ValInfo{Valcons: "cons"}
 			upgradeETAs.Delete("Chain@1000")
@@ -173,7 +175,7 @@ func TestSignalAlarmIds(t *testing.T) {
 	valInfo := &ValInfo{Valcons: "cons"}
 	seen := make(map[string]string)
 	for _, message := range []string{
-		signalStartMessage(10), signalMissingMessage(10), signalThresholdMessage(10),
+		signalStartMessage(10), signalMissingMessage(10), signalRemindMessage(10), signalThresholdMessage(10),
 		signalUpgradeMessage(10, 1000), signalUpgradeSoonMessage(10, 1000), signalStartMessage(11),
 		// same version rescheduled
 		signalUpgradeMessage(10, 2000), signalUpgradeSoonMessage(10, 2000),
@@ -189,7 +191,7 @@ func TestSignalAlarmIds(t *testing.T) {
 	}
 }
 
-// a fake node answering abci_info with app version 9 and every abci_query with the given code, counting the queries
+// Answer abci_info with version 9 and count abci_query requests returning the given code.
 func signalNode(t *testing.T, codespace string, code int, queries *int) *rpchttp.HTTP {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,11 +242,12 @@ func TestSignalFailureIsRetried(t *testing.T) {
 	}
 }
 
-// the new upgrade is raised before the old one resolves, they must not share a dedup key
+// TestRescheduledSignalUpgradeKeepsItsIncident: the new upgrade is raised before the old one resolves, they must not share a dedup key
 func TestRescheduledSignalUpgradeKeepsItsIncident(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Celestia", ChainId: "celestia", lastBlockNum: 100}
-	chain.Alerts.SignalAlerts, chain.Alerts.SignalPercent, chain.Alerts.SignalRemindMinutes = true, 10, 60
+	chain.Alerts.SignalPercent, chain.Alerts.SignalRemindMinutes = 10, 60
+	chain.Alerts.UpgradeAlerts = true
 	c.Chains["Celestia"] = chain
 	valInfo := &ValInfo{Valcons: "cons"}
 	alarms.AllAlarms["Celestia"] = map[string]time.Time{signalUpgradeMessage(10, 1_000_000): time.Now()}
@@ -268,5 +271,182 @@ func TestRescheduledSignalUpgradeKeepsItsIncident(t *testing.T) {
 		if old, ok := resolved[id]; ok {
 			t.Fatalf("%q and the resolved %q share the dedup key %s", message, old, id)
 		}
+	}
+}
+
+func TestSignalReminder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		power   uint64
+		percent int
+		enabled bool
+		want    bool
+	}{
+		{"below reminder", 659, 66, true, false},
+		{"at reminder", 660, 66, true, true},
+		{"above reminder", 710, 66, true, true},
+		{"at threshold", 834, 66, true, false},
+		{"equal to signal percent", 710, 5, true, false},
+		{"below signal percent", 710, 4, true, false},
+		{"disabled", 710, 66, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := auditConfig(t)
+			cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true,
+				signal: signalState{Version: 10, Power: tc.power, Threshold: 834, Total: 1000}}
+			cc.Alerts.SignalPercent, cc.Alerts.SignalRemindPercent = 5, tc.percent
+			cc.Alerts.UpgradeAlerts = tc.enabled
+			c.Chains[cc.name] = cc
+			cc.signalAlarms(&ValInfo{Valcons: "cons"}, false)
+			message := signalRemindMessage(10)
+			if alarmIsActive(cc.name, message) != tc.want {
+				t.Fatalf("reminder active = %v, want %v", alarmIsActive(cc.name, message), tc.want)
+			}
+			count := 0
+			for len(c.alertChan) > 0 {
+				a := <-c.alertChan
+				if a.message == message {
+					count++
+					if a.severity != "critical" || a.resolved {
+						t.Fatalf("reminder severity %s, resolved %v", a.severity, a.resolved)
+					}
+				}
+			}
+			if tc.want && count != 1 {
+				t.Fatalf("got %d reminders, want one", count)
+			}
+			cc.signalAlarms(&ValInfo{Valcons: "cons"}, false)
+			if len(c.alertChan) != 0 {
+				t.Fatal("unchanged signalling repeated a notification")
+			}
+		})
+	}
+}
+
+func TestSignalReminderRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		state  signalState
+		quiet  bool
+		active string
+	}{
+		{"validator signalled", signalState{Version: 10, Power: 710, Threshold: 834, Total: 1000, Signalled: true}, false, ""},
+		{"threshold takes over", signalState{Version: 10, Power: 834, Threshold: 834, Total: 1000}, true, ""},
+		{"scheduled upgrade takes over", signalState{Version: 10, Power: 710, Threshold: 834, Total: 1000, UpgradeHeight: 1000}, true, signalUpgradeMessage(10, 1000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := auditConfig(t)
+			cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true, lastBlockNum: 100,
+				signal: signalState{Version: 10, Power: 710, Threshold: 834, Total: 1000}}
+			cc.Alerts.SignalPercent, cc.Alerts.SignalRemindPercent = 5, 66
+			cc.Alerts.UpgradeAlerts = true
+			c.Chains[cc.name] = cc
+			val := &ValInfo{Valcons: "cons", Moniker: "Kynraze"}
+			cc.signalAlarms(val, false)
+			for len(c.alertChan) > 0 {
+				<-c.alertChan
+			}
+			cc.signal = tc.state
+			cc.signalAlarms(val, false)
+			reminder, missing := signalRemindMessage(10), signalMissingMessage(10)
+			if alarmIsActive(cc.name, reminder) {
+				t.Fatal("reminder did not clear")
+			}
+			if tc.active != "" && !alarmIsActive(cc.name, tc.active) {
+				t.Fatalf("takeover alarm %q is not active", tc.active)
+			}
+			announced, quiet := recoveries(t, c)
+			if tc.quiet {
+				if len(announced) != 0 || len(quiet) != map[bool]int{true: 2, false: 1}[tc.state.UpgradeHeight > 0] || !containsMessage(quiet, reminder) {
+					t.Fatalf("announced %q, quiet %q", announced, quiet)
+				}
+			} else {
+				if alarmIsActive(cc.name, missing) || len(announced) != 1 || announced[0] != reminder || len(quiet) != 1 || quiet[0] != missing {
+					t.Fatalf("announced %q, quiet %q, missing active %v", announced, quiet, alarmIsActive(cc.name, missing))
+				}
+				r, ok := storedResolution(cc.name, reminder)
+				if !ok || r.label != "Signalled" || r.text != "Kynraze signalled version 10 on celestia" {
+					t.Fatalf("resolution %+v, found %v", r, ok)
+				}
+			}
+		})
+	}
+}
+
+func TestSignalReminderDetailsAndId(t *testing.T) {
+	c := auditConfig(t)
+	c.Chains["Celestia"] = &ChainConfig{signal: signalState{Version: 10, Power: 7100, Threshold: 8333, Total: 10000}}
+	message := signalRemindMessage(10)
+	if message != "Validator has not signalled version 10, upgrade soon" {
+		t.Fatalf("message %q", message)
+	}
+	if got := signalAlarmId(&ValInfo{Valcons: "cons"}, message); got != "conssignalremind10" {
+		t.Fatalf("id %q", got)
+	}
+	if got := signalDetail("Celestia", message); got != "71% signalled, the upgrade unlocks at 83.33%: upgrade celestia-appd, then send the signal tx" {
+		t.Fatalf("detail %q", got)
+	}
+	if got := signalDetail("Celestia", signalMissingMessage(10)); got != "71% signalled, the upgrade unlocks at 83.33%: upgrade celestia-appd, then send the signal tx" {
+		t.Fatalf("missing detail %q", got)
+	}
+	icon, label := signalLabel(&alertMsg{message: message})
+	if icon != "🔔" || label != "Signal reminder" {
+		t.Fatalf("label %q %q", icon, label)
+	}
+}
+
+func TestSignalRemindPercentValidation(t *testing.T) {
+	for _, tc := range []struct {
+		percent, want int
+		warning       bool
+	}{{0, 66, false}, {-1, 66, true}, {101, 66, true}, {100, 100, false}, {5, 5, false}, {71, 71, false}} {
+		c := auditConfig(t)
+		cc := &ChainConfig{ChainId: "celestia", ValAddress: "celestiavaloper1example", PublicFallback: true}
+		cc.Alerts.SignalPercent, cc.Alerts.SignalRemindPercent = 5, tc.percent
+		cc.Alerts.UpgradeAlerts = true
+		c.Chains["Celestia"] = cc
+		_, problems := validateConfig(c)
+		warned := false
+		for _, problem := range problems {
+			warned = warned || strings.Contains(problem, "signal_remind_percent")
+		}
+		if cc.Alerts.SignalRemindPercent != tc.want || warned != tc.warning {
+			t.Fatalf("input %d: percent %d, warned %v, problems %q", tc.percent, cc.Alerts.SignalRemindPercent, warned, problems)
+		}
+	}
+}
+
+func TestSignalReminderPassesQuietHours(t *testing.T) {
+	c := auditConfig(t)
+	heldMux.Lock()
+	previous := held
+	held = make(map[string]heldAlert)
+	heldMux.Unlock()
+	t.Cleanup(func() {
+		heldMux.Lock()
+		held = previous
+		heldMux.Unlock()
+	})
+	now := time.Now().UTC()
+	c.QuietHours = QuietHoursConfig{Enabled: true, Start: now.Add(-time.Hour).Format("15:04"), End: now.Add(time.Hour).Format("15:04"), Timezone: "UTC"}
+	if err := c.QuietHours.parse(); err != nil {
+		t.Fatal(err)
+	}
+	c.Telegram.Enabled = yes(true)
+	cc := &ChainConfig{name: "Celestia", ChainId: "celestia", signalLoaded: true,
+		signal: signalState{Version: 10, Power: 71, Threshold: 84, Total: 100}}
+	cc.Alerts.SignalPercent, cc.Alerts.SignalRemindPercent = 5, 66
+	cc.Alerts.UpgradeAlerts = true
+	c.Chains[cc.name] = cc
+	cc.signalAlarms(&ValInfo{Valcons: "cons"}, false)
+	heldMux.Lock()
+	_, reminderHeld := held[cc.name+"\x00"+signalRemindMessage(10)]
+	_, missingHeld := held[cc.name+"\x00"+signalMissingMessage(10)]
+	heldMux.Unlock()
+	alarms.notifyMux.RLock()
+	queued := len(alarms.Outbox)
+	alarms.notifyMux.RUnlock()
+	if reminderHeld || !missingHeld || queued != 1 {
+		t.Fatalf("reminder held %v, warning held %v, queued %d", reminderHeld, missingHeld, queued)
 	}
 }

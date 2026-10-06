@@ -232,7 +232,15 @@ func carryChainHistory(old, next *ChainConfig) {
 	next.statPrevoteMiss, next.statPrecommitMiss = old.statPrevoteMiss, old.statPrecommitMiss
 	next.statConsecutiveMiss, next.statProposalMiss = old.statConsecutiveMiss, old.statProposalMiss
 	next.proposalMisses = append([]time.Time(nil), old.proposalMisses...)
+	next.signal, next.signalLoaded, next.signalUnsupported = old.signal, old.signalLoaded, old.signalUnsupported
+	next.signalReadFailed, next.upgradeReadFailed, next.signalRPCFailed = old.signalReadFailed, old.upgradeReadFailed, old.signalRPCFailed
+	next.signalWatch, next.signalWatchReady = old.signalWatch, old.signalWatchReady
+	next.signalWatchHeight, next.signalWatchSince = old.signalWatchHeight, old.signalWatchSince
+	next.signalStoppedHeight, next.signalLast = old.signalStoppedHeight, old.signalLast
 	next.blockTime = old.blockTime
+	next.jailedSince = old.jailedSince
+	next.slash = old.slash
+	next.slashSearchDone = old.slashSearchDone
 }
 
 // The outbox keeps the exact PagerDuty key even if the validator changed.
@@ -272,6 +280,8 @@ func (c *Config) alarmID(name, message string) string {
 		return info.Valcons + "consecutive"
 	case strings.Contains(message, " block proposal"):
 		return info.Valcons + "proposal"
+	case strings.Contains(message, " is close to jail on "):
+		return info.Valcons + "jail"
 	case strings.Contains(message, " of the misses allowed before jailing on "):
 		return info.Valcons + "jail"
 	case strings.Contains(message, " if it keeps missing blocks"):
@@ -282,6 +292,8 @@ func (c *Config) alarmID(name, message string) string {
 		return upgradeAlarmId(info, message)
 	case isSignalMessage(message):
 		return signalAlarmId(info, message)
+	case strings.HasPrefix(message, fibreEndorsementPrefix):
+		return info.Valcons + "fibreendorsement"
 	case isFibreMessage(message):
 		return fibreAlarmId(info, message)
 	case isFibreMetricsMessage(message):
@@ -326,7 +338,7 @@ func (c *Config) reload(configFile, chainDirectory string, password *string) err
 	return nil
 }
 
-// fibreTokenKept refuses a reload that drops the token while the old listener, which a reload keeps, is not on loopback.
+// fibreTokenKept rejects token removal from a running non-loopback listener.
 func fibreTokenKept(old, next *Config) error {
 	if old.FibreMetrics.Listen == "" || next.FibreMetrics.Token != "" || next.FibreMetrics.AllowWithoutToken {
 		return nil
@@ -341,6 +353,7 @@ func fibreTokenKept(old, next *Config) error {
 func (c *Config) applyReload(next *Config) chainDiff {
 	oldSettings := c.settings()
 	restarts := keepListeners(oldSettings, next)
+	applied := changedSharedSettings(oldSettings, next)
 	c.chainsMux.RLock()
 	old := make(map[string]*ChainConfig, len(c.Chains))
 	for name, chain := range c.Chains {
@@ -417,7 +430,7 @@ func (c *Config) applyReload(next *Config) chainDiff {
 		c.restartCommands()
 	}
 	c.releaseHeld()
-	l(fmt.Sprintf("reloaded config: %d added, %d removed, %d restarted, %d updated, %d settings need a restart", len(diff.Added), len(diff.Removed), len(diff.Restarted), len(diff.Updated), len(restarts)))
+	l(reloadSummary(diff, applied, restarts))
 	return diff
 }
 
@@ -488,4 +501,38 @@ func (c *Config) restartCommands() {
 	c.commandsCancel, c.commandsDone = cancel, make(chan struct{})
 	done := c.commandsDone
 	c.startWorker(func() { defer close(done); c.telegramCommandsContext(ctx) })
+}
+
+func changedSharedSettings(old, next *Config) []string {
+	var changed []string
+	var walk func(reflect.Value, reflect.Value, string)
+	walk = func(a, b reflect.Value, prefix string) {
+		t := a.Type()
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			key := strings.Split(field.Tag.Get("yaml"), ",")[0]
+			if field.PkgPath != "" || key == "" || key == "-" || key == "chains" {
+				continue
+			}
+			if field.Type.Kind() == reflect.Struct {
+				walk(a.Field(i), b.Field(i), prefix+key+".")
+			} else if !reflect.DeepEqual(a.Field(i).Interface(), b.Field(i).Interface()) {
+				changed = append(changed, prefix+key)
+			}
+		}
+	}
+	walk(reflect.ValueOf(old).Elem(), reflect.ValueOf(next).Elem(), "")
+	sort.Strings(changed)
+	return changed
+}
+
+func reloadSummary(diff chainDiff, applied, restarts []string) string {
+	if len(applied)+len(restarts)+len(diff.Added)+len(diff.Removed)+len(diff.Restarted)+len(diff.Updated) == 0 {
+		return "reloaded config: no changes"
+	}
+	prefix := "reloaded config: "
+	if len(applied) > 0 {
+		prefix += "settings applied: " + strings.Join(applied, ", ") + "; "
+	}
+	return prefix + fmt.Sprintf("%d added, %d removed, %d restarted, %d updated, %d settings need a restart", len(diff.Added), len(diff.Removed), len(diff.Restarted), len(diff.Updated), len(restarts))
 }

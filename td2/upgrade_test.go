@@ -56,3 +56,43 @@ func TestParsePlanRejectsABogusHeight(t *testing.T) {
 		t.Fatalf("a height past int64 gave %+v, %v", got, err)
 	}
 }
+
+func TestSignalUpgradeHidesItsOwnPlan(t *testing.T) {
+	s := signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}
+	if !s.coversPlan("v11") || s.coversPlan("v12") || s.coversPlan("v4.0.0") {
+		t.Fatal("only the signalled version's plan is covered")
+	}
+	if (signalState{}).coversPlan("v0") {
+		t.Fatal("chains without x/signal keep their plans")
+	}
+}
+
+func TestStalledAtUpgradeHeightSaysSo(t *testing.T) {
+	old := td
+	t.Cleanup(func() { td = old })
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1"}
+	td = &Config{Chains: map[string]*ChainConfig{"Chain": cc}}
+	stalled := &alertMsg{chain: "Chain", message: "stalled: have not seen a new block on chain-1 in 2 minutes"}
+	for _, tc := range []struct {
+		name   string
+		plan   *upgradePlan
+		signal signalState
+		height int64
+		want   string
+	}{
+		{"gov", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, 999, "halted at the v4.0.0 upgrade height 1,000"},
+		{"signal", &upgradePlan{Name: "v11", Height: 395}, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, 394, "halted at the version 11 upgrade height 394"},
+		{"signal without plan", nil, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, 394, "halted at the version 11 upgrade height 394"},
+		{"plain stall", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, 900, ""},
+	} {
+		cc.upgrade, cc.signal, cc.lastBlockNum = tc.plan, tc.signal, tc.height
+		lines := strings.SplitN(stalled.summary(), "\n", 2)
+		got := ""
+		if len(lines) == 2 {
+			got = lines[1]
+		}
+		if tc.want == "" && got != "" || tc.want != "" && !strings.HasPrefix(got, tc.want+", resumes once 2/3") {
+			t.Fatalf("%s: %q", tc.name, got)
+		}
+	}
+}
