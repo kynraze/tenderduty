@@ -16,13 +16,14 @@ import (
 )
 
 type govProposal struct {
-	ID        uint64
-	Title     string
-	VotingEnd time.Time
-	Voted     bool
+	ID          uint64
+	Title       string
+	VotingStart time.Time
+	VotingEnd   time.Time
+	Voted       bool
 }
 
-// versions to try, v1 first, same field numbers, v1beta1 keeps the title in content
+// Try v1 before v1beta1, whose title is in content.
 var govModules = []string{"cosmos.gov.v1", "cosmos.gov.v1beta1"}
 
 const proposalStatusVoting = 2
@@ -84,7 +85,7 @@ func hasVoted(ctx context.Context, client *rpchttp.HTTP, module string, id uint6
 	return resp.Response.Code == 0 && len(resp.Response.Value) > 0, nil
 }
 
-// parseProposals reads only what the alerts need by field number, so chains with custom proposal messages decode too.
+// parseProposals reads fields by number to support custom proposal messages.
 func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 	proposals := make([]govProposal, 0)
 	err := eachField(b, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
@@ -104,6 +105,8 @@ func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 					}
 					return nil
 				})
+			case num == 8 && typ == protowire.BytesType:
+				p.VotingStart = parseTimestamp(value)
 			case num == 9 && typ == protowire.BytesType:
 				p.VotingEnd = parseTimestamp(value)
 			case num == 11 && typ == protowire.BytesType && !legacy:
@@ -176,7 +179,7 @@ func parseTimestamp(b []byte) time.Time {
 // govEndFormat is how the end of voting is written, the time left is parsed from it when sent.
 const govEndFormat = "2 Jan 2006 15:04 UTC"
 
-// govTitle is on-chain text: newlines and control characters become spaces, capped at 200 runes.
+// govTitle replaces controls with spaces and caps titles at 200 runes.
 func govTitle(title string) string {
 	title = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -187,17 +190,43 @@ func govTitle(title string) string {
 	return clipRunes(strings.TrimSpace(title), 200)
 }
 
-// the messages are the alarms' keys, so they only hold what doesn't change while the proposal is in voting
+// proposal alarm keys contain only stable fields
 func (cc *ChainConfig) govOpenMessage(p govProposal) string {
 	title := ""
 	if t := govTitle(p.Title); t != "" {
 		title = " " + t
 	}
-	return fmt.Sprintf("Proposal #%d%s\nEnds %s", p.ID, title, p.VotingEnd.Format(govEndFormat))
+	return fmt.Sprintf("Proposal #%d%s\nEnds %s", p.ID, title, p.VotingEnd.UTC().Format(govEndFormat))
 }
 
 func (cc *ChainConfig) govRemindMessage(p govProposal, moniker string) string {
 	return cc.govOpenMessage(p) + "\n" + moniker + " has not voted"
+}
+
+func (cc *ChainConfig) govEarlyRemindMessage(p govProposal, moniker string) string {
+	return cc.govRemindMessage(p, moniker) + " yet"
+}
+
+// Short votes keep only the final reminder, with two hours between stages.
+func govEarlyReminderDue(p govProposal, now time.Time, percent int, final time.Duration) bool {
+	if p.Voted || p.VotingStart.IsZero() || percent <= 0 || percent >= 100 {
+		return false
+	}
+	period := p.VotingEnd.Sub(p.VotingStart)
+	remaining := period/100*time.Duration(percent) + period%100*time.Duration(percent)/100
+	return remaining-final >= 2*time.Hour && period-remaining >= 2*time.Hour &&
+		!now.Before(p.VotingEnd.Add(-remaining)) && now.Before(p.VotingEnd.Add(-final))
+}
+
+// Final reminders outrank early reminders when several restored alarms clear together.
+func govReminderRank(message string) int {
+	if strings.HasSuffix(message, " has not voted yet") {
+		return 1
+	}
+	if strings.HasSuffix(message, " has not voted") {
+		return 2
+	}
+	return 0
 }
 
 var govMessageId = regexp.MustCompile(`^Proposal #(\d+)`)
@@ -221,7 +250,7 @@ func govTimeLeft(message string) string {
 	return strings.Join(lines, "\n")
 }
 
-// shortDuration writes the two largest units: 6d 23h, 5h 12m, 59m.
+// shortDuration writes the two largest units.
 func shortDuration(d time.Duration) string {
 	minutes := int(d.Minutes())
 	days, hours, minutes := minutes/(24*60), minutes/60%24, minutes%60
@@ -290,13 +319,19 @@ func getOutcome(ctx context.Context, client *rpchttp.HTTP, id uint64) string {
 	return ""
 }
 
-// govAlarms keeps an alarm per proposal awaiting a vote and a reminder near its end, recomputed each time.
+// govAlarms keeps proposal notices and the currently due vote reminder.
 func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
+	cc.govAlarmsAt(valInfo, reconcile, time.Now())
+}
+
+func (cc *ChainConfig) govAlarmsAt(valInfo *ValInfo, reconcile bool, now time.Time) {
 	proposals, loaded := cc.govSnapshot()
 	if !loaded {
 		return
 	}
 	voter := voterAddress(cc.ValAddress)
+	settings := cc.alertSettings()
+	final := time.Duration(settings.GovRemindMinutes) * time.Minute
 	wanted := make(map[string]string) // message to alert id
 	priority := make(map[string]string)
 	for _, p := range proposals {
@@ -304,10 +339,13 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 			continue
 		}
 		message := cc.govOpenMessage(p)
-		wanted[message], priority[message] = fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID), cc.alertSettings().GovPriority
-		if voter != "" && time.Until(p.VotingEnd) <= time.Duration(cc.alertSettings().GovRemindMinutes)*time.Minute {
+		wanted[message], priority[message] = fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID), settings.GovSeverity
+		if voter != "" && p.VotingEnd.Sub(now) <= final {
 			message = cc.govRemindMessage(p, valInfo.Moniker)
 			wanted[message], priority[message] = fmt.Sprintf("%sgovremind%d", valInfo.Valcons, p.ID), "critical"
+		} else if voter != "" && govEarlyReminderDue(p, now, settings.GovEarlyRemindPercent, final) {
+			message = cc.govEarlyRemindMessage(p, valInfo.Moniker)
+			wanted[message], priority[message] = fmt.Sprintf("%sgovearly%d", valInfo.Valcons, p.ID), "warning"
 		}
 	}
 	active := activeMessages(cc.name, "Proposal #")
@@ -317,19 +355,28 @@ func (cc *ChainConfig) govAlarms(valInfo *ValInfo, reconcile bool) {
 			td.alert(cc.name, message, priority[message], false, &id)
 		}
 	}
-	// alarm and reminder clear together, the reminder announces it
-	reminded := make(map[string]bool)
+	// A new stage clears older stages quietly; otherwise the highest stage announces.
+	stillOpen := make(map[string]bool)
+	closing := make(map[string]string)
+	for message := range wanted {
+		if match := govMessageId.FindStringSubmatch(message); match != nil {
+			stillOpen[match[1]] = true
+		}
+	}
 	for message := range active {
-		if _, ok := wanted[message]; !ok && strings.Contains(message, " has not voted") {
-			if match := govMessageId.FindStringSubmatch(message); match != nil {
-				reminded[match[1]] = true
+		if match := govMessageId.FindStringSubmatch(message); match != nil {
+			previous, ok := closing[match[1]]
+			if !ok || govReminderRank(message) > govReminderRank(previous) ||
+				(govReminderRank(message) == govReminderRank(previous) && message < previous) {
+				closing[match[1]] = message
 			}
 		}
 	}
 	for message := range active {
 		if _, ok := wanted[message]; !ok {
 			id := govAlarmId(valInfo, message)
-			if match := govMessageId.FindStringSubmatch(message); match != nil && reminded[match[1]] && !strings.Contains(message, " has not voted") {
+			if match := govMessageId.FindStringSubmatch(message); match != nil &&
+				(stillOpen[match[1]] || closing[match[1]] != message) {
 				td.resolveQuietly(cc.name, message, &id)
 				continue
 			}
@@ -344,7 +391,10 @@ func govAlarmId(valInfo *ValInfo, message string) string {
 	if match := govMessageId.FindStringSubmatch(message); match != nil {
 		id, _ = strconv.ParseUint(match[1], 10, 64)
 	}
-	if strings.Contains(message, " has not voted") {
+	if govReminderRank(message) == 1 {
+		return fmt.Sprintf("%sgovearly%d", valInfo.Valcons, id)
+	}
+	if govReminderRank(message) == 2 {
 		return fmt.Sprintf("%sgovremind%d", valInfo.Valcons, id)
 	}
 	return fmt.Sprintf("%sgov%d", valInfo.Valcons, id)

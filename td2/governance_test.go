@@ -17,23 +17,32 @@ func varintField(b []byte, num protowire.Number, value uint64) []byte {
 }
 
 func TestParseProposals(t *testing.T) {
+	start := varintField(nil, 1, 1_789_395_200)
 	end := varintField(nil, 1, 1_790_000_000)
 	v1 := varintField(nil, 1, 12)
 	v1 = varintField(v1, 3, proposalStatusVoting)
+	v1 = field(v1, 8, start)
 	v1 = field(v1, 9, end)
 	v1 = field(v1, 11, []byte("Enable IBC transfers"))
 	got, err := parseProposals(field(nil, 1, v1), false)
-	if err != nil || len(got) != 1 || got[0].ID != 12 || got[0].Title != "Enable IBC transfers" || !got[0].VotingEnd.Equal(time.Unix(1_790_000_000, 0)) {
+	if err != nil || len(got) != 1 || got[0].ID != 12 || got[0].Title != "Enable IBC transfers" || !got[0].VotingEnd.Equal(time.Unix(1_790_000_000, 0)) || !got[0].VotingStart.Equal(time.Unix(1_789_395_200, 0)) {
 		t.Fatalf("v1 proposal: %+v, %v", got, err)
+	}
+
+	withoutStart := field(varintField(nil, 1, 13), 9, end)
+	got, err = parseProposals(field(nil, 1, withoutStart), false)
+	if err != nil || len(got) != 1 || !got[0].VotingStart.IsZero() {
+		t.Fatalf("missing start time: %+v, %v", got, err)
 	}
 
 	// v1beta1 keeps the title inside the content Any
 	content := field(nil, 1, []byte("/cosmos.gov.v1beta1.TextProposal"))
 	content = field(content, 2, field(nil, 1, []byte("Old style")))
 	legacy := field(varintField(nil, 1, 7), 2, content)
+	legacy = field(legacy, 8, start)
 	legacy = field(legacy, 9, end)
 	got, err = parseProposals(field(nil, 1, legacy), true)
-	if err != nil || len(got) != 1 || got[0].ID != 7 || got[0].Title != "Old style" {
+	if err != nil || len(got) != 1 || got[0].ID != 7 || got[0].Title != "Old style" || !got[0].VotingStart.Equal(time.Unix(1_789_395_200, 0)) || !got[0].VotingEnd.Equal(time.Unix(1_790_000_000, 0)) {
 		t.Fatalf("v1beta1 proposal: %+v, %v", got, err)
 	}
 }

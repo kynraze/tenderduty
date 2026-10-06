@@ -82,7 +82,7 @@ func TestProposalAlertDefaults(t *testing.T) {
 	configFile := filepath.Join(directory, "config.yml")
 	data := []byte(`
 alert_defaults:
-  proposal_enabled: yes
+  missed_proposal_enabled: yes
 chains:
   Juno:
     chain_id: juno-1
@@ -103,7 +103,7 @@ chains:
 		t.Fatalf("valid configuration was rejected: %v", problems)
 	}
 	alerts := c.Chains["Juno"].Alerts
-	if alerts.ProposalMissed != 3 || alerts.ProposalMinutes != 60 || alerts.ProposalPriority != "warning" {
+	if alerts.ProposalMissed != 3 || alerts.ProposalMinutes != 60 || alerts.ProposalSeverity != "warning" {
 		t.Fatalf("missing proposal defaults: %+v", alerts)
 	}
 }
