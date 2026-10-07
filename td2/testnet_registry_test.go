@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const unreachableRegistry = "http://127.0.0.1:1/"
@@ -204,6 +205,37 @@ func TestRegistryKeepsWhatLoaded(t *testing.T) {
 			t.Fatalf("registry name = %v", err)
 		}
 	})
+}
+
+func TestReportNetworkLookupBeforeSnapshotDue(t *testing.T) {
+	for _, tc := range []struct {
+		chainID string
+		testnet bool
+	}{
+		{chainID: "mocha-4", testnet: true},
+		{chainID: "missing-1", testnet: false},
+	} {
+		t.Run(tc.chainID, func(t *testing.T) {
+			useRegistries(t, mainnetRegistry(t), testnetRegistry(t))
+			reportNetworks.Delete(tc.chainID)
+			t.Cleanup(func() { reportNetworks.Delete(tc.chainID) })
+			now := time.Now()
+			cc := &ChainConfig{ChainId: tc.chainID}
+			c := &Config{
+				Chains: map[string]*ChainConfig{tc.chainID: cc},
+				reportData: reportHistory{Snapshots: map[string][]reportSnapshot{
+					tc.chainID: {{At: now.Add(-30 * time.Minute)}},
+				}},
+			}
+			c.collectReportSnapshots(now, false)
+			if cc.reportIsTestnet() != tc.testnet {
+				t.Fatalf("testnet = %v, want %v", cc.reportIsTestnet(), tc.testnet)
+			}
+			if known, ok := reportNetworks.Load(tc.chainID); !ok || known != tc.testnet {
+				t.Fatalf("cached network = %v, %v; want %v", known, ok, tc.testnet)
+			}
+		})
+	}
 }
 
 func TestPublicFallbackUsesTestnetNodes(t *testing.T) {

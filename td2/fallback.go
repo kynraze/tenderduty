@@ -128,6 +128,7 @@ func fetchRegistryChain(ctx context.Context, chainID string) (registryChain, err
 		pathMux.Unlock()
 	}
 	if entry.path == "" {
+		reportNetworks.Store(chainID, false)
 		return registryChain{}, fmt.Errorf("%s is %w", chainID, errNotInRegistry)
 	}
 	base := registryJson

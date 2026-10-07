@@ -468,19 +468,19 @@ func (c *Config) collectReportSnapshots(now time.Time, force bool) {
 		cc.stateMux.Lock()
 		cc.reportWatchingLocked(now)
 		cc.stateMux.Unlock()
-		c.reportsMux.Lock()
-		snapshots := c.reportData.Snapshots[name]
-		due := force || len(snapshots) == 0 || now.Sub(snapshots[len(snapshots)-1].At) >= time.Hour
-		c.reportsMux.Unlock()
-		if !due {
-			continue
-		}
 		if cc.reportTestnet() == nil {
 			if _, known := reportNetworks.Load(cc.ChainId); !known {
 				ctx, cancel := context.WithTimeout(c.context(), 10*time.Second)
 				_, _ = fetchRegistryChain(ctx, cc.ChainId)
 				cancel()
 			}
+		}
+		c.reportsMux.Lock()
+		snapshots := c.reportData.Snapshots[name]
+		due := force || len(snapshots) == 0 || now.Sub(snapshots[len(snapshots)-1].At) >= time.Hour
+		c.reportsMux.Unlock()
+		if !due {
+			continue
 		}
 		snapshot := cc.reportStake(now)
 		c.reportsMux.Lock()
