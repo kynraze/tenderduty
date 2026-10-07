@@ -68,10 +68,28 @@ type registryAPIs struct {
 	} `json:"rpc"`
 }
 
+type registryDenom string
+
+func (d *registryDenom) UnmarshalJSON(data []byte) error {
+	var denom string
+	if err := json.Unmarshal(data, &denom); err == nil {
+		*d = registryDenom(denom)
+		return nil
+	}
+	var unit struct {
+		Denom string `json:"denom"`
+	}
+	if err := json.Unmarshal(data, &unit); err != nil {
+		return err
+	}
+	*d = registryDenom(unit.Denom)
+	return nil
+}
+
 type registryAsset struct {
-	Base       string `json:"base"`
-	Display    string `json:"display"`
-	Symbol     string `json:"symbol"`
+	Base       registryDenom `json:"base"`
+	Display    registryDenom `json:"display"`
+	Symbol     string        `json:"symbol"`
 	DenomUnits []struct {
 		Denom    string `json:"denom"`
 		Exponent uint32 `json:"exponent"`

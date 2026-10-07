@@ -265,3 +265,43 @@ func TestAddChainNotInRegistryHint(t *testing.T) {
 		t.Fatalf("unreachable registry output = %q", output.String())
 	}
 }
+
+func TestRegistryAssetDenoms(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		base    string
+		display string
+	}{
+		{
+			name:    "objects",
+			body:    `{"chain":{"chain_id":"mocha-5","network_type":"testnet","assets":[{"name":"Celestia","symbol":"TIA","denom":"utia","decimals":6,"base":{"denom":"utia","exponent":0},"display":{"denom":"tia","exponent":6},"denom_units":[{"denom":"utia","exponent":0},{"denom":"tia","exponent":6}]}]}}`,
+			base:    "utia",
+			display: "tia",
+		},
+		{
+			name:    "strings",
+			body:    `{"chain":{"chain_id":"mocha-5","network_type":"testnet"},"assets":[{"base":"uatom","display":"atom"}]}`,
+			base:    "uatom",
+			display: "atom",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() { reportNetworks.Delete("mocha-5") })
+			base := registryServer(t, map[string]string{"/chain": tc.body})
+			chain, err := fetchRegistryFrom(context.Background(), base, "chain")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(chain.Assets) != 1 {
+				t.Fatalf("assets = %+v", chain.Assets)
+			}
+			if string(chain.Assets[0].Base) != tc.base || string(chain.Assets[0].Display) != tc.display {
+				t.Fatalf("asset = %+v", chain.Assets[0])
+			}
+			if known, _ := reportNetworks.Load("mocha-5"); known != true {
+				t.Fatal("testnet wasn't marked for reports")
+			}
+		})
+	}
+}

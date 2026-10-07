@@ -393,11 +393,11 @@ func (cc *ChainConfig) slashToken(ctx context.Context, d *slashDetails) {
 		return
 	}
 	for _, asset := range chain.Assets {
-		if asset.Base != d.Denom || asset.Symbol == "" {
+		if string(asset.Base) != d.Denom || asset.Symbol == "" {
 			continue
 		}
 		for _, unit := range asset.DenomUnits {
-			if unit.Denom == asset.Display {
+			if unit.Denom == string(asset.Display) {
 				d.Symbol, d.Exponent, d.DisplayKnown = asset.Symbol, unit.Exponent, true
 				return
 			}
