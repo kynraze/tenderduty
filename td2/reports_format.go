@@ -5,6 +5,7 @@ import (
 	"html"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ type reportRow struct {
 	Moniker string   `json:"moniker,omitempty"`
 	Dot     string   `json:"dot"`
 	Testnet bool     `json:"testnet,omitempty"`
+	Compact bool     `json:"compact,omitempty"`
 	Summary string   `json:"summary,omitempty"`
 	Lines   []string `json:"lines,omitempty"`
 	Fibre   []string `json:"fibre,omitempty"`
@@ -285,6 +287,28 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				line += fmt.Sprintf(" · 🧱 %d/%d", total.Proposed, turns)
 			}
 			row.Lines = []string{line}
+		} else if dot == dotGreen {
+			row.Compact = true
+			if !known {
+				signing = "signed unavailable"
+			}
+			parts := []string{signing}
+			if turns > 0 {
+				parts = append(parts, fmt.Sprintf("🧱 %d/%d", total.Proposed, turns))
+			}
+			powerLine := "⚖️ " + power
+			if powerChange != "" {
+				powerLine += " (" + powerChange + ")"
+			}
+			if rank != "" {
+				powerLine += " " + rank
+			}
+			parts = append(parts, powerLine)
+			delegatorsLine := "🤝 " + delegators
+			if delegatorChange != "" {
+				delegatorsLine += " (" + delegatorChange + ")"
+			}
+			row.Summary = strings.Join(append(parts, delegatorsLine), " · ")
 		} else {
 			line := fmt.Sprintf("✍️ %s signed · %s missed", signing, compactReportNumber(float64(total.Missed)))
 			missed := make([]string, 0, 2)
@@ -377,11 +401,17 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				row.Lines = append(row.Lines, line)
 			}
 		}
-		row.Fibre = c.reportFibre(name, start, now, weekly)
+		row.Fibre = c.reportFibre(name, start, now, weekly, row.Compact)
 		if total.Watched < span.Seconds()-60 {
 			row.Lines = append(row.Lines, "Watched "+reportWatchedDuration(time.Duration(total.Watched)*time.Second)+" of "+reportWatchedDuration(span))
 		}
 		result.Rows = append(result.Rows, row)
+	}
+	if !weekly {
+		priority := map[string]int{dotRed: 0, dotYellow: 1, dotGreen: 2}
+		sort.SliceStable(result.Rows, func(i, j int) bool {
+			return priority[result.Rows[i].Dot] < priority[result.Rows[j].Dot]
+		})
 	}
 	if len(result.Rows) == 0 {
 		watched = 0
@@ -412,7 +442,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 }
 
 // Persist rollups for both report periods.
-func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []string {
+func (c *Config) reportFibre(chain string, start, end time.Time, weekly, compact bool) []string {
 	st := c.fibreData()
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -435,6 +465,25 @@ func (c *Config) reportFibre(chain string, start, end time.Time, weekly bool) []
 	}
 	if exports == 0 && counts["endorsements_endorsed"]+counts["endorsements_missed"]+counts["endorsements_unknown"] == 0 {
 		return nil
+	}
+	if compact && !weekly {
+		parts := make([]string, 0, 4)
+		if stored, known := counts["uploads_ok"]; known {
+			parts = append(parts, thousands(int64(stored))+" shards")
+		}
+		if total := counts["endorsements_endorsed"] + counts["endorsements_missed"]; total > 0 {
+			parts = append(parts, fmt.Sprintf("endorsed %.1f%%", 100*counts["endorsements_endorsed"]/total))
+		}
+		if checks > 0 {
+			parts = append(parts, fmt.Sprintf("%.1f%% reachable", 100*float64(reachable)/float64(checks)))
+		}
+		if latest != nil && latest.Occupancy != nil && latest.Budget != nil && *latest.Budget > 0 {
+			parts = append(parts, fmt.Sprintf("%.0f%% full", 100*float64(*latest.Occupancy)/float64(*latest.Budget)))
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return []string{"🧵 Fibre " + strings.Join(parts, " · ")}
 	}
 	lines := make([]string, 0, 4)
 	if stored, known := counts["uploads_ok"]; known {
@@ -520,6 +569,7 @@ func (r periodReport) telegram() string {
 	}
 	for _, testnet := range []bool{false, true} {
 		group := false
+		previousCompact := false
 		for _, row := range r.Rows {
 			if row.Testnet != testnet {
 				continue
@@ -528,23 +578,27 @@ func (r periodReport) telegram() string {
 				lines = append(lines, "", "<b>"+map[bool]string{false: "MAINNET", true: "TESTNET"}[testnet]+"</b>")
 				group = true
 			}
-			if !r.Weekly {
+			compact := !r.Weekly && row.Compact
+			if !r.Weekly && (!compact || !previousCompact) {
 				lines = append(lines, "")
 			}
 			line := row.Dot + " <b>" + html.EscapeString(row.Name) + "</b>"
 			if r.Weekly {
 				line += " " + html.EscapeString(row.Summary)
+			} else if compact {
+				line += " · " + html.EscapeString(row.Summary)
 			} else if row.Moniker != "" {
 				line += " · " + html.EscapeString(row.Moniker)
 			}
 			lines = append(lines, line)
 			for _, value := range append(append([]string(nil), row.Lines...), row.Fibre...) {
 				prefix := ""
-				if r.Weekly {
+				if r.Weekly || compact {
 					prefix = "   "
 				}
 				lines = append(lines, prefix+reportHTMLLine(value))
 			}
+			previousCompact = compact
 		}
 	}
 	if len(r.Notes) > 0 {

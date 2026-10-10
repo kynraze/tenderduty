@@ -193,7 +193,7 @@ func TestFibreEndorsementReportAndDashboard(t *testing.T) {
 	r.st.recordEndorsement("Chain", "endorsed", dash.FibreMissedBlob{Height: 101})
 	r.advance(time.Minute)
 	for _, weekly := range []bool{false, true} {
-		lines := r.c.reportFibre("Chain", start, r.clock.now, weekly)
+		lines := r.c.reportFibre("Chain", start, r.clock.now, weekly, false)
 		if len(lines) == 0 || !strings.Contains(lines[0], "endorsed 1 of 51 (2.0%) · stopped 2h 30m") {
 			t.Fatalf("report: %v", lines)
 		}

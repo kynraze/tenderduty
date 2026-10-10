@@ -240,7 +240,7 @@ func TestFibreEndorsementPersistenceAndPresentation(t *testing.T) {
 	if report.dashboard().Last24h.Missed != 25 || len(report.dashboard().LatestMissed) != 20 || !strings.Contains(strings.Join(report.telegramLines(), "\n"), "1 of 26 · 3.8%") {
 		t.Fatal("endorsement summary missing without OTLP exports")
 	}
-	lines := r.c.reportFibre("Chain", r.clock.now.Add(-time.Hour), r.clock.now.Add(time.Minute), false)
+	lines := r.c.reportFibre("Chain", r.clock.now.Add(-time.Hour), r.clock.now.Add(time.Minute), false, false)
 	if len(lines) == 0 || !strings.Contains(lines[0], "endorsed 1 of 26 (3.8%)") {
 		t.Fatalf("report missing endorsements: %v", lines)
 	}

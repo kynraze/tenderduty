@@ -58,6 +58,10 @@ func reportFixture(weekly bool) periodReport {
 			"✍️ Signing: 100% under 10 ms · p95 0.9 ms · upload p95 26 ms",
 		}
 		r.Notes = []string{"🗳 4 cast · 1 due (AtomOne #41)", "⬆️ Mocha v11 · Mon ~10:00"}
+	} else {
+		r.Rows[0].Compact = true
+		r.Rows[0].Summary = "99.94% · 🧱 17/17 · ⚖️ 1.20M (+12.4K · +1.0%) #72 ▲3 · 🤝 812 (+5)"
+		r.Rows[0].Lines = r.Rows[0].Lines[5:]
 	}
 	return r
 }
@@ -79,6 +83,95 @@ func TestReportTelegramGolden(t *testing.T) {
 			}
 			telegramHTML(t, got)
 		})
+	}
+}
+
+func TestDailyReportCompactsHealthyRows(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	for _, name := range []string{"AHealthy", "ZEventful"} {
+		c.Chains[name] = &ChainConfig{name: name, valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true}}
+		c.recordReportBlock(name, now.Add(-time.Hour), StatusProposed, false)
+	}
+	c.reportData.Incidents = []reportIncident{{Chain: "ZEventful", Key: "missed blocks", Kind: "Missed blocks", Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour)}}
+	r := c.buildReport(now, false, false, nil)
+	if len(r.Rows) != 2 || r.Rows[0].Name != "ZEventful" || r.Rows[0].Dot != dotYellow {
+		t.Fatalf("incidents should come first: %+v", r.Rows)
+	}
+	full, healthy := r.Rows[0], r.Rows[1]
+	if full.Compact || !strings.Contains(strings.Join(full.Lines, "\n"), "✍️") || !strings.Contains(strings.Join(full.Lines, "\n"), "🔔 Missed blocks 1h") {
+		t.Fatalf("incident row lost its full lines: %+v", full)
+	}
+	if !healthy.Compact || healthy.Moniker != "Kynraze" || !strings.Contains(healthy.Summary, "%") || !strings.Contains(healthy.Summary, "🧱 1/1") {
+		t.Fatalf("healthy summary: %+v", healthy)
+	}
+	for _, line := range healthy.Lines {
+		if !strings.HasPrefix(line, "Watched ") {
+			t.Fatalf("unexpected healthy detail: %s", line)
+		}
+	}
+	c.reportData.Hours = nil
+	if got := c.buildReport(now, false, false, nil).Rows[1].Summary; !strings.HasPrefix(got, "signed unavailable · ⚖️ unavailable · 🤝 unavailable") {
+		t.Fatalf("unknown signing/turns: %s", got)
+	}
+	weekly := c.buildReport(now, true, false, nil)
+	if weekly.Rows[0].Name != "AHealthy" || weekly.Rows[0].Compact {
+		t.Fatalf("weekly report changed: %+v", weekly.Rows)
+	}
+}
+
+func TestReportCompactRenderers(t *testing.T) {
+	r := reportFixture(false)
+	r.Rows = append(r.Rows, reportRow{Name: "B <healthy>", Moniker: "ignored", Dot: dotGreen, Compact: true, Summary: "100.00% & known", Lines: []string{"⬆️ v2 · ~1h"}, Fibre: []string{"🧵 Fibre 1,284 shards"}})
+	text := r.telegram()
+	if !strings.Contains(text, "left\n🟢 <b>B &lt;healthy&gt;</b> · 100.00% &amp; known\n   ⬆️ v2 · ~<b>1h</b>\n   🧵 Fibre 1,284 shards") || strings.Contains(text, "ignored") {
+		t.Fatalf("compact Telegram spacing/escaping: %s", text)
+	}
+	telegramHTML(t, text)
+	want := "AtomOne · " + r.Rows[0].Summary + "\n   " + r.Rows[0].Lines[0] + "\n" + compactReportRowText(r.Rows[2])
+	fields := r.discord()[0].Embeds[0].Fields
+	if len(fields) != 1 || fields[0].Name != "🟢 Healthy" || fields[0].Value != reportMarkdown(want) {
+		t.Fatalf("compact Discord field: %+v", fields)
+	}
+	slackFields := r.slack().Attachments[0].Fields
+	if len(slackFields) != 1 || slackFields[0].Title != "🟢 Healthy" || slackFields[0].Value != reportSlackText(want) {
+		t.Fatalf("compact Slack field: %+v", slackFields)
+	}
+	r.Rows = nil
+	for i := 0; i < 30; i++ {
+		r.Rows = append(r.Rows, reportRow{Name: fmt.Sprintf("Chain%d", i), Dot: dotGreen, Compact: true, Testnet: i%2 == 0, Summary: "99.98% · 🧱 8/8 · ⚖️ 1.20M (+5K) #45 · 🤝 1,234 (+3)"})
+	}
+	if messages := r.discord(); len(messages) > 2 {
+		t.Fatalf("30 healthy rows used %d Discord messages", len(messages))
+	}
+}
+
+func TestReportFibreCompact(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	st := c.fibreData()
+	occupancy, budget := int64(41), int64(100)
+	at := now.Add(-time.Hour).Unix()
+	st.hours["Chain"] = map[int64]*fibreHour{at: {
+		Time: at, Exports: 1, Checks: 1000, Reachable: 999, Occupancy: &occupancy, Budget: &budget,
+		Counts: map[string]float64{"uploads_ok": 1284, "endorsements_endorsed": 998, "endorsements_missed": 2},
+	}}
+	lines := c.reportFibre("Chain", now.Add(-24*time.Hour), now, false, true)
+	if len(lines) != 1 || lines[0] != "🧵 Fibre 1,284 shards · endorsed 99.8% · 99.9% reachable · 41% full" {
+		t.Fatalf("compact Fibre: %v", lines)
+	}
+	budget = 0
+	delete(st.hours["Chain"][at].Counts, "uploads_ok")
+	st.hours["Chain"][at].Checks = 0
+	if got := c.reportFibre("Chain", now.Add(-24*time.Hour), now, false, true); len(got) != 1 || got[0] != "🧵 Fibre endorsed 99.8%" {
+		t.Fatalf("unknown compact Fibre metrics: %v", got)
+	}
+	if got := c.reportFibre("Unknown", now.Add(-24*time.Hour), now, false, true); got != nil {
+		t.Fatalf("unknown Fibre should be nil: %v", got)
+	}
+	full := strings.Join(c.reportFibre("Chain", now.Add(-24*time.Hour), now, true, false), "\n")
+	if got := strings.Join(c.reportFibre("Chain", now.Add(-24*time.Hour), now, true, true), "\n"); got != full {
+		t.Fatalf("compact flag changed weekly Fibre: %s", got)
 	}
 }
 
@@ -149,6 +242,8 @@ func TestReportSigningAndProposerLines(t *testing.T) {
 			c.Chains["Chain"] = &ChainConfig{name: "Chain", valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true}}
 			tc.hour.At = now.Add(-time.Hour)
 			c.reportData.Hours = map[string][]reportHour{"Chain": {tc.hour}}
+			// An incident keeps the detailed daily signing/proposer lines.
+			c.reportData.Incidents = []reportIncident{{Chain: "Chain", Key: "missed blocks", Kind: "Missed blocks", Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour)}}
 			row := c.buildReport(now, false, false, nil).Rows[0]
 			if row.Lines[0] != tc.signing {
 				t.Fatalf("signing: %s", row.Lines[0])
@@ -572,7 +667,7 @@ func TestReportFibreUsesPersistedPeriodHistograms(t *testing.T) {
 			}},
 		}
 	}
-	lines := strings.Join(c.reportFibre("Chain", now.Add(-24*time.Hour), now, false), "\n")
+	lines := strings.Join(c.reportFibre("Chain", now.Add(-24*time.Hour), now, false, false), "\n")
 	for _, want := range []string{"20 shards stored", "0 failed", "100% under 10 ms", "p95 9.1 ms", "90.0% reachable"} {
 		if !strings.Contains(lines, want) {
 			t.Fatalf("missing %s: %s", want, lines)
@@ -581,7 +676,7 @@ func TestReportFibreUsesPersistedPeriodHistograms(t *testing.T) {
 	copy := &Config{}
 	copy.fibreData().now = func() time.Time { return now }
 	copy.fibreData().restoreHours(st.savedHours())
-	if got := strings.Join(copy.reportFibre("Chain", now.Add(-24*time.Hour), now, false), "\n"); got != lines {
+	if got := strings.Join(copy.reportFibre("Chain", now.Add(-24*time.Hour), now, false, false), "\n"); got != lines {
 		t.Fatalf("Fibre changed on restart: %s", got)
 	}
 }

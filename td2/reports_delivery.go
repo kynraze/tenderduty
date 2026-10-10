@@ -99,6 +99,14 @@ func worstReportDot(rows []reportRow, testnet bool) string {
 	return dot
 }
 
+func compactReportRowText(row reportRow) string {
+	lines := []string{row.Name + " · " + row.Summary}
+	for _, value := range append(append([]string(nil), row.Lines...), row.Fibre...) {
+		lines = append(lines, "   "+value)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // One group embed per message; fields are split to bound the total.
 func (r periodReport) discord() []DiscordMessage {
 	messages := make([]DiscordMessage, 0)
@@ -132,8 +140,13 @@ func (r periodReport) discord() []DiscordMessage {
 				total += size
 			}
 		}
+		healthy := make([]string, 0)
 		for _, row := range r.Rows {
 			if row.Testnet != testnet {
+				continue
+			}
+			if !r.Weekly && row.Compact {
+				healthy = append(healthy, compactReportRowText(row))
 				continue
 			}
 			name := row.Dot + " " + row.Name
@@ -148,6 +161,9 @@ func (r periodReport) discord() []DiscordMessage {
 			if len(row.Fibre) > 0 {
 				add("🧵 "+row.Name+" Fibre", strings.Join(row.Fibre, "\n"))
 			}
+		}
+		if len(healthy) > 0 {
+			add("🟢 Healthy", strings.Join(healthy, "\n"))
 		}
 		flush()
 	}
@@ -176,8 +192,13 @@ func (r periodReport) slack() SlackMessage {
 	message := SlackMessage{Text: reportSlackText(strings.Join(r.Header, "\n"))}
 	for _, testnet := range []bool{false, true} {
 		attachment := Attachment{Title: map[bool]string{false: "Mainnet", true: "Testnet"}[testnet], Color: fmt.Sprintf("#%06x", reportColor(worstReportDot(r.Rows, testnet))), MrkdwnIn: []string{"fields"}}
+		healthy := make([]string, 0)
 		for _, row := range r.Rows {
 			if row.Testnet != testnet {
+				continue
+			}
+			if !r.Weekly && row.Compact {
+				healthy = append(healthy, compactReportRowText(row))
 				continue
 			}
 			name := row.Dot + " " + row.Name
@@ -192,6 +213,9 @@ func (r periodReport) slack() SlackMessage {
 			if len(row.Fibre) > 0 {
 				attachment.Fields = append(attachment.Fields, SlackField{Title: reportSlackText(row.Name + " Fibre"), Value: reportSlackText(strings.Join(row.Fibre, "\n"))})
 			}
+		}
+		if len(healthy) > 0 {
+			attachment.Fields = append(attachment.Fields, SlackField{Title: "🟢 Healthy", Value: reportSlackText(strings.Join(healthy, "\n"))})
 		}
 		if len(attachment.Fields) > 0 {
 			message.Attachments = append(message.Attachments, attachment)
