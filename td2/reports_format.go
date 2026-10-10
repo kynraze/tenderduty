@@ -205,7 +205,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		chains[name] = cc
 	}
 	c.chainsMux.RUnlock()
-	watched := span.Seconds()
+	partial := 0
 	healthy, eventful, incidents, votes, due := 0, 0, 0, 0, 0
 	dueNames := make([]string, 0)
 	for _, name := range sortedReportNames(chains) {
@@ -233,7 +233,6 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		}
 		incidents += count
 		votes += total.Votes
-		watched = math.Min(watched, total.Watched)
 		row := reportRow{Name: clipRunes(name, 120), Moniker: clipRunes(info.Moniker, 100), Dot: dot, Testnet: testnet}
 		signing := "unavailable"
 		if known {
@@ -338,6 +337,9 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			}
 			row.Lines = append(row.Lines, line)
 			delegatorsLine := "🤝 " + delegators + " delegators"
+			if delegators == "1" {
+				delegatorsLine = "🤝 1 delegator"
+			}
 			if delegatorChange != "" {
 				delegatorsLine += " (" + delegatorChange + ")"
 			}
@@ -403,6 +405,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		}
 		row.Fibre = c.reportFibre(name, start, now, weekly, row.Compact)
 		if total.Watched < span.Seconds()-60 {
+			partial++
 			row.Lines = append(row.Lines, "Watched "+reportWatchedDuration(time.Duration(total.Watched)*time.Second)+" of "+reportWatchedDuration(span))
 		}
 		result.Rows = append(result.Rows, row)
@@ -412,9 +415,6 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		sort.SliceStable(result.Rows, func(i, j int) bool {
 			return priority[result.Rows[i].Dot] < priority[result.Rows[j].Dot]
 		})
-	}
-	if len(result.Rows) == 0 {
-		watched = 0
 	}
 	if weekly {
 		result.Header = append(result.Header, fmt.Sprintf("%d incidents · %d votes cast", incidents, votes))
@@ -434,10 +434,12 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		}
 		result.Header = append(result.Header, header)
 	}
-	result.Footer = "Watched " + reportWatchedDuration(time.Duration(watched)*time.Second) + " of " + reportWatchedDuration(span) + " · " + loc.String()
-	if watched < span.Seconds()-60 {
-		result.Header[0] += " · Watched " + reportWatchedDuration(time.Duration(watched)*time.Second) + " of " + reportWatchedDuration(span)
+	result.Footer = "Watched " + reportWatchedDuration(span) + " of " + reportWatchedDuration(span)
+	if partial > 0 {
+		result.Header[0] += fmt.Sprintf(" · %d of %d watched partly", partial, len(result.Rows))
+		result.Footer += fmt.Sprintf(" on %d of %d chains", len(result.Rows)-partial, len(result.Rows))
 	}
+	result.Footer += " · " + loc.String()
 	return result
 }
 

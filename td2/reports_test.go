@@ -742,6 +742,55 @@ func TestReportReloadAndSkippedOccurrence(t *testing.T) {
 	}
 }
 
+func TestReportHeaderCountsPartlyWatched(t *testing.T) {
+	for _, weekly := range []bool{false, true} {
+		kind, span, duration := "daily", 24*time.Hour, "24h"
+		if weekly {
+			kind, span, duration = "weekly", 7*24*time.Hour, "7d"
+		}
+		t.Run(kind, func(t *testing.T) {
+			c := auditConfig(t)
+			now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+			c.Reports.Timezone = "UTC"
+			c.reportData.Hours = make(map[string][]reportHour)
+			for _, name := range []string{"FullA", "FullB", "Short"} {
+				c.Chains[name] = &ChainConfig{name: name, valInfo: &ValInfo{Bonded: true}}
+				hours := int(span / time.Hour)
+				if name == "Short" {
+					hours = 2
+				}
+				for i := 0; i < hours; i++ {
+					c.reportData.Hours[name] = append(c.reportData.Hours[name], reportHour{At: now.Add(time.Duration(i-hours) * time.Hour), Signed: 10000, Watched: 3600})
+				}
+			}
+			report := c.buildReport(now, weekly, false, nil)
+			if !strings.HasSuffix(report.Header[0], " · 1 of 3 watched partly") {
+				t.Fatalf("header %q", report.Header[0])
+			}
+			if want := "Watched " + duration + " of " + duration + " on 2 of 3 chains · UTC"; report.Footer != want {
+				t.Fatalf("footer %q, want %q", report.Footer, want)
+			}
+			if len(report.Rows) != 3 {
+				t.Fatalf("rows %+v", report.Rows)
+			}
+			for _, row := range report.Rows {
+				want := "Watched 2h of " + duration
+				if row.Name == "Short" && !strings.Contains(strings.Join(row.Lines, "\n"), want) {
+					t.Fatalf("short row lost coverage: %+v", row)
+				}
+			}
+			full := c.buildReport(now, weekly, false, map[string]bool{"FullA": true, "FullB": true})
+			if strings.Contains(full.Header[0], "watched partly") || full.Footer != "Watched "+duration+" of "+duration+" · UTC" {
+				t.Fatalf("full coverage: %+v", full)
+			}
+			empty := c.buildReport(now, weekly, false, map[string]bool{})
+			if len(empty.Rows) != 0 || strings.Contains(empty.Header[0], "watched partly") || empty.Footer != full.Footer {
+				t.Fatalf("empty coverage: %+v", empty)
+			}
+		})
+	}
+}
+
 func TestReportHeaderCountsIncidentsApart(t *testing.T) {
 	c := auditConfig(t)
 	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
