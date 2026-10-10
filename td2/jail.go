@@ -110,6 +110,10 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 	if minutes == 0 {
 		minutes = 60
 	}
+	threshold := settings.ConsecutiveMissed
+	if threshold < 1 {
+		threshold = 5
+	}
 	wanted, severity := "", "critical"
 	out := !val.Bonded || val.Jailed || val.Tombstoned
 	waitForSigning := val.Jailed && !val.Tombstoned && val.SigningStale && !val.SigningUpdatedAt.IsZero() && time.Since(val.SigningUpdatedAt) < 3*time.Minute
@@ -127,15 +131,12 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 		}
 	} else if !out && settings.jailRiskEnabled() && !val.SigningStale && val.MaxMissed > 0 {
 		atRisk := 100*val.Missed >= int64(percent)*val.MaxMissed
-		soon := consecutive > 0 && blockTime > 0 && time.Duration(val.missesBeforeJail())*blockTime <= time.Duration(minutes)*time.Minute
+		// a single miss counts once half the window is used, before that only a run of consecutive_missed
+		soon := (consecutive >= float64(threshold) || consecutive > 0 && 2*val.Missed >= val.MaxMissed) && blockTime > 0 && time.Duration(val.missesBeforeJail())*blockTime <= time.Duration(minutes)*time.Minute
 		if atRisk || soon {
 			wanted = fmt.Sprintf("%s is close to jail on %s", val.Moniker, cc.ChainId)
 			severity = "critical"
 		}
-	}
-	threshold := settings.ConsecutiveMissed
-	if threshold < 1 {
-		threshold = 5
 	}
 	if wanted == "" && !out && settings.consecutiveEnabled() && consecutive >= float64(threshold) {
 		wanted = fmt.Sprintf("%s is missing blocks on %s", val.Moniker, cc.ChainId)

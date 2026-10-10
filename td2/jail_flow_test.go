@@ -337,3 +337,24 @@ func TestMissedRecoveryWaitsForAQuietRun(t *testing.T) {
 		t.Fatal("a few misses below the threshold held the recovery")
 	}
 }
+
+func TestJailRiskFastChainNeedsConsecutiveThreshold(t *testing.T) {
+	c := auditConfig(t)
+	val := &ValInfo{Moniker: "validator", Valcons: "cons", Bonded: true, Missed: 18, MaxMissed: 5000}
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", valInfo: val, blockTime: 400 * time.Millisecond}
+	cc.Alerts.MissedBlocksAlerts = true
+	c.Chains[cc.name] = cc
+	cc.jailAlarms(val, 1, false)
+	if len(c.alertChan) != 0 || alarms.getCount(cc.name) != 0 {
+		t.Fatal("single miss raised an alarm on a fast chain")
+	}
+	cc.jailAlarms(val, 5, false)
+	select {
+	case alert := <-c.alertChan:
+		if alert.message != "validator is close to jail on chain-1" || alert.severity != "critical" || alert.resolved {
+			t.Fatalf("threshold alarm: %+v", alert)
+		}
+	default:
+		t.Fatal("consecutive threshold did not raise jail risk")
+	}
+}
