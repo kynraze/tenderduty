@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -329,6 +330,7 @@ func (cc *ChainConfig) govAlarmsAt(valInfo *ValInfo, reconcile bool, now time.Ti
 	if !loaded {
 		return
 	}
+	first := td.firstGovSight(cc.name)
 	voter := voterAddress(cc.ValAddress)
 	settings := cc.alertSettings()
 	final := time.Duration(settings.GovRemindMinutes) * time.Minute
@@ -339,6 +341,11 @@ func (cc *ChainConfig) govAlarmsAt(valInfo *ValInfo, reconcile bool, now time.Ti
 			continue
 		}
 		message := cc.govOpenMessage(p)
+		if first {
+			id := fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID)
+			td.record(cc.name, message, settings.GovSeverity, false, false, &id, true)
+			td.collectGovBacklog(cc.name, p, now)
+		}
 		wanted[message], priority[message] = fmt.Sprintf("%sgov%d", valInfo.Valcons, p.ID), settings.GovSeverity
 		if voter != "" && p.VotingEnd.Sub(now) <= final {
 			message = cc.govRemindMessage(p, valInfo.Moniker)
@@ -353,6 +360,11 @@ func (cc *ChainConfig) govAlarmsAt(valInfo *ValInfo, reconcile bool, now time.Ti
 		if !active[message] || reconcile {
 			id := id
 			td.alert(cc.name, message, priority[message], false, &id)
+		}
+	}
+	if first {
+		if err := td.persistState(); err != nil {
+			l("could not persist governance first sight:", err)
 		}
 	}
 	// A new stage clears older stages quietly; otherwise the highest stage announces.
@@ -460,4 +472,66 @@ func activeMessages(chain, prefix string) map[string]bool {
 		}
 	}
 	return found
+}
+
+// firstGovSight reports whether this chain's proposals load for the first time ever.
+func (c *Config) firstGovSight(name string) bool {
+	alarms.notifyMux.Lock()
+	defer alarms.notifyMux.Unlock()
+	seen := alarms.GovSeen[name]
+	for message := range alarms.AllAlarms[name] {
+		if strings.HasPrefix(message, "Proposal #") {
+			seen = true
+			break
+		}
+	}
+	if alarms.GovSeen == nil {
+		alarms.GovSeen = make(map[string]bool)
+	}
+	alarms.GovSeen[name] = true
+	return !seen
+}
+
+type govBacklogEntry struct {
+	chain    string
+	proposal govProposal
+}
+
+func (c *Config) collectGovBacklog(name string, p govProposal, now time.Time) {
+	c.govSummaryMux.Lock()
+	defer c.govSummaryMux.Unlock()
+	if len(c.govSummary) == 0 {
+		c.govSummaryAt = now.Add(2 * time.Minute)
+	}
+	c.govSummary = append(c.govSummary, govBacklogEntry{chain: name, proposal: p})
+}
+
+func (c *Config) flushGovBacklog(now time.Time) string {
+	c.govSummaryMux.Lock()
+	if len(c.govSummary) == 0 || now.Before(c.govSummaryAt) {
+		c.govSummaryMux.Unlock()
+		return ""
+	}
+	entries := c.govSummary
+	c.govSummary, c.govSummaryAt = nil, time.Time{}
+	c.govSummaryMux.Unlock()
+	if c.context().Err() != nil {
+		return ""
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].chain != entries[j].chain {
+			return entries[i].chain < entries[j].chain
+		}
+		return entries[i].proposal.ID < entries[j].proposal.ID
+	})
+	names := make([]string, 0, len(entries))
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		p := entry.proposal
+		lines = append(lines, fmt.Sprintf("%s #%d %s · %s left", entry.chain, p.ID, clipRunes(govTitle(p.Title), 60), shortDuration(p.VotingEnd.Sub(now))))
+		names = append(names, entry.chain)
+	}
+	body := "Proposals already in voting\n" + clipRunes(strings.Join(lines, "\n"), 900)
+	c.notice(names, body)
+	return body
 }

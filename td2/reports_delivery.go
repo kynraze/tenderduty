@@ -258,6 +258,7 @@ func (c *Config) runReports() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
+		c.flushGovBacklog(time.Now())
 		c.reportTick(time.Now())
 		select {
 		case <-c.context().Done():

@@ -447,19 +447,27 @@ func (c *Config) reloadFailed(problems []string) {
 		l("config reload failed:", problem)
 	}
 	body := "Config reload failed\n" + clipRunes(strings.Join(problems, "\n"), 900)
-	seen := make(map[string]bool)
 	c.chainsMux.RLock()
 	names := make([]string, 0, len(c.Chains))
 	for name := range c.Chains {
 		names = append(names, name)
 	}
 	c.chainsMux.RUnlock()
+	c.notice(names, body)
+}
+
+// notice sends an informational message once to each enabled chat destination.
+func (c *Config) notice(names []string, body string) {
+	if c.context().Err() != nil {
+		return
+	}
+	seen := make(map[string]bool)
 	for _, name := range names {
 		msg := c.makeAlert(name, body, "info", false, nil)
 		if msg == nil {
 			continue
 		}
-		// Reload errors go to enabled chats even if their incident severity filter is higher.
+		// Notices go to enabled chats even if their incident severity filter is higher.
 		c.chainsMux.RLock()
 		chain := c.Chains[name]
 		c.chainsMux.RUnlock()
@@ -488,7 +496,7 @@ func (c *Config) reloadFailed(problems []string) {
 			copy, send := *msg, destination.send
 			c.startWorker(func() {
 				if err := send(&copy); err != nil {
-					l("could not send config reload failure:", err)
+					l("could not send notice:", err)
 				}
 			})
 		}

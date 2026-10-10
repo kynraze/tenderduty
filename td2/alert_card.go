@@ -661,6 +661,12 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 		c.Fields = noteFields(strings.Split(strings.TrimPrefix(body, "Config reload failed\n"), "\n"))
 		return c
 	}
+	if msg.transient && strings.HasPrefix(body, "Proposals already in voting\n") {
+		c.Title = "Proposals already in voting"
+		c.Icon = "🗳"
+		c.Fields = noteFields(strings.Split(strings.TrimPrefix(body, "Proposals already in voting\n"), "\n"))
+		return c
+	}
 	lines := strings.Split(body, "\n")
 	p, ok := msg.parts(lines[0], lines[1:], state)
 	if !ok || len(p.ident)+len(p.state) == 0 && p.title == "" {

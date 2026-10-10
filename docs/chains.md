@@ -62,7 +62,7 @@ These go under `alerts`. Anything left out comes from `alert_defaults`. Set any 
 | `missed_proposal_count` | How many within `missed_proposal_minutes` trigger it. 3 when empty. |
 | `missed_proposal_minutes` | The window in minutes. 60 when empty. |
 | `missed_proposal_severity` | `info`, `warning`, `error` or `critical`. Warning when empty. |
-| `gov_enabled` | Message when a proposal opens for voting, cleared when the valoper's account votes. On by default. |
+| `gov_enabled` | Message when a proposal opens for voting, cleared when the valoper's account votes. On by default. Proposals already in voting when a chain is first watched come as one summary. |
 | `gov_remind_minutes` | Remind when voting ends within this many minutes without a vote. 60 when empty. |
 | `gov_early_remind_percent` | Warning at this percent of voting time left. Default 25; 0 is off, 1-99 valid. Other values warn and use 25. Skipped without a start time or within 2 hours of voting start or the final reminder. |
 | `gov_severity` | Info when empty, early reminders are warning, final reminders critical. |

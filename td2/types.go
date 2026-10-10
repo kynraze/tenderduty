@@ -83,6 +83,10 @@ type Config struct {
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
 	Reports    ReportsConfig    `yaml:"reports"`
 
+	govSummaryMux sync.Mutex
+	govSummary    []govBacklogEntry
+	govSummaryAt  time.Time
+
 	reportsMux sync.Mutex
 	reportData reportHistory
 	// AlertDefaults supplies shared settings before chain overrides are applied.
@@ -1047,6 +1051,15 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	}
 	// restore alarm state to prevent duplicate alerts
 	if saved.Alarms != nil {
+		alarms.GovSeen = saved.Alarms.GovSeen
+		if alarms.GovSeen == nil {
+			// states from before gov_seen: a chain with a saved height was watched already
+			alarms.GovSeen = make(map[string]bool)
+			for name := range saved.Heights {
+				alarms.GovSeen[name] = true
+			}
+		}
+		alarms.SilentAlarms = saved.Alarms.SilentAlarms
 		alarms.AlarmIDs = saved.Alarms.AlarmIDs
 		alarms.AlarmSeverities = saved.Alarms.AlarmSeverities
 		alarms.Outbox = saved.Alarms.Outbox

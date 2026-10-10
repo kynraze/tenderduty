@@ -164,6 +164,9 @@ func (msg *alertMsg) header() (icon, state string) {
 			return r.icon, r.label
 		}
 	}
+	if msg.transient && strings.HasPrefix(msg.message, "Proposals already in voting\n") {
+		return "🗳", "Proposals already in voting"
+	}
 	if strings.HasPrefix(msg.message, "Config reload failed\n") {
 		return "ℹ️", "Config reload failed"
 	}
@@ -262,6 +265,8 @@ const (
 )
 
 type alarmCache struct {
+	GovSeen           map[string]bool                 `json:"gov_seen,omitempty"`
+	SilentAlarms      map[string]bool                 `json:"silent_alarms,omitempty"`
 	AlarmSeverities   map[string]string               `json:"alarm_severities,omitempty"`
 	AlarmIDs          map[string]string               `json:"alarm_ids,omitempty"`
 	SentPdAlarms      map[string]time.Time            `json:"sent_pd_alarms"`
@@ -851,7 +856,7 @@ func (c *Config) resolveQuietly(chainName, message string, id *string) {
 	c.record(chainName, message, "info", true, true, id)
 }
 
-func (c *Config) record(chainName, message, severity string, resolved, quiet bool, id *string) {
+func (c *Config) record(chainName, message, severity string, resolved, quiet bool, id *string, silent ...bool) {
 	a := c.makeAlert(chainName, message, severity, resolved, id)
 	if a == nil {
 		return
@@ -886,6 +891,15 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 		delete(alarms.AlarmIDs, chainName+"\x00"+message)
 	}
 	key := chainName + "\x00" + message
+	silenced := !resolved && (alarms.SilentAlarms[key] || len(silent) > 0 && silent[0])
+	if silenced {
+		if alarms.SilentAlarms == nil {
+			alarms.SilentAlarms = make(map[string]bool)
+		}
+		alarms.SilentAlarms[key] = true
+	} else if resolved {
+		delete(alarms.SilentAlarms, key)
+	}
 	if resolved {
 		delete(alarms.AlarmSeverities, key)
 	} else if alarms.AllAlarms[chainName][message].IsZero() {
@@ -918,13 +932,13 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 	if resolved {
 		// never sent, nothing to recover
 		delete(held, key)
-	} else if c.holdsAlert(chainName, severity, resolved, time.Now()) {
+	} else if !silenced && c.holdsAlert(chainName, severity, resolved, time.Now()) {
 		held[key] = heldAlert{chain: chainName, message: message, severity: severity, id: uniq}
 		wasHeld = true
 	}
 	heldMux.Unlock()
 	a.lasted, a.quiet = lasted, quiet && resolved
-	if !wasHeld || resolved {
+	if !silenced && (!wasHeld || resolved) {
 		alarms.enqueue(a)
 	}
 	alarms.notifyMux.Unlock()
@@ -932,6 +946,9 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 	c.chainsMux.RUnlock()
 	if err := c.persistState(); err != nil {
 		l("could not persist alert:", err)
+	}
+	if silenced {
+		return
 	}
 	select {
 	case c.alertChan <- a:

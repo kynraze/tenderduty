@@ -58,6 +58,7 @@ func govEarlyTestChain(t *testing.T) (*Config, *ChainConfig, *ValInfo, govPropos
 	cc.Alerts.GovSeverity = "info"
 	cc.Alerts.GovEarlyRemindPercent, cc.Alerts.GovRemindMinutes = 25, 60
 	c.Chains[cc.name] = cc
+	alarms.GovSeen = map[string]bool{cc.name: true}
 	p := govProposal{ID: 7, Title: "Raise the limit", VotingStart: time.Now().UTC().Truncate(time.Minute)}
 	p.VotingEnd = p.VotingStart.Add(7 * 24 * time.Hour)
 	cc.proposals = []govProposal{p}
