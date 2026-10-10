@@ -128,10 +128,15 @@ func (r periodReport) discord() []DiscordMessage {
 			value = reportMarkdown(value)
 			for len([]rune(value)) > 0 {
 				part := reportDiscordTake(value, discordValueLimit-1)
-				if strings.HasSuffix(part, "\\") {
-					part = strings.TrimSuffix(part, "\\")
+				if len(part) < len(value) && strings.Contains(part, "\n") {
+					cut := strings.LastIndex(part, "\n")
+					part, value = part[:cut], value[cut+1:]
+				} else {
+					if strings.HasSuffix(part, "\\") {
+						part = strings.TrimSuffix(part, "\\")
+					}
+					value = string([]rune(value)[len([]rune(part)):])
 				}
-				value = string([]rune(value)[len([]rune(part)):])
 				size := reportDiscordLen(name) + reportDiscordLen(part)
 				if len(embed.Fields) >= discordFieldsLimit || total+size > discordEmbedLimit {
 					flush()

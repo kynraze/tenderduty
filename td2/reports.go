@@ -235,7 +235,10 @@ func (cc *ChainConfig) reportWatchingLocked(now time.Time) {
 }
 
 func reportAlarmKind(chain, message string) string {
-	first, _, _ := strings.Cut(message, "\n")
+	first, rest, _ := strings.Cut(message, "\n")
+	if strings.HasPrefix(first, "Severity: ") {
+		first, _, _ = strings.Cut(rest, "\n")
+	}
 	switch {
 	case strings.Contains(first, " is missing blocks on "), cardMissed.MatchString(first), percentageMissed.MatchString(first):
 		return "Missed blocks"

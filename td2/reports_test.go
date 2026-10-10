@@ -105,10 +105,11 @@ func TestDailyReportCompactsHealthyRows(t *testing.T) {
 	if !healthy.Compact || healthy.Moniker != "Kynraze" || !strings.Contains(healthy.Summary, "%") || !strings.Contains(healthy.Summary, "🧱 1/1") {
 		t.Fatalf("healthy summary: %+v", healthy)
 	}
-	for _, line := range healthy.Lines {
-		if !strings.HasPrefix(line, "Watched ") {
-			t.Fatalf("unexpected healthy detail: %s", line)
-		}
+	if len(healthy.Lines) != 0 || !strings.HasSuffix(healthy.Summary, " · watched 0m of 24h") {
+		t.Fatalf("healthy coverage should be in summary: %+v", healthy)
+	}
+	if !strings.Contains(strings.Join(full.Lines, "\n"), "🤝 delegators unavailable · self unavailable") {
+		t.Fatalf("unknown delegators: %+v", full)
 	}
 	c.reportData.Hours = nil
 	if got := c.buildReport(now, false, false, nil).Rows[1].Summary; !strings.HasPrefix(got, "signed unavailable · ⚖️ unavailable · 🤝 unavailable") {
@@ -775,7 +776,12 @@ func TestReportHeaderCountsPartlyWatched(t *testing.T) {
 			}
 			for _, row := range report.Rows {
 				want := "Watched 2h of " + duration
-				if row.Name == "Short" && !strings.Contains(strings.Join(row.Lines, "\n"), want) {
+				coverage := strings.Join(row.Lines, "\n")
+				if row.Compact {
+					want = "watched 2h of " + duration
+					coverage = row.Summary
+				}
+				if row.Name == "Short" && !strings.Contains(coverage, want) {
 					t.Fatalf("short row lost coverage: %+v", row)
 				}
 			}
@@ -827,5 +833,59 @@ func TestReportDurationUnderAMinute(t *testing.T) {
 		if got := reportDuration(d); got != want {
 			t.Errorf("reportDuration(%s) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+func TestReportNoValidatorData(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	c.Chains["Chain"] = &ChainConfig{name: "Chain", valInfo: &ValInfo{Moniker: "not connected"}}
+	for _, weekly := range []bool{false, true} {
+		r := c.buildReport(now, weekly, false, nil)
+		if len(r.Rows) != 1 {
+			t.Fatalf("rows: %+v", r.Rows)
+		}
+		row := r.Rows[0]
+		if len(row.Lines) == 0 || row.Lines[0] != "🔌 No validator data, RPC unreachable" || strings.Contains(strings.Join(row.Lines, "\n"), "Not in the active set") {
+			t.Fatalf("unreachable validator: %+v", row)
+		}
+		if row.Dot != dotGreen {
+			t.Fatalf("unread validator counted as inactive: %+v", row)
+		}
+	}
+}
+
+func TestReportAlarmKindNodeDown(t *testing.T) {
+	c := auditConfig(t)
+	c.NodeDownSeverity, c.NodeDownMin = "warning", 5
+	message := nodeDownMessage("https://rpc.example:443", "chain-1")
+	if got := reportAlarmKind("Chain", message); got != "RPC node down" {
+		t.Fatalf("node down kind %q", got)
+	}
+}
+
+func TestReportDiscordSplitsAtLineBoundaries(t *testing.T) {
+	r := periodReport{}
+	want := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		row := reportRow{Name: fmt.Sprintf("Chain%02d", i), Dot: dotGreen, Compact: true, Summary: "100.00% · ⚖️ 415.2K · 🤝 " + strings.Repeat("x", 30)}
+		r.Rows = append(r.Rows, row)
+		want = append(want, reportMarkdown(compactReportRowText(row)))
+	}
+	got := make([]string, 0, len(want))
+	fields := 0
+	for _, message := range r.discord() {
+		for _, embed := range message.Embeds {
+			for _, field := range embed.Fields {
+				if field.Name != "🟢 Healthy" {
+					t.Fatalf("unexpected field: %+v", field)
+				}
+				fields++
+				got = append(got, strings.Split(field.Value, "\n")...)
+			}
+		}
+	}
+	if fields < 2 || strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("Discord split %d fields across lines: %q", fields, got)
 	}
 }

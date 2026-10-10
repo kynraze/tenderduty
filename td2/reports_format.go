@@ -219,12 +219,13 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		current := reportSnapshotAt(history.Snapshots[name], now)
 		previous := reportSnapshotAt(history.Snapshots[name], start)
 		info, _ := cc.validatorState()
+		connected := info.Moniker != "not connected"
 		threshold := reportDefaultRedSigned
 		alertLines, count, longest := reportIncidents(history.Incidents, name, start, now)
 		signed, known := reportSigned(total)
 		// scheduled-upgrade notices do not make rows red
 		active, notices, _ := cc.dashboardAlerts()
-		dot := reportDot(active > notices, info.Jailed || info.Tombstoned || !info.Bonded, signed, known, count, threshold)
+		dot := reportDot(active > notices, info.Jailed || info.Tombstoned || (connected && !info.Bonded), signed, known, count, threshold)
 		switch dot {
 		case dotGreen:
 			healthy++
@@ -337,7 +338,9 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			}
 			row.Lines = append(row.Lines, line)
 			delegatorsLine := "🤝 " + delegators + " delegators"
-			if delegators == "1" {
+			if delegators == "unavailable" {
+				delegatorsLine = "🤝 delegators unavailable"
+			} else if delegators == "1" {
 				delegatorsLine = "🤝 1 delegator"
 			}
 			if delegatorChange != "" {
@@ -361,8 +364,10 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				line += " since " + since.In(loc).Format("2 Jan 15:04")
 			}
 			row.Lines = append([]string{line}, row.Lines...)
-		case !info.Bonded:
+		case connected && !info.Bonded:
 			row.Lines = append([]string{"🚨 Not in the active set"}, row.Lines...)
+		case !connected:
+			row.Lines = append([]string{"🔌 No validator data, RPC unreachable"}, row.Lines...)
 		}
 		proposals, loaded := cc.govSnapshot()
 		if loaded {
@@ -406,7 +411,12 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		row.Fibre = c.reportFibre(name, start, now, weekly, row.Compact)
 		if total.Watched < span.Seconds()-60 {
 			partial++
-			row.Lines = append(row.Lines, "Watched "+reportWatchedDuration(time.Duration(total.Watched)*time.Second)+" of "+reportWatchedDuration(span))
+			watched := reportWatchedDuration(time.Duration(total.Watched)*time.Second) + " of " + reportWatchedDuration(span)
+			if row.Compact {
+				row.Summary += " · watched " + watched
+			} else {
+				row.Lines = append(row.Lines, "Watched "+watched)
+			}
 		}
 		result.Rows = append(result.Rows, row)
 	}
