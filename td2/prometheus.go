@@ -95,6 +95,11 @@ func (m metrics) setStat(update *promUpdate) {
 func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	bridge := &bridgeCollector{config: td}
+	if err := prometheus.Register(bridge); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(bridge)
 	fibre := &fibreCollector{config: td}
 	if err := prometheus.Register(fibre); err != nil {
 		return err

@@ -179,6 +179,8 @@ With `critical`, alerts for a node down (`node_down_alert_severity`), jail risk,
 
 ## Fibre Metrics
 
+Bridge RPC monitoring is configured in each chain file; see [bridge.md](bridge.md).
+
 Receives the OTLP/HTTP metrics a Celestia Fibre server exports. Off unless `listen` is set. Setup and alerts are in [fibre.md](fibre.md); the per-chain alert settings are in [chains.md](chains.md). Requests over 1 MiB (4 MiB unzipped) are refused. At most 4 requests are decoded at once; excess requests get a 503, which exporters retry.
 
 | Config Setting | Description |

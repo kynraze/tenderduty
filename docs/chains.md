@@ -71,6 +71,10 @@ These go under `alerts`. Anything left out comes from `alert_defaults`. Set any 
 | `signal_percent` | Celestia: share of voting power that must have signalled before warning that this validator has not. 5 when empty. |
 | `signal_remind_percent` | Celestia: critical reminder when this share has signalled and this validator has not. 66 when empty. Ignored when not above `signal_percent`. |
 | `signal_remind_minutes` | Celestia: remind this many minutes before the scheduled upgrade if any own node is not ready. 60 when empty. Versions are read from nodes with `alert_if_down`; without those, from the node in use, and a chain stuck at the upgrade height alerts `Node stopped at the version N upgrade height`. A stopped own node's down alert names the upgrade. |
+| `bridge_enabled` | Bridge RPC alerts, off by default. Requires `bridge.url` in this chain file. See [bridge.md](bridge.md). |
+| `bridge_severity` | Bridge alert severity, default `warning`. |
+| `bridge_lag_blocks` | Header and sampling lag threshold, default 20 blocks. |
+| `bridge_lag_minutes` | Continuous lag window, default 5 minutes. |
 | `fibre_enabled` | Celestia Fibre: alert while the validator is not registered, its Fibre host is unreachable (TLS handshake fails for `node_down_alert_minutes`), or the host's certificate isn't this validator's. With [`fibre_metrics`](config.md#fibre-metrics) it also alerts on what Fibre reports. Off by default. See [fibre.md](fibre.md). |
 | `fibre_instance` | The hostname Fibre reports as `service.instance.id`. Needed when more than one chain has `fibre_enabled`. |
 | `fibre_storage_percent` | Alert when Fibre's storage is at this percent of its budget or more, or an upload was turned away. 1 to 100, 0 or empty is off. |

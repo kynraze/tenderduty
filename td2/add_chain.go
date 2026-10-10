@@ -365,7 +365,7 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 		strings.HasPrefix(status.ChainID, "arabica-") || options.RegistryChain == "celestia" ||
 		strings.HasPrefix(options.RegistryChain, "celestiatestnet")
 	if fibreExample {
-		data = append(data, []byte("\n# alerts:\n#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md\n#   fibre_severity: critical\n")...)
+		data = append(data, []byte("\n# alerts:\n#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md\n#   fibre_severity: critical\n#   bridge_enabled: no\n#   bridge_severity: warning\n#   bridge_lag_blocks: 20\n#   bridge_lag_minutes: 5\n# bridge:\n#   url: http://127.0.0.1:26658\n#   token_file: /etc/tenderduty/bridge.token\n")...)
 	}
 	if options.ConfigFile != "" {
 		password := options.Password

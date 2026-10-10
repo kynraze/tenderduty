@@ -68,6 +68,9 @@ type chainDiff struct {
 // Compare node settings, not health state or mutexes.
 func restartReason(old, next *ChainConfig) string {
 	var reasons []string
+	if old.Bridge != next.Bridge || old.alertSettings().BridgeAlerts != next.alertSettings().BridgeAlerts {
+		reasons = append(reasons, "bridge changed")
+	}
 	if old.ChainId != next.ChainId {
 		reasons = append(reasons, "chain_id changed")
 	}
@@ -153,6 +156,9 @@ func (c *Config) startChain(name string, cc *ChainConfig) {
 		c.startWorker(func() { defer cc.workers.Done(); work() })
 	}
 	start(cc.watch)
+	if cc.alertSettings().BridgeAlerts {
+		start(func() { cc.watchBridge(cc.context()) })
+	}
 	start(func() { cc.monitorHealth(cc.context(), name) })
 	start(func() {
 		for cc.context().Err() == nil {
@@ -294,6 +300,8 @@ func (c *Config) alarmID(name, message string) string {
 		return signalAlarmId(info, message)
 	case strings.HasPrefix(message, fibreEndorsementPrefix):
 		return info.Valcons + "fibreendorsement"
+	case isBridgeMessage(message):
+		return cc.bridgeAlarmID(message)
 	case isFibreMessage(message):
 		return fibreAlarmId(info, message)
 	case isFibreMetricsMessage(message):

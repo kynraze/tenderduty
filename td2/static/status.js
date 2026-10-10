@@ -426,6 +426,10 @@ function fillDetail(name) {
     for (const node of chain.rpc_nodes || []) {
         appendFact(facts, 'RPC node', `${node.endpoint}${node.version ? ` · ${node.version}` : ''} · ${node.down ? 'down' : 'healthy'}`)
     }
+    if (chain.bridge) {
+        appendFact(facts, 'Bridge', chain.bridge.text)
+        facts.lastChild.lastChild.style.color = `var(--${chain.bridge.tone === 'ok' ? 'good' : chain.bridge.tone})`
+    }
     fillFibre(chain)
     const history = document.getElementById('detail-blocks')
     history.replaceChildren()

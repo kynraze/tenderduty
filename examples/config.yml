@@ -134,6 +134,11 @@ alert_defaults:
   # Celestia Fibre: alert when the validator is not a registered Fibre provider, its Fibre host is
   # unreachable, or the host's certificate is not this validator's. With fibre_metrics on, also alerts on
   # what Fibre reports. Run tenderduty on a different machine from Fibre. See docs/fibre.md.
+  # bridge_enabled: no
+  # bridge_severity: warning
+  # bridge_lag_blocks: 20
+  # bridge_lag_minutes: 5
+
   fibre_enabled: no
   # Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.
   fibre_severity: warning
@@ -147,3 +152,8 @@ alert_defaults:
   # fibre_endorsement_alert: no
   # fibre_endorsement_blobs: 50
   # fibre_endorsement_minutes: 120
+
+# In the chain file, next to public_fallback (see docs/bridge.md):
+# bridge:
+#   url: http://203.0.113.10:26658
+#   token_file: /etc/tenderduty/bridge-mocha.token

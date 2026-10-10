@@ -35,7 +35,7 @@ func expandValidators(c *Config) ([]string, error) {
 			copied := &ChainConfig{
 				name: name, ChainId: chain.ChainId, ValAddress: validator.ValAddress,
 				ValconsOverride: validator.ValconsOverride, ExtraInfo: chain.ExtraInfo,
-				Alerts: chain.Alerts, PublicFallback: chain.PublicFallback, Testnet: chain.Testnet,
+				Alerts: chain.Alerts, PublicFallback: chain.PublicFallback, Testnet: chain.Testnet, Bridge: chain.Bridge,
 				Nodes: make([]*NodeConfig, 0, len(validator.Nodes)+len(shared)),
 			}
 			for _, node := range validator.Nodes {

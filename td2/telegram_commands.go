@@ -131,6 +131,7 @@ func (c *Config) statusSummary() string {
 		if info.Window > 0 {
 			line += fmt.Sprintf(" · missed %s/%s", thousands(info.Missed), thousands(info.Window))
 		}
+		line += cc.bridgeSummary()
 		rows = append(rows, row{rank, line})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -209,6 +210,9 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 			}
 			lines = append(lines, statusField("🔌", "Node", text))
 		}
+	}
+	if text, _ := cc.bridgeStatus(); text != "" {
+		lines = append(lines, statusField("🌉", "Bridge", html.EscapeString(text)))
 	}
 	if fibre := cc.fibreReport(now); fibre != nil {
 		lines = append(append(lines, ""), fibre.telegramLines()...)

@@ -16,6 +16,7 @@ This is a fork of [blockpane/tenderduty](https://github.com/blockpane/tenderduty
 - Daily and weekly reports for Telegram, Discord and Slack.
 - One staged signing alert: missing blocks, close to jail, then jailed or out of the active set.
 - Governance and upgrade alerts, including Celestia version signalling; optional missed block proposals.
+- Celestia bridge: RPC reachability, header sync and sampling, see [bridge.md](docs/bridge.md).
 - Celestia Fibre: provider checks, metrics from Fibre itself, endorsements and a dashboard tab, see [fibre.md](docs/fibre.md).
 - Docker image at `ghcr.io/kynraze/tenderduty`.
 

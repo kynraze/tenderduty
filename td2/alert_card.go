@@ -200,6 +200,18 @@ var (
 )
 
 var raisedRules = []cardRule{
+	{regexp.MustCompile(`^Bridge on (\S+) is unreachable: (.+)$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotRed+" unreachable"), row("", "Reason", m[2])}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) rejected the token, check token_file$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotRed+" token rejected"), row("", "Check", "token_file")}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) is (\d+) blocks behind$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotYellow+" "+m[2]+" blocks behind")}}
+	}},
+	{regexp.MustCompile(`^Bridge sampling on (\S+) is stuck at (\d+)$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Sampling", dotYellow+" stuck at "+m[2])}}
+	}},
 	{regexp.MustCompile(`^Fibre is not endorsing on (\S+)$`), func(_ *alertMsg, m, rest []string) cardParts {
 		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("✍️", "Endorsed", dotRed+" stopped")}, used: true}
 		if len(rest) > 0 {
@@ -385,6 +397,12 @@ func metricsParts(chainId string, state alertField, kind string, rest []string) 
 
 // resolvedRules match the texts of resolved.go.
 var resolvedRules = []cardRule{
+	{regexp.MustCompile(`^Bridge OK on (\S+)$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotGreen+" OK")}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) (is back in sync|sampling resumed|check changed)$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotGreen+" "+m[2])}}
+	}},
 	{regexp.MustCompile(`^Fibre endorses again on (\S+)$`), func(_ *alertMsg, m, rest []string) cardParts {
 		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("✍️", "Endorsed", dotGreen+" endorsing again")}}
 		return p

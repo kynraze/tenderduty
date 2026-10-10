@@ -96,6 +96,10 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 	}
 	inspect(defaults)
 	defaults = mergeMaps(yamlMap{
+		"bridge_enabled":            false,
+		"bridge_severity":           "warning",
+		"bridge_lag_blocks":         20,
+		"bridge_lag_minutes":        5,
 		"fibre_endorsement_alert":   false,
 		"fibre_endorsement_blobs":   50,
 		"fibre_endorsement_minutes": 120,

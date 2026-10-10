@@ -217,6 +217,9 @@ func (msg *alertMsg) header() (icon, state string) {
 		}
 		return "✍️", "Fibre stopped"
 	}
+	if isBridgeMessage(msg.message) {
+		return bridgeLabel(msg)
+	}
 	if isFibreMessage(msg.message) {
 		return fibreLabel(msg)
 	}
@@ -958,6 +961,9 @@ func (cc *ChainConfig) watch() {
 		}
 		valInfo, _ = cc.validatorState()
 		if valInfo == nil || valInfo.Moniker == "not connected" {
+			if cc.alertSettings().BridgeAlerts {
+				cc.bridgeAlarms(false)
+			}
 			if !waitContext(cc.context(), time.Second) {
 				return
 			}
@@ -1107,6 +1113,9 @@ func (cc *ChainConfig) watch() {
 		}
 		if cc.alertSettings().UpgradeAlerts && valInfo.Valcons != "" {
 			cc.signalAlarms(valInfo, reconcile)
+		}
+		if cc.alertSettings().BridgeAlerts {
+			cc.bridgeAlarms(reconcile)
 		}
 		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" {
 			cc.fibreAlarms(valInfo, reconcile)
@@ -1308,6 +1317,11 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			id = signalAlarmId(valInfo, message)
 		case strings.HasPrefix(message, fibreEndorsementPrefix):
 			id = valInfo.Valcons + "fibreendorsement"
+		case isBridgeMessage(message):
+			if cc.alertSettings().BridgeAlerts {
+				continue
+			}
+			id = cc.bridgeAlarmID(message)
 		case isFibreMessage(message):
 			if cc.alertSettings().FibreAlerts {
 				continue

@@ -545,6 +545,7 @@ func enabledAlertFamilies(a AlertConfig) []string {
 		{"upgrade", a.UpgradeAlerts},
 		{"missed_proposal", a.ProposalAlerts},
 		{"fibre", a.FibreAlerts},
+		{"bridge", a.BridgeAlerts},
 	} {
 		if family.on {
 			groups = append(groups, family.name)

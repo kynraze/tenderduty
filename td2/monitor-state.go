@@ -63,6 +63,10 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 	if fibre := cc.fibreReport(time.Now()); fibre != nil {
 		status.Fibre = fibre.dashboard()
 	}
+	text, tone := cc.bridgeStatus()
+	if text != "" {
+		status.Bridge = &dash.BridgeStatus{Text: text, Tone: tone}
+	}
 	return status
 }
 

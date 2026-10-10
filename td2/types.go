@@ -182,6 +182,7 @@ type ChainConfig struct {
 	signalWatchSince    time.Time
 	signalLoaded        bool
 	signalUnsupported   bool // no x/signal, not asked again
+	bridge              bridgeState
 	fibre               fibreState
 	fibreLoaded         bool
 	fibreUnsupported    bool  // no x/valaddr, not asked again
@@ -211,7 +212,8 @@ type ChainConfig struct {
 	Alerts AlertConfig `yaml:"alerts"`
 	// PublicFallback determines if tenderduty should attempt to use public RPC endpoints in the situation that not
 	// explicitly defined RPC servers are available. Not recommended.
-	PublicFallback bool `yaml:"public_fallback"`
+	PublicFallback bool         `yaml:"public_fallback"`
+	Bridge         BridgeConfig `yaml:"bridge"`
 	// Nodes defines what RPC servers to connect to.
 	Nodes []*NodeConfig `yaml:"nodes"`
 }
@@ -239,6 +241,10 @@ func (cc *ChainConfig) mkUpdate(t metricType, v float64, node string) *promUpdat
 
 // AlertConfig defines the type of alerts to send for a ChainConfig
 type AlertConfig struct {
+	BridgeAlerts     bool   `yaml:"bridge_enabled"`
+	BridgeSeverity   string `yaml:"bridge_severity"`
+	BridgeLagBlocks  int64  `yaml:"bridge_lag_blocks"`
+	BridgeLagMinutes int    `yaml:"bridge_lag_minutes"`
 	// MissedBlocksAlerts follows missing blocks through jail risk and inactivity.
 	MissedBlocksAlerts bool `yaml:"missed_blocks_enabled"`
 
@@ -495,6 +501,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			problems = append(problems, fmt.Sprintf("error: %s has no chain configuration", k))
 			continue
 		}
+		bridgeFatal, bridgeProblems := validateBridge(k, v)
+		fatal = fatal || bridgeFatal
+		problems = append(problems, bridgeProblems...)
 		if v.ChainId == "" || v.ValAddress == "" {
 			fatal = true
 			problems = append(problems, fmt.Sprintf("error: %s requires chain_id and valoper_address", k))

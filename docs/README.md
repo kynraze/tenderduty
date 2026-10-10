@@ -14,6 +14,7 @@ This is a tool for validators running tendermint nodes. It sends notifications w
 - [Setting up Telegram](telegram.md)
 - [Prometheus Exports](prometheus.md)
 - [Celestia Fibre](fibre.md)
+- [Celestia bridge](bridge.md)
 - [Remotely Configuring Tenderduty](remote.md)
 - [Running on Akash](akash.md)
 
