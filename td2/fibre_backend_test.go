@@ -48,7 +48,7 @@ func TestFibreBackendAlertsAndLabels(t *testing.T) {
 			if r.cc.fibreReport(r.clock.now).dashboard().StorageBackend != backend {
 				t.Fatal("missing dashboard backend")
 			}
-			if got := strings.Join(r.cc.fibreReport(r.clock.now).telegramLines(), "\n"); !strings.Contains(got, "<b>Storage backend:</b> "+backend) {
+			if got := strings.Join(r.cc.fibreReport(r.clock.now).telegramLines(), "\n"); !strings.Contains(got, "🗃 <b>Shards:</b> — · "+backend) || strings.Contains(got, "<b>Storage backend:</b>") {
 				t.Fatal(got)
 			}
 			if backend == "local" && fibreBackendAdvice(backend) != "Check Fibre's data disk: space, health and permissions." {

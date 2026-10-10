@@ -148,33 +148,32 @@ func (r *fibreReport) telegramLines() []string {
 		}
 		lines = append(lines, statusField("📊", "Share", fmt.Sprintf("%d/%d rows · %s%s", r.Rows, fibreOriginalRows, share(100*float64(r.Rows)/fibreOriginalRows), note)))
 	}
-	switch {
-	case r.ShareKnown && !r.InActiveSet:
-	case m.HaveBudget && m.Budget == 0:
-		lines = append(lines, statusField("💾", "Budget", "unlimited (--unlimited-budget)"))
-	case r.Budget > 0:
-		budget := humanBinary(r.Budget)
-		if m.HaveBudget && m.Budget != r.Budget {
-			budget += " (Fibre reports " + humanBinary(m.Budget) + ")"
+	if m.HaveOccupancy || r.Budget > 0 || (m.HaveBudget && m.Budget == 0) || len(m.BackendNames) > 0 {
+		used := "—"
+		if m.HaveOccupancy {
+			used = humanBinary(m.Occupancy)
 		}
-		lines = append(lines, statusField("💾", "Budget", budget))
-	}
-	if m.HaveOccupancy {
-		used := humanBinary(m.Occupancy)
-		if r.Budget > 0 {
-			used += " of " + humanBinary(r.Budget) + " budget"
+		if m.HaveBudget && m.Budget == 0 {
+			used += " · unlimited budget"
+		} else {
+			if r.Budget > 0 {
+				used += " of " + humanBinary(r.Budget) + " budget"
+			}
+			if m.HaveOccupancy && m.HaveBudget && m.Budget > 0 {
+				used += " (" + html.EscapeString(percent(m.Occupancy, m.Budget)) + ")"
+			}
+			if r.Budget > 0 && m.HaveBudget && m.Budget != r.Budget {
+				used += " (Fibre reports " + humanBinary(m.Budget) + ")"
+			}
 		}
-		if m.HaveBudget && m.Budget > 0 {
-			used += " (" + html.EscapeString(percent(m.Occupancy, m.Budget)) + ")"
+		if len(m.BackendNames) > 0 {
+			used += " · " + html.EscapeString(strings.Join(m.BackendNames, ", "))
 		}
 		lines = append(lines, statusField("🗃", "Shards", used))
 	}
 
 	if !m.Found {
 		return append(lines, statusField("📨", "Metrics", "⚪ not received, see docs/fibre.md"))
-	}
-	if len(m.BackendNames) > 0 {
-		lines = append(lines, statusField("🗄", "Storage backend", html.EscapeString(strings.Join(m.BackendNames, ", "))))
 	}
 	w := m.Ten
 	span := "10m"

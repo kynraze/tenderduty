@@ -63,17 +63,18 @@ function budgetFacts(fibre) {
     }
 }
 
-test('Endorsing status stays visible with no Fibre metrics on both views', () => {
+test('Endorsing status stays on the tab and colours detail endorsements without metrics', () => {
     for (const endorsing of [
         { stopped: true, text: 'stopped since 10:01 · 0 of 140 blobs' },
         { stopped: false, text: 'last endorsed 2m ago' }
     ]) {
         const facts = budgetFacts({ endorsing, metrics_received: false })
         assert.equal(facts.panel.find(([label]) => label === 'Endorsing')[1], endorsing.text)
-        assert.equal(facts.detail.find(([label]) => label === 'Endorsing')[1], endorsing.text)
+        assert.equal(facts.detail.some(([label]) => label === 'Endorsing'), false)
+        assert.equal(facts.detail.find(([label]) => label === 'Endorsed (24h)')[1], 'none seen yet')
     }
     assert.match(fibreSource, /label === 'Endorsing' && f\.endorsing\?\.stopped.*var\(--critical\)/)
-    assert.match(statusSource, /label === 'Endorsing' && fibre\.endorsing\?\.stopped.*var\(--critical\)/)
+    assert.match(statusSource, /label === 'Endorsed \(24h\)' && fibre\.endorsing\?\.stopped.*var\(--critical\)/)
 })
 
 test('Shard budget combines occupancy and chain budget on both Fibre views', () => {
@@ -291,7 +292,10 @@ test('Backend labels, facts and upload failure note cover Fibre v10.4', () => {
     assert.ok(fibreSource.includes("Failed includes payments Fibre refused (e.g. the payer's escrow was too low) and uploads under the validator's min_upload_size."))
     const facts = budgetFacts({ storage_backend: 'local' })
     assert.ok(facts.panel.some(([label, text]) => label === 'Storage backend' && text === 'local'))
-    assert.ok(facts.detail.some(([label, text]) => label === 'Storage backend' && text === 'local'))
+    assert.equal(facts.detail.some(([label]) => label === 'Storage backend'), false)
+    assert.equal(facts.detail.find(([label]) => label === 'Shards')[1], 'Unknown of Unknown budget · local')
+    assert.equal(budgetFacts({ storage_backend: 'object' }).detail.find(([label]) => label === 'Shards')[1], 'Unknown of Unknown budget · object')
+    assert.equal(budgetFacts({ storage_backend: 'object, local', occupancy_known: true, occupancy: 605594, chain_budget: 74 * 1024 ** 3 }).detail.find(([label]) => label === 'Shards')[1], '591.4 KiB of 74 GiB budget · object, local')
 })
 
 
@@ -464,7 +468,8 @@ test('24h count bars sum local hours and leave missing and zero hours blank', ()
         hits[3].listeners.focus()
         assert.equal(tip.children[1].children.at(-1).text, '0')
         const labels = nodes.filter(n => n.tag === 'text' && n.attributes.y === 180)
-        assert.deepEqual(Array.from(labels, n => n.textContent), [0, 144, 287].map(i => new Date(context.points[i].time * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })))
+        assert.deepEqual(Array.from(labels, n => n.textContent), [0, 12, 24].map(hour => new Date(2026, 9, 6, hour).toLocaleTimeString(undefined, { hour: 'numeric' })))
+        assert.deepEqual(Array.from(labels, n => n.attributes.x), [0, 12, 24].map(i => hits[i].attributes.x + hits[i].attributes.width / 2))
         assert.equal(context.points[0].metrics.downloads_ok, 2)
     }
 })
@@ -534,4 +539,70 @@ test('Only the bucket containing the counting interval is faded', () => {
     assert.equal(textOf(context.chart.children[1]).includes('Still counting'), true)
     hits[0].listeners.focus()
     assert.equal(textOf(context.chart.children[1]).includes('Still counting'), false)
+})
+
+
+test('24h count axes have headroom and whole-number ticks while byte axes keep three ticks', () => {
+    const start = new Date(2026, 9, 6, 0, 15).getTime() / 1000
+    for (const id of ['endorsements', 'uploads', 'signing', 'errors', 'downloads', 'received']) {
+        for (const max of [1, 4]) {
+            const context = chartContext('24h')
+            context.def = definitions.find(d => d.id === id)
+            context.points = Array.from({ length: 288 }, (_, i) => ({ time: start + i * 300, metrics: {
+                [context.def.fields[0]]: i % 12 === 0 ? max : 0
+            } }))
+            vm.runInContext("chart = drawChart(def, points, 500, 'auto')", context)
+            const ticks = context.chart.children[0].children.filter(n => n.tag === 'text' && n.attributes.x === 54).map(n => n.textContent)
+            // count tops: 1 -> 2, 4 -> 5 (2.5 dropped)
+            assert.deepEqual(Array.from(ticks), id === 'received' ? ['0 B', max === 1 ? '0.5 B' : '2 B', max + ' B'] : max === 1 ? ['0', '1', '2'] : ['0', '5'])
+        }
+    }
+})
+
+function detailFacts(fibre) {
+    const surfaces = new Map()
+    const node = (tag, text = '') => ({
+        tag, text, children: [], style: {},
+        appendChild(child) { this.children.push(child); this.lastChild = child },
+        replaceChildren() { this.children = []; this.textContent = '' }
+    })
+    const context = vm.createContext({
+        chain: { name: 'Chain', total_power: 100, fibre }, number: String, age: at => `${at}s ago`,
+        element: (tag, cls, text) => node(tag, text),
+        chainDialog: { close() { context.closed = true } },
+        document: { getElementById(id) {
+            if (!surfaces.has(id)) surfaces.set(id, node('div'))
+            return surfaces.get(id)
+        } }
+    })
+    const code = statusSource.slice(statusSource.indexOf('function bytesText('), statusSource.indexOf('// render() redraws'))
+    vm.runInContext(code + 'fillFibre(chain)', context)
+    return { surfaces, context, labels: surfaces.get('detail-fibre-facts').children.map(f => f.children[0].text) }
+}
+
+test('Detail Fibre shows exactly nine facts and links to the selected chain', () => {
+    const fibre = { registered: true, reachable: true, identity: 'verified', host: 'host', version: 'v10.4', metrics_received: true, metrics_at: 10, last_upload_at: 20, endorsing: { stopped: true } }
+    const { surfaces, context, labels } = detailFacts(fibre)
+    assert.deepEqual(labels, ['Provider', 'Reachability', 'Identity', 'Fibre version', 'Share of rows', 'Shards', 'Endorsed (24h)', 'Last successful upload', 'Metrics received'])
+    assert.equal(surfaces.get('detail-fibre-facts').children[6].lastChild.style.color, 'var(--critical)')
+    const note = surfaces.get('detail-fibre-note')
+    assert.equal(note.textContent, '')
+    assert.equal(note.children.length, 1)
+    const link = note.children[0]
+    assert.equal(link.text, 'More in the Fibre tab →')
+    assert.equal(link.href, '#fibre')
+    const select = context.document.getElementById('fibre-chain')
+    let selected
+    select.onchange = event => { selected = event.target.value }
+    link.onclick()
+    assert.equal(selected, 'Chain')
+    assert.equal(context.closed, true)
+})
+
+test('Detail Fibre retains missing-metrics note and hides unknown provider facts', () => {
+    const { surfaces, labels } = detailFacts({ registered: false, metrics_received: false })
+    assert.deepEqual(labels, ['Provider', 'Share of rows', 'Shards', 'Endorsed (24h)', 'Fibre metrics'])
+    assert.equal(surfaces.get('detail-fibre-facts').lastChild.lastChild.text, 'Not received, see docs/fibre.md')
+    assert.match(surfaces.get('detail-fibre-note').textContent, /^Share and budget come from the chain/)
+    assert.equal(surfaces.get('detail-fibre-note').children.at(-1).href, '#fibre')
 })

@@ -2,6 +2,7 @@ package tenderduty
 
 import (
 	"encoding/json"
+	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -55,7 +56,6 @@ func TestFibreStatusText(t *testing.T) {
 	const reachable = "📡 <b>Reachable:</b> 🟢 yes"
 	const verified = "🔐 <b>Identity:</b> 🟢 verified"
 	const share = "📊 <b>Share:</b> 148/4096 rows · 3.61% min"
-	const budget = "💾 <b>Budget:</b> 74 GiB"
 	const used = "🗃 <b>Shards:</b> 12 MiB of 74 GiB budget (0.02%)"
 	const uploads = "⬆️ <b>Uploads 10m:</b> ✅ 42 · ❌ 0 · 🚫 0"
 	const last = "🕒 <b>Last successful upload:</b> 18s ago"
@@ -74,41 +74,41 @@ func TestFibreStatusText(t *testing.T) {
 		chain   func(cc *ChainConfig)
 		want    []string
 	}{
-		{"all good", true, nil, nil, with(share, budget, used)},
+		{"all good", true, nil, nil, with(share, used)},
 		{"unreachable", true, nil, func(cc *ChainConfig) {
 			cc.fibre.Reachable, cc.fibre.DownSince, cc.fibre.DownReason = false, time.Date(2026, 10, 3, 12, 5, 34, 0, time.UTC), "connection refused"
-		}, metrics(head, host, "📡 <b>Reachable:</b> 🔴 no, for 5m (connection refused)", verified, share, budget, used)},
+		}, metrics(head, host, "📡 <b>Reachable:</b> 🔴 no, for 5m (connection refused)", verified, share, used)},
 		{"unreachable with no reason", true, nil, func(cc *ChainConfig) { cc.fibre.Reachable, cc.fibre.DownReason = false, "" },
-			metrics(head, host, "📡 <b>Reachable:</b> 🔴 no", verified, share, budget, used)},
+			metrics(head, host, "📡 <b>Reachable:</b> 🔴 no", verified, share, used)},
 		{"not registered", true, nil, func(cc *ChainConfig) { cc.fibre = fibreState{} },
-			metrics(head, "🌐 <b>Host:</b> 🔴 not registered on the chain", share, budget, used)},
+			metrics(head, "🌐 <b>Host:</b> 🔴 not registered on the chain", share, used)},
 		{"identity failed", true, nil, func(cc *ChainConfig) { cc.fibre.IdentityOK, cc.fibre.IdentityError = false, "not signed" },
-			metrics(head, host, reachable, "🔐 <b>Identity:</b> 🔴 NOT verified", share, budget, used)},
+			metrics(head, host, reachable, "🔐 <b>Identity:</b> 🔴 NOT verified", share, used)},
 		{"no consensus key", true, nil, func(cc *ChainConfig) { cc.fibre.KeyKnown = false },
-			metrics(head, host, reachable, "🔐 <b>Identity:</b> ⚪ not checked", share, budget, used)},
-		{"no metrics", false, nil, nil, []string{"🧵 <b>Fibre</b>", host, reachable, verified, share, budget, noMetrics}},
+			metrics(head, host, reachable, "🔐 <b>Identity:</b> ⚪ not checked", share, used)},
+		{"no metrics", false, nil, nil, []string{"🧵 <b>Fibre</b>", host, reachable, verified, share, "🗃 <b>Shards:</b> — of 74 GiB budget", noMetrics}},
 		{"no metrics and not registered", false, nil, func(cc *ChainConfig) { cc.fibre = fibreState{} },
-			[]string{"🧵 <b>Fibre</b>", "🌐 <b>Host:</b> 🔴 not registered on the chain", share, budget, noMetrics}},
+			[]string{"🧵 <b>Fibre</b>", "🌐 <b>Host:</b> 🔴 not registered on the chain", share, "🗃 <b>Shards:</b> — of 74 GiB budget", noMetrics}},
 		{"unlimited budget", true, func(f *fibreFeed) { f.budget = i64(0) }, nil,
-			with(share, "💾 <b>Budget:</b> unlimited (--unlimited-budget)", "🗃 <b>Shards:</b> 12 MiB of 74 GiB budget")},
+			with(share, "🗃 <b>Shards:</b> 12 MiB · unlimited budget")},
 		{"not in the active set", true, nil, func(cc *ChainConfig) { cc.valInfo.VotingPower = 0 },
 			with("📊 <b>Share:</b> ⚪ not in the active set, no rows", "🗃 <b>Shards:</b> 12 MiB (0.02%)")},
 		{"the chain's parameter not read", true, nil, func(cc *ChainConfig) { cc.fibreFullStake = 0 }, with(share, "🗃 <b>Shards:</b> 12 MiB (0.02%)")},
 		{"the validator set not read", true, nil, func(cc *ChainConfig) { cc.valInfo.VotingPower, cc.valInfo.TotalPower = 0, 0 }, with("🗃 <b>Shards:</b> 12 MiB (0.02%)")},
 		{"Fibre reports another budget", true, func(f *fibreFeed) { f.budget = i64(70 << 30) }, nil,
-			with(share, "💾 <b>Budget:</b> 74 GiB (Fibre reports 70 GiB)", used)},
+			with(share, "🗃 <b>Shards:</b> 12 MiB of 74 GiB budget (0.02%) (Fibre reports 70 GiB)")},
 		{"a share above the minimum", true, nil, func(cc *ChainConfig) { cc.valInfo.VotingPower = 25_000 },
-			with("📊 <b>Share:</b> 3072/4096 rows · 75%", "💾 <b>Budget:</b> 1.5 TiB (Fibre reports 74 GiB)", "🗃 <b>Shards:</b> 12 MiB of 1.5 TiB budget (0.02%)")},
+			with("📊 <b>Share:</b> 3072/4096 rows · 75%", "🗃 <b>Shards:</b> 12 MiB of 1.5 TiB budget (0.02%) (Fibre reports 74 GiB)")},
 		{"every row", true, nil, func(cc *ChainConfig) { cc.valInfo.VotingPower = 50_000 },
-			with("📊 <b>Share:</b> 4096/4096 rows · 100% max", "💾 <b>Budget:</b> 2 TiB (Fibre reports 74 GiB)", "🗃 <b>Shards:</b> 12 MiB of 2 TiB budget (0.02%)")},
-		{"a little used", true, func(f *fibreFeed) { f.occupancy = i64(1 << 20) }, nil, with(share, budget, "🗃 <b>Shards:</b> 1 MiB of 74 GiB budget (&lt;0.01%)")},
+			with("📊 <b>Share:</b> 4096/4096 rows · 100% max", "🗃 <b>Shards:</b> 12 MiB of 2 TiB budget (0.02%) (Fibre reports 74 GiB)")},
+		{"a little used", true, func(f *fibreFeed) { f.occupancy = i64(1 << 20) }, nil, with(share, "🗃 <b>Shards:</b> 1 MiB of 74 GiB budget (&lt;0.01%)")},
 		{"storage errors", true, func(f *fibreFeed) { f.put, f.prune, f.timeout = 2, 1, 1 }, nil,
-			[]string{head, host, reachable, verified, share, budget, used, "🗄 <b>Storage backend:</b> object", uploads, last, signing, "🗄 <b>Storage:</b> 🔴 4 errors", received}},
+			[]string{head, host, reachable, verified, share, used + " · object", uploads, last, signing, "🗄 <b>Storage:</b> 🔴 4 errors", received}},
 		{"one storage error", true, func(f *fibreFeed) { f.err = 1 }, nil,
-			[]string{head, host, reachable, verified, share, budget, used, "🗄 <b>Storage backend:</b> object", uploads, last, signing, "🗄 <b>Storage:</b> 🔴 1 error", received}},
+			[]string{head, host, reachable, verified, share, used + " · object", uploads, last, signing, "🗄 <b>Storage:</b> 🔴 1 error", received}},
 		{"text from outside is escaped", true, nil, func(cc *ChainConfig) {
 			cc.fibre.Host, cc.fibre.Reachable, cc.fibre.DownSince, cc.fibre.DownReason = "h<1>:1", false, time.Time{}, `a<b> & "c"`
-		}, metrics(head, "🌐 <b>Host:</b> <code>h&lt;1&gt;:1</code>", "📡 <b>Reachable:</b> 🔴 no (a&lt;b&gt; &amp; &#34;c&#34;)", verified, share, budget, used)},
+		}, metrics(head, "🌐 <b>Host:</b> <code>h&lt;1&gt;:1</code>", "📡 <b>Reachable:</b> 🔴 no (a&lt;b&gt; &amp; &#34;c&#34;)", verified, share, used)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := statusRig(t, tc.metrics, tc.feed)
@@ -119,14 +119,39 @@ func TestFibreStatusText(t *testing.T) {
 			if got := r.status(); got != strings.Join(want, "\n") {
 				t.Fatalf("got\n%s\nwant\n%s", got, strings.Join(want, "\n"))
 			}
+			if strings.Contains(r.status(), "<b>Budget:</b>") || strings.Contains(r.status(), "<b>Storage backend:</b>") {
+				t.Fatal("separate Budget or Storage backend line")
+			}
 			telegramHTML(t, r.status())
 			// keep lines short for phones
 			for _, line := range strings.Split(r.status(), "\n") {
-				if n := len([]rune(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(line, ""))); n > 60 {
+				limit := 60
+				if strings.Contains(line, "<b>Shards:</b>") {
+					limit = 80
+				}
+				if n := len([]rune(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(line, ""))); n > limit {
 					t.Errorf("%d characters: %s", n, line)
 				}
 			}
 		})
+	}
+}
+
+func TestFibreStatusBackendsOnShards(t *testing.T) {
+	for _, backends := range [][]string{{"local"}, {"object"}, {"object", "local"}, {"s3<&>"}} {
+		for _, occupancy := range []bool{false, true} {
+			r := &fibreReport{Metrics: fibreSnapshot{Found: true, HaveOccupancy: occupancy, Occupancy: 12 << 20, BackendNames: backends}}
+			used := "—"
+			if occupancy {
+				used = "12 MiB"
+			}
+			want := "🗃 <b>Shards:</b> " + used + " · " + html.EscapeString(strings.Join(backends, ", "))
+			got := strings.Join(r.telegramLines(), "\n")
+			if !strings.Contains(got, want) || strings.Contains(got, "<b>Storage backend:</b>") {
+				t.Fatalf("got %q, want %q without a separate Storage backend line", got, want)
+			}
+			telegramHTML(t, got)
+		}
 	}
 }
 

@@ -278,6 +278,10 @@
         const step = [1, 2, 4, 5, 10].find(s => s * power >= scaled * 0.999)
         return step * power * unit
     }
+    function countTop(v) {
+        const power = 10 ** Math.floor(Math.log10(v))
+        return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(s => s * power).find(t => t >= v * 0.999 && Number.isInteger(t))
+    }
     // cap spikes at twice the 90th percentile; tooltips retain actual values
     function robustTop(values) {
         const sorted = values.filter(v => v > 0).sort((a, b) => a - b)
@@ -335,12 +339,14 @@
         const highest = def.unit === 'ms'
             ? robustTop(points.flatMap(p => def.fields.map(f => value(p, f) || 0)))
             : Math.max(0, ...points.map(p => def.stacked && mode !== 'line' ? sum(p) : Math.max(0, ...def.fields.map(f => value(p, f) || 0))))
-        const top1 = def.strip ? 1 : niceTop(Math.max(def.unit === 'ms' ? 0.1 : 1, highest, ...points.flatMap(p => lines.map(f => value(p, f) || 0))), def.unit === 'bytes')
+        const peak = Math.max(def.unit === 'ms' ? 0.1 : 1, highest, ...points.flatMap(p => lines.map(f => value(p, f) || 0)))
+        // counts: whole-number top with headroom, so one blob an hour is not a full bar
+        const top1 = def.strip ? 1 : def.unit === 'count' && !def.log ? countTop(peak * 1.2) : niceTop(peak, def.unit === 'bytes')
         // extra headroom lowers the right-axis line
         const top2 = niceTop(2 * Math.max(1, ...points.map(p => Math.max(0, ...right.map(f => value(p, f) || 0)))), false)
         const y = (v, onRight) => bottom - (def.log && !onRight ? Math.max(0, (Math.log10(v) - logBottom) / (logTop - logBottom)) : Math.min(v, onRight ? top2 : top1) / (onRight ? top2 : top1)) * (bottom - top)
         const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${def.title}, ${selected}, ${range}: ${headline(def, axisPoints).map(([t]) => t).join(', ') || 'no observations'}` })
-        const ticks = def.log ? Array.from({ length: logTop - logBottom + 1 }, (_, i) => 10 ** (logBottom + i)) : [0, top1 / 2, top1]
+        const ticks = def.log ? Array.from({ length: logTop - logBottom + 1 }, (_, i) => 10 ** (logBottom + i)) : [0, top1 / 2, top1].filter(tick => def.unit === 'bytes' || def.unit === 'ms' || def.strip || Number.isInteger(tick))
         if (!def.strip) for (const tick of ticks) {
             const fraction = tick / top1
             const at = y(tick)
@@ -427,10 +433,10 @@
         }
         const last = points.length - 1
         if (counting && !def.strip) chart.append(svg('rect', { x: x(last) - step / 2, y: top, width: end - x(last) + step / 2, height: bottom - top + 1, fill: 'var(--panel)', 'fill-opacity': 0.6 }))
-        for (const i of [0, Math.floor(axisPoints.length / 2), axisPoints.length - 1]) {
-            const label = svg('text', { x: left + (i + 0.5) * (end - left) / axisPoints.length, y: bottom + 22, 'text-anchor': i === 0 ? 'start' : i === axisPoints.length - 1 ? 'end' : 'middle', fill: 'var(--subtle)', 'font-size': def.mini ? 11 : 12 })
-            const date = new Date(axisPoints[i].time * 1000)
-            label.textContent = ['7d', '30d'].includes(range) ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        for (const i of [0, Math.floor(points.length / 2), points.length - 1]) {
+            const label = svg('text', { x: x(i), y: bottom + 22, 'text-anchor': i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle', fill: 'var(--subtle)', 'font-size': def.mini ? 11 : 12 })
+            const date = new Date(points[i].time * 1000)
+            label.textContent = ['7d', '30d'].includes(range) ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date.toLocaleTimeString(undefined, hours ? { hour: 'numeric' } : { hour: '2-digit', minute: '2-digit' })
             chart.append(label)
         }
         const tip = node('div', undefined, 'fibre-tip'); tip.hidden = true; tip.setAttribute('role', 'status')
