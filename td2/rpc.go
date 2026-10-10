@@ -53,6 +53,12 @@ func (cc *ChainConfig) newRpc() error {
 			l(msg)
 			return
 		}
+		if !websocketWorks(cc.context(), u) {
+			msg = fmt.Sprintf("❌ %s refuses websocket connections, tenderduty needs /websocket", u)
+			down = true
+			l(msg)
+			return
+		}
 		cc.setNoNodes(false)
 		cc.setClient(client)
 		return
@@ -158,6 +164,11 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 					}
 					if status.SyncInfo.CatchingUp {
 						alert("not synced")
+						return
+					}
+
+					if !websocketWorks(ctx, node.Url) {
+						alert("refusing websocket connections")
 						return
 					}
 

@@ -208,9 +208,6 @@ func (cc *ChainConfig) publicFallback(tryUrl func(string) (string, bool, bool)) 
 			continue
 		}
 		tried[node] = true
-		if !websocketWorks(cc.context(), node) {
-			continue
-		}
 		if _, failed, _ := tryUrl(node); failed {
 			continue
 		}

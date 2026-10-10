@@ -95,7 +95,7 @@ A destination is only reached when it is enabled in `config.yml`; the chain foll
 
 ## Node Settings
 
-Nodes are tried in order until one answers, so put your own first. Without `nodes` and with `public_fallback`, tenderduty uses only public nodes. These can be unreliable and use other validators' resources. Some proxies lack the websockets tenderduty needs.
+Nodes are tried in order until one answers, so put your own first. Without `nodes` and with `public_fallback`, tenderduty uses only public nodes. These can be unreliable and use other validators' resources. A node that refuses `/websocket` counts as down, some proxies don't pass it through.
 
 | Config Setting | Description |
 | --- | --- |

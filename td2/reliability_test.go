@@ -57,6 +57,13 @@ func TestFailedRefreshRetainsLastKnownSigningState(t *testing.T) {
 }
 
 func rpcStatus(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/websocket" {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
 	var request struct {
 		ID interface{} `json:"id"`
 	}
@@ -78,6 +85,28 @@ func TestRPCFailoverUsesIndependentTimeouts(t *testing.T) {
 	}
 	if chain.clientSnapshot().Remote() != good.URL || chain.hasNoNodes() || chain.Nodes[1].snapshot().down {
 		t.Fatal("healthy backup was not selected")
+	}
+}
+
+func TestNodeRefusingWebsocketCountsAsDown(t *testing.T) {
+	auditConfig(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/websocket" {
+			http.Error(w, "no", http.StatusBadRequest)
+			return
+		}
+		rpcStatus(w, r)
+	}))
+	defer server.Close()
+	chain := &ChainConfig{ChainId: "test-chain", Nodes: []*NodeConfig{{Url: server.URL}}}
+	if err := chain.newRpc(); err == nil {
+		t.Fatal("node refusing websocket connections was accepted")
+	}
+	if !chain.hasNoNodes() {
+		t.Fatal("chain with no usable endpoints was not marked as having no nodes")
+	}
+	if !chain.Nodes[0].snapshot().down {
+		t.Fatal("node refusing websocket connections was not marked down")
 	}
 }
 
