@@ -52,7 +52,7 @@ These go under `alerts`. Anything left out comes from `alert_defaults`. Set any 
 | Config Setting | Description |
 | --- | --- |
 | `missed_blocks_enabled` | One alert per validator: `consecutive_missed` blocks in a row (warning), close to jail (critical), then jailed (`jailed since ... · can unjail from ...`), tombstoned or not in the active set (critical). Stage changes replace the previous stage silently, with one recovery at the end. On by default. |
-| `consecutive_missed` | Blocks missed in a row before the warning. 5 when empty. |
+| `consecutive_missed` | Blocks missed in a row before the warning. 5 when empty. It recovers after 2 minutes without another run, a single missed block does not hold it. |
 | `jail_risk_percent` | Percent of allowed misses used before the critical alert, even with intermittent misses. 90 when empty. |
 | `jail_risk_minutes` | Also alert critically if, while missing blocks, jailing is within this many minutes at the chain's block time. 60 when empty. |
 | `stalled_enabled` | Alert critically when the chain stops producing blocks. On by default. |

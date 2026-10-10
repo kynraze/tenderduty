@@ -625,7 +625,7 @@ func raisedParts(msg *alertMsg, first string, rest []string, state string) (card
 	}
 	if strings.Contains(first, " is missing blocks on ") {
 		parts := strings.SplitN(first, " is missing blocks on ", 2)
-		return cardParts{ident: who(parts[0], parts[1]), state: append([]alertField{row("⚠️", "Status", "missing blocks")}, noteFields(rest)...), used: true}, true
+		return cardParts{ident: who(parts[0], parts[1]), state: append([]alertField{row("⚠️", "Status", "missing blocks"), row("⏱", "Recovers", "after "+reportDuration(missedRecoverAfter)+" without another run of missed blocks")}, noteFields(rest)...), used: true}, true
 	}
 	if strings.Contains(first, " is close to jail on ") {
 		parts := strings.SplitN(first, " is close to jail on ", 2)

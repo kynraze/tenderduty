@@ -145,6 +145,7 @@ type ChainConfig struct {
 	monitoring      bool
 	monitoringSince time.Time
 	jailedSince     time.Time
+	signedSince     time.Time
 	slash           slashDetails
 	slashMux        sync.Mutex
 	slashSearchDone bool

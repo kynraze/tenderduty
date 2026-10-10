@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// a missing blocks alarm resolves after this long without another run of consecutive_missed
+var missedRecoverAfter = 2 * time.Minute
+
 func (a AlertConfig) consecutiveEnabled() bool {
 	return a.MissedBlocksAlerts && a.ConsecutiveAlerts
 }
@@ -138,6 +141,14 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 		wanted = fmt.Sprintf("%s is missing blocks on %s", val.Moniker, cc.ChainId)
 		severity = "warning"
 	}
+	cc.stateMux.Lock()
+	if consecutive >= float64(threshold) {
+		cc.signedSince = time.Time{}
+	} else if cc.signedSince.IsZero() {
+		cc.signedSince = time.Now()
+	}
+	clearFor := time.Since(cc.signedSince)
+	cc.stateMux.Unlock()
 	active := make(map[string]bool)
 	for message := range activeMessages(cc.name, "") {
 		if isJailAlarm(message) {
@@ -188,6 +199,9 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 		}
 		if wanted == "" && jailStage(message) == "missed" && settings.consecutiveEnabled() {
 			if _, observed, _ := cc.blockState(); !observed {
+				continue
+			}
+			if clearFor < missedRecoverAfter {
 				continue
 			}
 		}

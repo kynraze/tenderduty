@@ -116,6 +116,8 @@ func TestSigningStageSwitches(t *testing.T) {
 }
 
 func TestSigningRecoveryAndDisabledCleanup(t *testing.T) {
+	defer func(d time.Duration) { missedRecoverAfter = d }(missedRecoverAfter)
+	missedRecoverAfter = 0
 	for _, disable := range []bool{false, true} {
 		c, cc := mergedAlertFixture(t, "", "")
 		cc.valInfo.Missed, cc.statConsecutiveMiss = 100, 5

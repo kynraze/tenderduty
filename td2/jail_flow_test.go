@@ -305,3 +305,35 @@ func TestCloseToJailDoesNotStepBack(t *testing.T) {
 		}
 	}
 }
+
+func TestMissedRecoveryWaitsForAQuietRun(t *testing.T) {
+	c := auditConfig(t)
+	val := &ValInfo{Moniker: "validator", Valcons: "cons", Bonded: true, Missed: 100, MaxMissed: 9990}
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", valInfo: val, observedBlock: true, blockTime: 6 * time.Second}
+	cc.Alerts.MissedBlocksAlerts, cc.Alerts.ConsecutiveAlerts, cc.Alerts.ConsecutiveMissed = true, true, 5
+	c.Chains[cc.name] = cc
+	const message = "validator is missing blocks on chain-1"
+	cc.jailAlarms(val, 5, false)
+	if !alarmIsActive(cc.name, message) {
+		t.Fatal("missing blocks alarm not raised")
+	}
+	cc.jailAlarms(val, 0, false)
+	if !alarmIsActive(cc.name, message) {
+		t.Fatal("recovered on the first signed block")
+	}
+	cc.stateMux.Lock()
+	cc.signedSince = time.Now().Add(-3 * time.Minute)
+	cc.stateMux.Unlock()
+	cc.jailAlarms(val, 5, false)
+	cc.jailAlarms(val, 0, false)
+	if !alarmIsActive(cc.name, message) {
+		t.Fatal("a new run of misses did not restart the wait")
+	}
+	cc.stateMux.Lock()
+	cc.signedSince = time.Now().Add(-3 * time.Minute)
+	cc.stateMux.Unlock()
+	cc.jailAlarms(val, 2, false)
+	if alarmIsActive(cc.name, message) {
+		t.Fatal("a few misses below the threshold held the recovery")
+	}
+}
