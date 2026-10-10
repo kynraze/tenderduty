@@ -661,3 +661,27 @@ func TestReportHeaderCountsIncidentsApart(t *testing.T) {
 		t.Fatalf("header %q", got)
 	}
 }
+
+func TestReportSkipsAnnouncements(t *testing.T) {
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	history := []reportIncident{
+		{Chain: "Chain", Key: "Proposal #12 is now in voting period\nCommunity pool spend", Kind: "New proposal", Start: now.Add(-4 * time.Hour), End: now.Add(-time.Hour)},
+		{Chain: "Chain", Key: "Upgrade v5 at height 1,000", Kind: "Upgrade", Start: now.Add(-3 * time.Hour), End: now.Add(-time.Hour)},
+		{Chain: "Chain", Key: "validator is missing blocks on chain-1", Kind: "Missed blocks", Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour)},
+	}
+	lines, count, longest := reportIncidents(history, "Chain", now.Add(-24*time.Hour), now)
+	if count != 1 || len(lines) != 1 || !strings.HasPrefix(lines[0], "Missed blocks") {
+		t.Fatalf("announcements counted: count %d, lines %v", count, lines)
+	}
+	if longest != time.Hour {
+		t.Fatalf("announcements affected longest incident: %s", longest)
+	}
+}
+
+func TestReportDurationUnderAMinute(t *testing.T) {
+	for d, want := range map[time.Duration]string{0: "0m", 30 * time.Second: "<1m", time.Minute: "1m", 90 * time.Minute: "1h 30m"} {
+		if got := reportDuration(d); got != want {
+			t.Errorf("reportDuration(%s) = %q, want %q", d, got, want)
+		}
+	}
+}

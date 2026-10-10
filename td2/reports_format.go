@@ -117,6 +117,9 @@ func reportDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
+	if d > 0 && d < time.Minute {
+		return "<1m"
+	}
 	minutes := int64(d / time.Minute)
 	days, hours, mins := minutes/1440, minutes%1440/60, minutes%60
 	parts := make([]string, 0, 3)
@@ -132,11 +135,20 @@ func reportDuration(d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
+func reportNotice(key string) bool {
+	first, _, _ := strings.Cut(key, "\n")
+	return strings.HasPrefix(first, "Proposal #") || cardSignalStart.MatchString(first) ||
+		cardSignalThreshold.MatchString(first) || cardUpgrade.MatchString(first) || cardSignalUpgrade.MatchString(first)
+}
+
 func reportIncidents(history []reportIncident, chain string, start, end time.Time) ([]string, int, time.Duration) {
 	lines := make([]string, 0)
 	count := 0
 	longest := time.Duration(0)
 	for _, incident := range history {
+		if reportNotice(incident.Key) {
+			continue
+		}
 		if incident.Chain != chain || !incident.Start.Before(end) || (!incident.End.IsZero() && !incident.End.After(start)) {
 			continue
 		}
