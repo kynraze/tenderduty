@@ -200,6 +200,42 @@ var (
 )
 
 var raisedRules = []cardRule{
+	{regexp.MustCompile(`^Bridge on (\S+) stopped sending metrics$`), func(_ *alertMsg, m, rest []string) cardParts {
+		value := "not received"
+		if len(rest) > 0 {
+			value += " since " + strings.TrimPrefix(rest[0], "last received ")
+		}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Metrics", dotRed+" "+value), row("", "Why", "OTel alerts (peers, serving, pruning) are paused")}, used: true}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) stopped pruning$`), func(_ *alertMsg, m, rest []string) cardParts {
+		value := "stalled"
+		if len(rest) > 0 {
+			value = "stalled at " + strings.TrimPrefix(rest[0], "stuck at ")
+		}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("", "Why", "disk keeps growing")}, used: true}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) is failing to prune$`), func(_ *alertMsg, m, rest []string) cardParts {
+		value := "blocks failed"
+		if len(rest) > 0 {
+			value = rest[0]
+		}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("", "Why", "those blocks stay on disk")}, used: true}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) has (too few|no) full peers$`), func(_ *alertMsg, m, rest []string) cardParts {
+		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotRed+" too few full peers")}, used: true}
+		if len(rest) > 0 {
+			p.state = append(p.state, row("", "Peers", rest[0]))
+		}
+		return p
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) is failing to serve data$`), func(_ *alertMsg, m, rest []string) cardParts {
+		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Serving", dotRed+" most requests failing")}, used: true}
+		if len(rest) > 0 {
+			p.state = append(p.state, row("", "Requests", rest[0]))
+		}
+		p.state = append(p.state, row("", "Check", "disk and bridge logs"))
+		return p
+	}},
 	{regexp.MustCompile(`^Bridge on (\S+) is unreachable: (.+)$`), func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotRed+" unreachable"), row("", "Reason", m[2])}}
 	}},
@@ -397,6 +433,18 @@ func metricsParts(chainId string, state alertField, kind string, rest []string) 
 
 // resolvedRules match the texts of resolved.go.
 var resolvedRules = []cardRule{
+	{regexp.MustCompile(`^Bridge on (\S+) sends metrics again$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Metrics", dotGreen+" received again")}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) (is pruning again|prunes again)$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotGreen+" pruning again")}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) has (enough )?full peers again$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotGreen+" enough full peers again")}}
+	}},
+	{regexp.MustCompile(`^Bridge on (\S+) serves data again$`), func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Serving", dotGreen+" serves data again")}}
+	}},
 	{regexp.MustCompile(`^Bridge OK on (\S+)$`), func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotGreen+" OK")}}
 	}},

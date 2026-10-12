@@ -21,7 +21,21 @@ type BridgeConfig struct {
 	token     string
 }
 
+var bridgePruneWindow = time.Hour
+var bridgeMetricsWindow = 5 * time.Minute
+
 type bridgeState struct {
+	LastPruned, FailedPrunes              int64
+	PrunerKnown                           bool
+	Archival, ModeKnown                   bool
+	PrunedAt, FailingSince                time.Time
+	PrunedHead                            int64
+	MetricsAt, StartedAt, NoPeersSince    time.Time
+	Version                               string
+	FullPeers, ArchivalPeers              int64
+	PeersKnown                            bool
+	series                                map[string]bridgeSeries
+	responses                             []bridgeDelta
 	Loaded, Up, TokenRejected             bool
 	Failures                              int
 	Head, Lag, Sampled, Network           int64
@@ -162,7 +176,7 @@ func (cc *ChainConfig) refreshBridge(ctx context.Context, now time.Time) {
 		if s.DownSince.IsZero() {
 			s.DownSince = now
 		}
-		s.BehindSince, s.SamplingSince = time.Time{}, time.Time{}
+		s.BehindSince, s.SamplingSince, s.NoPeersSince = time.Time{}, time.Time{}, time.Time{}
 		return
 	}
 	s.Failures, s.Reason, s.DownSince = 0, "", time.Time{}
@@ -211,10 +225,24 @@ func isBridgeMessage(message string) bool {
 	return strings.HasPrefix(message, "Bridge on ") || strings.HasPrefix(message, "Bridge sampling on ")
 }
 
+func bridgeMetricKind(kind string) bool {
+	return kind == "metrics_stopped" || kind == "no_peers" || kind == "serving" || kind == "prune_stalled" || kind == "prune_failing"
+}
+
 func bridgeKind(message string) string {
 	switch {
 	case strings.HasPrefix(message, "Bridge sampling on "):
 		return "sampling"
+	case strings.Contains(message, " has too few full peers") || strings.Contains(message, " has no full peers"):
+		return "no_peers"
+	case strings.Contains(message, " is failing to serve data"):
+		return "serving"
+	case strings.Contains(message, " stopped sending metrics"):
+		return "metrics_stopped"
+	case strings.Contains(message, " stopped pruning"):
+		return "prune_stalled"
+	case strings.Contains(message, " is failing to prune"):
+		return "prune_failing"
 	case strings.Contains(message, " rejected the token"):
 		return "token"
 	case strings.Contains(message, " is unreachable:"):
@@ -229,6 +257,16 @@ func (cc *ChainConfig) bridgeAlarmID(message string) string {
 
 func bridgeResolution(message, chain string) resolution {
 	switch bridgeKind(message) {
+	case "metrics_stopped":
+		return resolution{"\u2705", "Bridge metrics", "Bridge on " + chain + " sends metrics again"}
+	case "no_peers":
+		return resolution{"✅", "Bridge peers again", "Bridge on " + chain + " has enough full peers again"}
+	case "serving":
+		return resolution{"✅", "Bridge serving", "Bridge on " + chain + " serves data again"}
+	case "prune_stalled":
+		return resolution{"\u2705", "Bridge pruning", "Bridge on " + chain + " is pruning again"}
+	case "prune_failing":
+		return resolution{"\u2705", "Bridge pruning", "Bridge on " + chain + " prunes again"}
 	case "behind":
 		return resolution{"✅", "Bridge OK", "Bridge on " + chain + " is back in sync"}
 	case "sampling":
@@ -239,14 +277,22 @@ func bridgeResolution(message, chain string) resolution {
 
 func bridgeLabel(msg *alertMsg) (string, string) {
 	if msg.resolved {
+		if kind := bridgeKind(msg.message); bridgeMetricKind(kind) {
+			r := bridgeResolution(msg.message, "")
+			return r.icon, r.label
+		}
 		return "✅", "Bridge OK"
 	}
-	return "🌉", map[string]string{"down": "Bridge down", "token": "Bridge token rejected", "behind": "Bridge behind", "sampling": "Bridge sampling stuck"}[bridgeKind(msg.message)]
+	return "🌉", map[string]string{"down": "Bridge down", "token": "Bridge token rejected", "behind": "Bridge behind", "sampling": "Bridge sampling stuck", "metrics_stopped": "Bridge metrics stopped", "no_peers": "Bridge too few peers", "serving": "Bridge serving errors", "prune_stalled": "Bridge pruning stalled", "prune_failing": "Bridge failing to prune"}[bridgeKind(msg.message)]
 }
 
 func (cc *ChainConfig) bridgeAlarms(reconcile bool) {
+	if !cc.alertSettings().BridgeAlerts {
+		return
+	}
 	cc.stateMux.RLock()
 	s := cc.bridge
+	s.responses = append([]bridgeDelta(nil), s.responses...)
 	cc.stateMux.RUnlock()
 	if !s.Loaded {
 		return
@@ -276,7 +322,7 @@ func (cc *ChainConfig) bridgeAlarms(reconcile bool) {
 		want("Bridge on " + cc.ChainId + " rejected the token, check token_file")
 	} else if !s.Up {
 		for message := range active {
-			if bridgeKind(message) == "down" || bridgeKind(message) == "token" || s.Failures < 3 {
+			if bridgeKind(message) == "down" || bridgeKind(message) == "token" || s.Failures < 3 && !bridgeMetricKind(bridgeKind(message)) {
 				wanted[message] = cc.bridgeAlarmID(message)
 			}
 		}
@@ -290,6 +336,38 @@ func (cc *ChainConfig) bridgeAlarms(reconcile bool) {
 		}
 	} else {
 		window := time.Duration(settings.BridgeLagMinutes) * time.Minute
+		if s.MetricsAt.IsZero() {
+			for message := range active {
+				if bridgeKind(message) == "metrics_stopped" {
+					want(message)
+				}
+			}
+		} else if time.Since(s.MetricsAt) >= bridgeMetricsWindow {
+			want("Bridge on " + cc.ChainId + " stopped sending metrics\nlast received " + s.MetricsAt.In(alertLocation()).Format("15:04"))
+		}
+		if s.metricsFresh(time.Now()) {
+			if s.PrunerKnown && s.LastPruned > 0 && !s.PrunedAt.IsZero() && time.Since(s.PrunedAt) >= bridgePruneWindow && s.Head > s.PrunedHead {
+				want(fmt.Sprintf("Bridge on %s stopped pruning\nstuck at %s", cc.ChainId, thousands(s.LastPruned)))
+			}
+			if s.FailedPrunes > 0 && !s.FailingSince.IsZero() && time.Since(s.FailingSince) >= bridgePruneWindow {
+				want(fmt.Sprintf("Bridge on %s is failing to prune\n%d blocks failed", cc.ChainId, s.FailedPrunes))
+			}
+			if s.PeersKnown && s.FullPeers < 2 && !s.NoPeersSince.IsZero() && time.Since(s.NoPeersSince) >= window {
+				peers := fmt.Sprintf("%d full peers", s.FullPeers)
+				if s.FullPeers == 1 {
+					peers = "1 full peer"
+				}
+				want("Bridge on " + cc.ChainId + " has too few full peers\n" + peers)
+			}
+			responses, errors := s.servingWindow(time.Now(), window)
+			threshold := .5
+			if activeKind("serving") {
+				threshold = .25
+			}
+			if responses >= 20 && float64(errors)/float64(responses) >= threshold {
+				want(fmt.Sprintf("Bridge on %s is failing to serve data\n%.0f%% of %d requests failed", cc.ChainId, 100*float64(errors)/float64(responses), responses))
+			}
+		}
 		if !s.BehindSince.IsZero() && (activeKind("behind") || time.Since(s.BehindSince) >= window) {
 			want(fmt.Sprintf("Bridge on %s is %d blocks behind", cc.ChainId, s.Lag))
 		}
@@ -305,7 +383,7 @@ func (cc *ChainConfig) bridgeAlarms(reconcile bool) {
 				r = resolution{"ℹ️", "Bridge check changed", "Bridge on " + cc.ChainId + " check changed"}
 			}
 			resolve(cc.name, message, r)
-			if !s.Up && (bridgeKind(message) == "behind" || bridgeKind(message) == "sampling") {
+			if !s.Up && (bridgeKind(message) == "behind" || bridgeKind(message) == "sampling") || bridgeMetricKind(bridgeKind(message)) && (!s.Up || !s.metricsFresh(time.Now())) {
 				td.resolveQuietly(cc.name, message, &id)
 				continue
 			}

@@ -62,9 +62,17 @@ type ChainStatus struct {
 	Fibre  *FibreStatus  `json:"fibre,omitempty"`
 }
 
+type BridgeFact struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Tone  string `json:"tone"`
+}
+
 type BridgeStatus struct {
-	Text string `json:"text"`
-	Tone string `json:"tone"`
+	Title string       `json:"title"`
+	Facts []BridgeFact `json:"facts,omitempty"`
+	Text  string       `json:"text"`
+	Tone  string       `json:"tone"`
 }
 
 type FibreMissedBlob struct {

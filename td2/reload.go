@@ -156,7 +156,7 @@ func (c *Config) startChain(name string, cc *ChainConfig) {
 		c.startWorker(func() { defer cc.workers.Done(); work() })
 	}
 	start(cc.watch)
-	if cc.alertSettings().BridgeAlerts {
+	if cc.Bridge.URL != "" {
 		start(func() { cc.watchBridge(cc.context()) })
 	}
 	start(func() { cc.monitorHealth(cc.context(), name) })

@@ -148,7 +148,7 @@ func statusField(icon, label, value string) string {
 	return icon + " <b>" + label + ":</b> " + value
 }
 
-// statusDetail shows validator, optional Fibre and active alert sections.
+// statusDetail shows validator, bridge, Fibre and active alerts.
 func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	info, _ := cc.validatorState()
 	cc.stateMux.RLock()
@@ -211,8 +211,22 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 			lines = append(lines, statusField("🔌", "Node", text))
 		}
 	}
-	if text, _ := cc.bridgeStatus(); text != "" {
-		lines = append(lines, statusField("🌉", "Bridge", html.EscapeString(text)))
+	if title, facts := cc.bridgeFacts(now); title != "" {
+		head := "\U0001f309 <b>Bridge</b>"
+		if version := strings.TrimPrefix(title, "Bridge"); version != "" {
+			head += " <code>" + html.EscapeString(strings.TrimSpace(version)) + "</code>"
+		}
+		lines = append(lines, "", head)
+		for _, fact := range facts {
+			value := html.EscapeString(fact.Value)
+			switch fact.Tone {
+			case "critical":
+				value = "\U0001f534 " + value
+			case "warning":
+				value = "\U0001f7e1 " + value
+			}
+			lines = append(lines, statusField(fact.Icon, fact.Label, value))
+		}
 	}
 	if fibre := cc.fibreReport(now); fibre != nil {
 		lines = append(append(lines, ""), fibre.telegramLines()...)

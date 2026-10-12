@@ -110,15 +110,18 @@ func reportDue(now, last time.Time, schedule string, weekly bool, loc *time.Loca
 }
 
 type reportHour struct {
-	At          time.Time `json:"at"`
-	Signed      int64     `json:"signed,omitempty"`
-	Missed      int64     `json:"missed,omitempty"`
-	Late        int64     `json:"late,omitempty"`
-	PrevoteOnly int64     `json:"prevote_only,omitempty"`
-	Proposed    int64     `json:"proposed,omitempty"`
-	MissedProps int64     `json:"missed_props,omitempty"`
-	Watched     float64   `json:"watched,omitempty"`
-	Votes       int       `json:"votes,omitempty"`
+	BridgeServed    float64   `json:"bridge_served,omitempty"`
+	BridgeResponses int64     `json:"bridge_responses,omitempty"`
+	BridgeErrors    int64     `json:"bridge_errors,omitempty"`
+	At              time.Time `json:"at"`
+	Signed          int64     `json:"signed,omitempty"`
+	Missed          int64     `json:"missed,omitempty"`
+	Late            int64     `json:"late,omitempty"`
+	PrevoteOnly     int64     `json:"prevote_only,omitempty"`
+	Proposed        int64     `json:"proposed,omitempty"`
+	MissedProps     int64     `json:"missed_props,omitempty"`
+	Watched         float64   `json:"watched,omitempty"`
+	Votes           int       `json:"votes,omitempty"`
 }
 
 type reportSnapshot struct {
@@ -384,6 +387,9 @@ func reportTotals(hours []reportHour, start, end time.Time) reportHour {
 		total.MissedProps += h.MissedProps
 		total.Watched += h.Watched
 		total.Votes += h.Votes
+		total.BridgeServed += h.BridgeServed
+		total.BridgeResponses += h.BridgeResponses
+		total.BridgeErrors += h.BridgeErrors
 	}
 	total.Watched = math.Min(total.Watched, end.Sub(start).Seconds())
 	return total

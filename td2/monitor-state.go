@@ -65,7 +65,11 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 	}
 	text, tone := cc.bridgeStatus()
 	if text != "" {
-		status.Bridge = &dash.BridgeStatus{Text: text, Tone: tone}
+		title, facts := cc.bridgeFacts(time.Now())
+		status.Bridge = &dash.BridgeStatus{Text: text, Tone: tone, Title: title}
+		for _, fact := range facts {
+			status.Bridge.Facts = append(status.Bridge.Facts, dash.BridgeFact{Label: fact.Label, Value: fact.Value, Tone: fact.Tone})
+		}
 	}
 	return status
 }

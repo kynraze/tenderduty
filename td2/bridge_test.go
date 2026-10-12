@@ -81,6 +81,34 @@ func bridgeTick(cc *ChainConfig, now time.Time) {
 	cc.bridgeAlarms(false)
 }
 
+func TestBridgeStatusWithoutAlerts(t *testing.T) {
+	cc, f := newBridgeFixture(t)
+	cc.Alerts.BridgeAlerts = false
+	f.running = false
+	td.startChain(cc.name, cc)
+	defer stopChain(cc)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cc.stateMux.RLock()
+		s := cc.bridge
+		cc.stateMux.RUnlock()
+		if s.Loaded {
+			if !s.Up || s.Head != 100 || s.Sampled != 100 {
+				t.Fatalf("bridge state: %+v", s)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bridge was not checked with alerts disabled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cc.bridgeAlarms(false)
+	if len(activeMessages(cc.name, "Bridge ")) != 0 || len(td.alertChan) != 0 {
+		t.Fatal("bridge sent alerts with alerts disabled")
+	}
+}
+
 func TestBridgeHealthyAndToken(t *testing.T) {
 	cc, f := newBridgeFixture(t)
 	file := filepath.Join(t.TempDir(), "token")
@@ -287,6 +315,16 @@ func TestBridgeConfigAndReload(t *testing.T) {
 	if err := validateChainSettings([]string{"bridge.url=http://127.0.0.1:26658", "bridge.token_file=/tmp/token", "alerts.bridge_enabled=yes"}); err != nil {
 		t.Fatal(err)
 	}
+	next.Bridge.URL += "/changed"
+	if restartReason(cc, next) != "bridge changed" {
+		t.Fatal("URL change must restart bridge watcher")
+	}
+	next.Bridge = cc.Bridge
+	next.Alerts.BridgeAlerts = false
+	if restartReason(cc, next) != "bridge changed" {
+		t.Fatal("alert toggle must restart bridge watcher")
+	}
+	next.Alerts = cc.Alerts
 	next.Bridge.token = "rotated"
 	if restartReason(cc, next) != "bridge changed" {
 		t.Fatal("token rotation must apply on reload")

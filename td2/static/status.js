@@ -343,6 +343,22 @@ function appendFact(container, label, values) {
     container.appendChild(item)
 }
 
+function fillBridge(chain) {
+    const section = document.getElementById('detail-bridge')
+    section.hidden = !chain.bridge
+    if (!chain.bridge) return
+    const bridge = chain.bridge
+    document.getElementById('detail-bridge-title').textContent = bridge.title || 'Bridge'
+    const facts = document.getElementById('detail-bridge-facts')
+    facts.replaceChildren()
+    for (const fact of bridge.facts || [{ label: 'Status', value: bridge.text, tone: bridge.tone }]) {
+        appendFact(facts, fact.label, fact.value)
+        if (fact.tone === 'critical' || fact.tone === 'warning') {
+            facts.lastChild.lastChild.style.color = `var(--${fact.tone})`
+        }
+    }
+}
+
 function fillFibre(chain) {
     const section = document.getElementById('detail-fibre')
     section.hidden = !chain.fibre
@@ -404,10 +420,7 @@ function fillDetail(name) {
     for (const node of chain.rpc_nodes || []) {
         appendFact(facts, 'RPC node', `${node.endpoint}${node.version ? ` · ${node.version}` : ''} · ${node.down ? 'down' : 'healthy'}`)
     }
-    if (chain.bridge) {
-        appendFact(facts, 'Bridge', chain.bridge.text)
-        facts.lastChild.lastChild.style.color = `var(--${chain.bridge.tone === 'ok' ? 'good' : chain.bridge.tone})`
-    }
+    fillBridge(chain)
     fillFibre(chain)
     const history = document.getElementById('detail-blocks')
     history.replaceChildren()

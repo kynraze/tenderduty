@@ -773,7 +773,12 @@ func (c *Config) ingestFibreMetrics(data *metricsv1.MetricsData) {
 	}
 	for _, rm := range data.GetResourceMetrics() {
 		attrs := rm.GetResource().GetAttributes()
-		if name, _ := fibreAttr(attrs, "service.name"); name != "fibre" {
+		name, _ := fibreAttr(attrs, "service.name")
+		if strings.EqualFold(name, "Bridge") {
+			c.ingestBridgeMetrics(rm, st.now())
+			continue
+		}
+		if name != "fibre" {
 			continue
 		}
 		instance, _ := fibreAttr(attrs, "service.instance.id")

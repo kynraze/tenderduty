@@ -409,6 +409,15 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			}
 		}
 		row.Fibre = c.reportFibre(name, start, now, weekly, row.Compact)
+		if line := cc.reportBridge(total, now, weekly); line != "" {
+			if weekly {
+				row.Lines[len(row.Lines)-1] += " · " + line
+			} else {
+				row.Lines = append(row.Lines, row.Fibre...)
+				row.Fibre = nil
+				row.Lines = append(row.Lines, line)
+			}
+		}
 		if total.Watched < span.Seconds()-60 {
 			partial++
 			watched := reportWatchedDuration(time.Duration(total.Watched)*time.Second) + " of " + reportWatchedDuration(span)
