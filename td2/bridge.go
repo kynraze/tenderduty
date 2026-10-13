@@ -34,6 +34,8 @@ type bridgeState struct {
 	Version                               string
 	FullPeers, ArchivalPeers              int64
 	PeersKnown                            bool
+	totals                                map[string]float64
+	resources                             map[string]float64
 	series                                map[string]bridgeSeries
 	responses                             []bridgeDelta
 	Loaded, Up, TokenRejected             bool
@@ -167,7 +169,13 @@ func (cc *ChainConfig) refreshBridge(ctx context.Context, now time.Time) {
 	}
 	settings := cc.alertSettings()
 	cc.stateMux.Lock()
-	defer cc.stateMux.Unlock()
+	var history map[string]float64
+	defer func() {
+		cc.stateMux.Unlock()
+		if history != nil {
+			td.bridgeData().record(cc.name, now, history, "")
+		}
+	}()
 	s := &cc.bridge
 	s.Loaded, s.Up, s.TokenRejected = true, reason == "", rejected
 	if reason != "" {
@@ -196,6 +204,11 @@ func (cc *ChainConfig) refreshBridge(ctx context.Context, now time.Time) {
 	chainDown := cc.noNodes || !cc.lastBlockTime.IsZero() && settings.Stalled > 0 && now.Sub(cc.lastBlockTime) >= time.Duration(settings.Stalled)*time.Minute
 	track(&s.BehindSince, cc.lastBlockNum > 0 && !chainDown && cc.lastBlockNum-s.Head > settings.BridgeLagBlocks)
 	track(&s.SamplingSince, !s.Running || s.Network-s.Sampled > settings.BridgeLagBlocks)
+	sampling := float64(max(s.Network-s.Sampled, 0))
+	history = map[string]float64{"head_lag": float64(s.Lag), "head_lag_max": float64(s.Lag), "sample_lag": sampling, "sample_lag_max": sampling}
+	if hours, ok := cc.bridgeRetainedHours(); ok {
+		history["retained_hours"] = hours
+	}
 }
 
 func (cc *ChainConfig) watchBridge(ctx context.Context) {

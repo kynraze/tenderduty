@@ -81,7 +81,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	td.startWorker(td.runReports)
 	if td.EnableDash {
 		td.startWorker(func() {
-			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory); err != nil {
+			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory, td.bridgeHistory); err != nil {
 				failures <- err
 			}
 		})
@@ -229,9 +229,10 @@ func saveState(stateFile string) error {
 	}
 	td.chainsMux.RUnlock()
 
+	bridgeHistory := td.savedBridgeHistory()
 	alarms.notifyMux.RLock()
 	sequence := alarms.NextNotification
-	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, JailedSince: jailedSince, Slashes: slashes, Proposals: proposals, TgMentions: mentionSnapshot(), FibreEndorsing: td.fibreData().savedEndorsing(), FibreMissed: td.fibreData().savedMissed(), FibreRollups: td.fibreData().savedHours(), FibreMinutes: td.fibreData().savedShort("1h"), FibreTenmin: td.fibreData().savedShort("24h"), Reports: td.savedReports(time.Now())})
+	data, err := json.Marshal(&savedState{Alarms: alarms, Blocks: blocks, LastBlocks: lastBlocks, NodesDown: nodesDown, Heights: heights, Consecutive: consecutive, JailedSince: jailedSince, Slashes: slashes, Proposals: proposals, TgMentions: mentionSnapshot(), FibreEndorsing: td.fibreData().savedEndorsing(), FibreMissed: td.fibreData().savedMissed(), FibreRollups: td.fibreData().savedHours(), FibreMinutes: td.fibreData().savedShort("1h"), FibreTenmin: td.fibreData().savedShort("24h"), BridgeHistory: bridgeHistory, Reports: td.savedReports(time.Now())})
 	alarms.notifyMux.RUnlock()
 	if err != nil {
 		return err

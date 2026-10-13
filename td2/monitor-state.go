@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
@@ -60,6 +61,21 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
 		MaxValidators: info.MaxValidators, MaxMissed: info.MaxMissed,
 	}
+	if cc.alertSettings().GovAlerts {
+		if proposals, loaded := cc.govSnapshot(); loaded {
+			for _, p := range proposals {
+				title := p.Title
+				if len(title) > 200 {
+					end := 200
+					for !utf8.RuneStart(title[end]) {
+						end--
+					}
+					title = title[:end]
+				}
+				status.Proposals = append(status.Proposals, dash.Proposal{ID: p.ID, Title: title, End: p.VotingEnd.Unix(), Voted: p.Voted})
+			}
+		}
+	}
 	if fibre := cc.fibreReport(time.Now()); fibre != nil {
 		status.Fibre = fibre.dashboard()
 	}
@@ -90,6 +106,9 @@ func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
 	}
 	var lines []line
 	for message, severity := range messages {
+		if strings.HasPrefix(message, "Proposal #") {
+			continue
+		}
 		if _, close := messages[message+" is close"]; close {
 			continue
 		}
@@ -127,6 +146,9 @@ func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
 
 // noticeAlarm keeps reminders actionable even when the scheduled upgrade is a notice.
 func (cc *ChainConfig) noticeAlarm(message, severity string) (notice, upgrade bool) {
+	if strings.HasPrefix(message, "Proposal #") {
+		return true, false
+	}
 	if strings.HasSuffix(message, " is close") {
 		return false, false
 	}
@@ -149,7 +171,12 @@ func (cc *ChainConfig) dashboardAlerts() (active, notices int, label string) {
 		messages[message] = alarms.AlarmSeverities[cc.name+"\x00"+message]
 	}
 	alarms.notifyMux.RUnlock()
+	proposals, votePending := 0, false
 	for message, severity := range messages {
+		if strings.HasPrefix(message, "Proposal #") {
+			proposals++
+			votePending = votePending || strings.HasSuffix(message, " has not voted") || strings.HasSuffix(message, " has not voted yet")
+		}
 		if notice, upgrade := cc.noticeAlarm(message, severity); notice {
 			notices++
 			if upgrade {
@@ -159,6 +186,12 @@ func (cc *ChainConfig) dashboardAlerts() (active, notices int, label string) {
 	}
 	if notices > 0 && label == "" {
 		label = "Notice"
+		if proposals == len(messages) {
+			label = "Proposal open"
+			if votePending {
+				label = "Vote pending"
+			}
+		}
 	}
 	return len(messages), notices, label
 }

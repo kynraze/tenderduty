@@ -349,7 +349,7 @@ func TestBridgePrometheus(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(&bridgeCollector{config: td})
 	families, err := registry.Gather()
-	if err != nil || len(families) != 4 {
+	if err != nil || len(families) != 5 {
 		t.Fatalf("metrics: %v, %d families", err, len(families))
 	}
 	for _, family := range families {

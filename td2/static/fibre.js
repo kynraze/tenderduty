@@ -50,7 +50,7 @@
     const ms = v => `${Number(v.toFixed(v < 1 ? 2 : v < 10 ? 1 : 0))} ms`
     const exact = n => n === null ? 'No observation' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 })
     const byteFields = ['bytes_received', 'bytes_served', 'occupancy', 'budget', 'object_storage_bytes', 'go_memory_used_bytes', 'go_memory_heap_bytes', 'go_memory_stack_bytes', 'go_memory_limit_bytes', 'go_gc_goal_bytes', 'go_memory_max_bytes']
-    const shown = (field, n) => n === null ? 'No observation' : field.endsWith('_ms') ? ms(n) : field === 'reachable' ? `${Math.round(100 * n)}%` : field === 'budget' && n === 0 ? 'unlimited' : field === 'go_allocation_bytes_per_second' ? `${compact(n, true)}/s` : byteFields.includes(field) ? compact(n, true) : exact(n)
+    const shown = (field, n) => n === null ? 'No observation' : field.endsWith('_ms') ? ms(n) : field === 'reachable' ? `${Math.round(100 * n)}%` : field === 'budget' && n === 0 ? 'unlimited' : field === 'go_allocation_bytes_per_second' ? `${compact(n, true)}/s` : (field.endsWith('_bytes') || byteFields.includes(field)) ? compact(n, true) : exact(n)
     const compact = (n, bytes) => {
         if (bytes) {
             let unit = 0
@@ -159,6 +159,7 @@
         return { ...def, fields: ['go_memory_heap_bytes', 'go_memory_stack_bytes'], labels: ['Heap', 'Stack'], colors: ['precommit', 'prevote'], tooltip: [...def.tooltip, 'go_memory_used_bytes'] }
     }
     if (typeof module !== 'undefined') module.exports = { normalize, definitions, headline, resourceDefinition, missedRows }
+    if (typeof window !== 'undefined') window.tdCharts = { drawChart, legend }
     if (typeof document === 'undefined') return
     let layout = defaults()
     try { layout = normalize(JSON.parse(localStorage.getItem('tenderduty-fibre-panels'))) } catch (_) { /* storage is optional */ }
@@ -188,10 +189,10 @@
     function active() { return location.hash === '#fibre' && !document.hidden && watched.length > 0 }
     function route() {
         const on = location.hash === '#fibre' && watched.length > 0
-        $('overview').hidden = on
+        $('overview').hidden = on || location.hash === '#bridge' && !$('bridge-nav').hidden
         $('fibre').hidden = !on
         for (const link of document.querySelectorAll('.nav a')) {
-            const current = on ? link.id === 'fibre-nav' : link.hash === (location.hash === '#activity' ? '#activity' : '#overview')
+            const current = on ? link.id === 'fibre-nav' : location.hash === '#bridge' && !$('bridge-nav').hidden ? link.id === 'bridge-nav' : link.hash === '#overview'
             link.classList.toggle('active', current)
             if (current) link.setAttribute('aria-current', 'page')
             else link.removeAttribute('aria-current')
@@ -293,14 +294,14 @@
         return def.unit === 'ms' ? ms(v) : compact(v, def.unit === 'bytes')
     }
     // build offscreen at the measured width to avoid shifts on refresh
-    function drawChart(def, points, chartWidth, chartStyle) {
-        if (def.id === 'resources' && ['7d', '30d'].includes(range)) points = points.map(p => ({ ...p, metrics: { ...p.metrics,
+    function drawChart(def, points, chartWidth, chartStyle, view = { range, selected, headline, tooltipLabels }) {
+        if (def.id === 'resources' && ['7d', '30d'].includes(view.range)) points = points.map(p => ({ ...p, metrics: { ...p.metrics,
             ...Object.fromEntries([['go_memory_used_bytes', 'go_memory_max_bytes'], ['go_memory_heap_bytes', 'go_memory_heap_max_bytes'], ['go_memory_stack_bytes', 'go_memory_stack_max_bytes'], ['go_goroutines', 'go_goroutines_max']].filter(([, peak]) => p.metrics?.[peak] != null).map(([field, peak]) => [field, p.metrics[peak]]))
         } }))
         const axisPoints = points
         const seconds = points.length > 1 ? points[1].time - points[0].time : 60
         const counting = points.length > 0 && Date.now() / 1000 < points.at(-1).time + seconds
-        const hours = def.stacked && !def.area && !def.strip && !def.log && (!chartStyle || ['auto', 'bars'].includes(chartStyle)) ? { '24h': 1, '7d': 6, '30d': 24 }[range] : 0
+        const hours = def.stacked && !def.area && !def.strip && !def.log && (!chartStyle || ['auto', 'bars'].includes(chartStyle)) ? { '24h': 1, '7d': 6, '30d': 24 }[view.range] : 0
         if (hours && points.length) {
             const buckets = new Map()
             for (const p of points) {
@@ -345,7 +346,7 @@
         // extra headroom lowers the right-axis line
         const top2 = niceTop(2 * Math.max(1, ...points.map(p => Math.max(0, ...right.map(f => value(p, f) || 0)))), false)
         const y = (v, onRight) => bottom - (def.log && !onRight ? Math.max(0, (Math.log10(v) - logBottom) / (logTop - logBottom)) : Math.min(v, onRight ? top2 : top1) / (onRight ? top2 : top1)) * (bottom - top)
-        const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${def.title}, ${selected}, ${range}: ${headline(def, axisPoints).map(([t]) => t).join(', ') || 'no observations'}` })
+        const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${def.title}, ${view.selected}, ${view.range}: ${view.headline(def, axisPoints).map(([t]) => t).join(', ') || 'no observations'}` })
         const ticks = def.log ? Array.from({ length: logTop - logBottom + 1 }, (_, i) => 10 ** (logBottom + i)) : [0, top1 / 2, top1].filter(tick => def.unit === 'bytes' || def.unit === 'ms' || def.strip || Number.isInteger(tick))
         if (!def.strip) for (const tick of ticks) {
             const fraction = tick / top1
@@ -436,13 +437,13 @@
         for (const i of [0, Math.floor(points.length / 2), points.length - 1]) {
             const label = svg('text', { x: x(i), y: bottom + 22, 'text-anchor': i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle', fill: 'var(--subtle)', 'font-size': def.mini ? 11 : 12 })
             const date = new Date(points[i].time * 1000)
-            label.textContent = ['7d', '30d'].includes(range) ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date.toLocaleTimeString(undefined, hours ? { hour: 'numeric' } : { hour: '2-digit', minute: '2-digit' })
+            label.textContent = ['7d', '30d'].includes(view.range) ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date.toLocaleTimeString(undefined, hours ? { hour: 'numeric' } : { hour: '2-digit', minute: '2-digit' })
             chart.append(label)
         }
         const tip = node('div', undefined, 'fibre-tip'); tip.hidden = true; tip.setAttribute('role', 'status')
         const show = i => {
             const p = points[i]
-            const rows = [...def.fields.map((f, j) => [def.labels[j], f]), ...lines.map((f, j) => [def.lineLabels[j], f]), ...right.map((f, j) => [def.rightLabels[j], f]), ...(def.tooltip || []).map(f => [tooltipLabels[f] || f.replaceAll('_', ' '), f])]
+            const rows = [...def.fields.map((f, j) => [def.labels[j], f]), ...lines.map((f, j) => [def.lineLabels[j], f]), ...right.map((f, j) => [def.rightLabels[j], f]), ...(def.tooltip || []).map(f => [view.tooltipLabels[f] || f.replaceAll('_', ' '), f])]
                 .map(([label, f]) => [label, f === 'go_memory_limit_bytes' && value(p, f) === null && value(p, 'go_memory_used_bytes') !== null ? 'no limit' : value(p, f) === null ? null : shown(f, value(p, f))])
                 .filter(([, text]) => text !== null)
             tip.replaceChildren(node('strong', new Date(p.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + (p.end ? `\u2013${new Date(p.end * 1000).toLocaleString(undefined, { ...(hours === 24 ? { month: 'short', day: 'numeric' } : {}), hour: '2-digit', minute: '2-digit' })}` : '')))
@@ -479,13 +480,13 @@
         }
         return grid
     }
-    function legend(def) {
+    function legend(def, view = { range, selected, headline, tooltipLabels }) {
         const box = node('div', undefined, 'fibre-legend')
         const entry = (label, color, note) => {
             const item = node('span'); const dot = node('i'); dot.style.background = `var(--${color})`
             item.append(dot, document.createTextNode(label)); if (note) item.append(node('small', note)); box.append(item)
         }
-        if (def.unit === 'ms') {
+        if (def.unit === 'ms' && def.log) {
             // line style tells p50 from p95
             box.append(node('span', 'solid p50 · dashed p95', 'note'))
         } else if (def.fields.length > 1 || def.right || def.lines) {

@@ -253,7 +253,7 @@ func TestBridgeOTelStatusAndPrometheus(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(&bridgeCollector{config: td})
 	families, err := registry.Gather()
-	if err != nil || len(families) != 8 {
+	if err != nil || len(families) != 20 {
 		t.Fatalf("fresh metrics %d %v", len(families), err)
 	}
 	cc.bridge.MetricsAt = now.Add(-3 * time.Minute)
@@ -262,7 +262,7 @@ func TestBridgeOTelStatusAndPrometheus(t *testing.T) {
 		t.Fatal(text)
 	}
 	families, err = registry.Gather()
-	if err != nil || len(families) != 4 {
+	if err != nil || len(families) != 5 {
 		t.Fatalf("stale metrics %d %v", len(families), err)
 	}
 }
@@ -405,7 +405,7 @@ func TestBridgePrunerIngestion(t *testing.T) {
 	}
 	cc.bridge.MetricsAt = now.Add(-4 * time.Minute)
 	families, err = registry.Gather()
-	if err != nil || len(families) != 4 {
+	if err != nil || len(families) != 5 {
 		t.Fatalf("stale: %d %v", len(families), err)
 	}
 }

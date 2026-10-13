@@ -22,6 +22,13 @@ type AlertLine struct {
 	Notice bool   `json:"notice,omitempty"`
 }
 
+type Proposal struct {
+	ID    uint64 `json:"id"`
+	Title string `json:"title"`
+	End   int64  `json:"end"`
+	Voted bool   `json:"voted"`
+}
+
 type ChainStatus struct {
 	MsgType        string          `json:"msgType"`
 	Name           string          `json:"name"`
@@ -45,6 +52,7 @@ type ChainStatus struct {
 	Height         int64           `json:"height"`
 	LastBlockAt    int64           `json:"last_block_at"`
 	Alerts         []AlertLine     `json:"alerts,omitempty"`
+	Proposals      []Proposal      `json:"proposals,omitempty"`
 	LastError      string          `json:"last_error"`
 	Signed         int64           `json:"signed"`
 	Proposed       int64           `json:"proposed"`

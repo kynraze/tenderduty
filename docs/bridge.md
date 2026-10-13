@@ -101,3 +101,17 @@ service:
       receivers: [otlp]
       exporters: [otlp_http/tenderduty, otlp_http/backend]
 ```
+
+
+## Bridge tab
+
+The dashboard Bridge tab shows sync and sampling lag, Core → DA lag, peers, data served, response outcomes, serving and disk write latency, pruning, memory and restarts with version changes. Latency is a sum/count average; celestia-node's histogram buckets are too coarse for percentiles. Pick a chain and range (1h, 24h, 7d, 30d). Customize panels changes visibility, order, width and count chart type. Memory and restarts are hidden by default. Blank intervals have no observation. History is kept for 30 days in the state file.
+
+`GET /bridge?range=24h&chain=ChainName` returns the history as JSON; omit `chain` for all watched bridges.
+
+Prometheus adds the following metrics with `name`, `chain_id` and `moniker` labels. Counters accumulate while tenderduty runs; use `rate` or `increase`. Metrics are emitted while OTel exports are fresh, except sampling lag, which comes from RPC polls.
+
+- Counters: `tenderduty_bridge_served_bytes_total`, `tenderduty_bridge_responses_total{status}` (success, not_found, rate_limited, internal_err, peer_err, other), `tenderduty_bridge_serve_seconds_total`, `tenderduty_bridge_serve_requests_total`, `tenderduty_bridge_store_put_seconds_total`, `tenderduty_bridge_store_puts_total`, `tenderduty_bridge_store_put_failures_total`, `tenderduty_bridge_core_to_da_seconds_total`, `tenderduty_bridge_core_to_da_blocks_total`, `tenderduty_bridge_reclaimed_bytes_total`, `tenderduty_bridge_restarts_total`.
+- Gauges: `tenderduty_bridge_sampling_lag_blocks`, `tenderduty_bridge_retained_hours`, `tenderduty_bridge_memory_bytes`, `tenderduty_bridge_goroutines`.
+
+`fibre_metrics.export_raw` also forwards bridge OTLP metrics to Prometheus with the same limits and expiry as Fibre.

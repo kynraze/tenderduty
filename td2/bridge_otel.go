@@ -14,6 +14,45 @@ type bridgeSeries struct {
 	start uint64
 }
 
+var bridgeResponseStatuses = []string{"success", "not_found", "rate_limited", "internal_err", "peer_err", "other"}
+
+func bridgeResponseGroup(status string) string {
+	switch status {
+	case "success", "not_found", "internal_err":
+		return status
+	case "rate_limited", "resource_exhausted":
+		return "rate_limited"
+	case "read_req_err", "bad_request", "send_status_err", "send_resp_err":
+		return "peer_err"
+	default:
+		return "other"
+	}
+}
+
+// Sum and count reset together, even when only one decreased.
+func (s *bridgeState) histogramDelta(key string, dp *metricsv1.HistogramDataPoint) (float64, float64, bool) {
+	sum, count := dp.GetSum(), float64(dp.GetCount())
+	if dp.Sum == nil || !validBridgeValue(sum) {
+		return 0, 0, false
+	}
+	if s.series == nil {
+		s.series = make(map[string]bridgeSeries)
+	}
+	priorSum, sumKnown := s.series[key+"\x00sum"]
+	priorCount, countKnown := s.series[key+"\x00count"]
+	start := dp.GetStartTimeUnixNano()
+	s.series[key+"\x00sum"] = bridgeSeries{value: sum, start: start}
+	s.series[key+"\x00count"] = bridgeSeries{value: count, start: start}
+	if !sumKnown || !countKnown {
+		return 0, 0, false
+	}
+	if start == priorSum.start && start == priorCount.start && sum >= priorSum.value && count >= priorCount.value {
+		sum -= priorSum.value
+		count -= priorCount.value
+	}
+	return sum, count, true
+}
+
 type bridgeDelta struct {
 	at                time.Time
 	responses, errors int64
@@ -33,7 +72,7 @@ func (s bridgeState) servingWindow(now time.Time, window time.Duration) (respons
 	return
 }
 
-func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Time) {
+func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Time) string {
 	attrs := rm.GetResource().GetAttributes()
 	namespace, _ := fibreAttr(attrs, "service.namespace")
 	instance, _ := fibreAttr(attrs, "service.instance.id")
@@ -50,7 +89,7 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 		if c.fibreData().noteIgnored("bridge:" + namespace + "\x00" + instance) {
 			l(fmt.Sprintf("ignoring bridge metrics from %s on %s: no chain with that chain_id has bridge.url", instance, namespace))
 		}
-		return
+		return ""
 	}
 	window := time.Duration(cc.alertSettings().BridgeLagMinutes) * time.Minute
 	cc.stateMux.Lock()
@@ -69,17 +108,31 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 	if s.series == nil {
 		s.series = make(map[string]bridgeSeries)
 	}
+	values := make(map[string]float64)
+	version := ""
+	responsesObserved := false
+	prunerObserved := false
 	d := bridgeDelta{at: now}
 	var served float64
 	for _, scope := range rm.GetScopeMetrics() {
 		for _, m := range scope.GetMetrics() {
+			if m.GetName() == "go.memory.used" || m.GetName() == "go.goroutine.count" {
+				if v, ok := fibreRuntimeValue(m.GetName(), m); ok && validBridgeValue(v) {
+					if m.GetName() == "go.memory.used" {
+						values["memory_bytes"], values["memory_max_bytes"] = v, v
+					} else {
+						values["goroutines"], values["goroutines_max"] = v, v
+					}
+				}
+			}
 			for _, dp := range m.GetGauge().GetDataPoints() {
 				value := fibreNumber(dp)
-				if math.IsNaN(value) || math.IsInf(value, 0) {
+				if !validBridgeValue(value) {
 					continue
 				}
 				switch m.GetName() {
 				case "prnr_last_pruned":
+					prunerObserved = true
 					if !s.PrunerKnown || int64(value) > s.LastPruned {
 						s.PrunedAt, s.PrunedHead = now, s.Head
 					}
@@ -91,20 +144,55 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 						s.FailingSince = time.Time{}
 					}
 					s.FailedPrunes = int64(value)
+					values["failed_prunes"] = value
 				case "build_info":
-					version, _ := fibreAttr(dp.GetAttributes(), "semantic_version")
+					version, _ = fibreAttr(dp.GetAttributes(), "semantic_version")
 					s.Version = clipBytes(version, 64)
+					version = s.Version
 				case "node_start_ts":
 					if value > 0 {
-						s.StartedAt = time.Unix(int64(value), 0)
+						started := time.Unix(int64(value), 0)
+						values["restarts"] += 0
+						if !s.StartedAt.IsZero() && !s.StartedAt.Equal(started) {
+							values["restarts"]++
+						}
+						s.StartedAt = started
 					}
 				case "full_discovery_amount_of_peers":
 					s.FullPeers, s.PeersKnown = int64(value), true
+					values["full_peers"], values["full_peers_min"] = value, value
 				case "archival_discovery_amount_of_peers":
 					s.ArchivalPeers = int64(value)
+					values["archival_peers"] = value
 				}
 			}
 			for _, dp := range m.GetHistogram().GetDataPoints() {
+				key := instance + "\x00" + fibreSeriesKey(m.GetName(), dp.GetAttributes())
+				switch m.GetName() {
+				case "shrex_server_request_duration", "eds_store_put_time_histogram", "core_to_da_lag_seconds":
+					seconds, count, ok := s.histogramDelta(key, dp)
+					if ok {
+						switch m.GetName() {
+						case "shrex_server_request_duration":
+							status, _ := fibreAttr(dp.GetAttributes(), "status")
+							if status == "success" {
+								values["serve_seconds"] += seconds
+								values["serve_requests"] += count
+							}
+						case "eds_store_put_time_histogram":
+							failed, _ := fibreAttr(dp.GetAttributes(), "failed")
+							if failed == "false" {
+								values["put_seconds"] += seconds
+								values["puts"] += count
+							} else if failed == "true" {
+								values["put_failures"] += count
+							}
+						case "core_to_da_lag_seconds":
+							values["da_lag_seconds"] += seconds
+							values["da_blocks"] += count
+						}
+					}
+				}
 				if dp.GetCount() == 0 {
 					continue
 				}
@@ -117,7 +205,7 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 					}
 				}
 			}
-			if m.GetName() != "shrex_payload_served_bytes" && m.GetName() != "shrex_server_total_responses" {
+			if m.GetName() != "shrex_payload_served_bytes" && m.GetName() != "shrex_server_total_responses" && m.GetName() != "eds_store_bytes_reclaimed_total" {
 				continue
 			}
 			for _, dp := range m.GetSum().GetDataPoints() {
@@ -137,11 +225,18 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 				}
 				if m.GetName() == "shrex_payload_served_bytes" {
 					served += delta
+					values["served_bytes"] += delta
+					continue
+				}
+				if m.GetName() == "eds_store_bytes_reclaimed_total" {
+					values["reclaimed_bytes"] += delta
 					continue
 				}
 				n := int64(delta)
 				d.responses += n
 				status, _ := fibreAttr(dp.GetAttributes(), "status")
+				responsesObserved = true
+				values["responses_"+bridgeResponseGroup(status)] += delta
 				// Only internal_err means the bridge failed to read its own store.
 				if status == "internal_err" {
 					d.errors += n
@@ -166,7 +261,37 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 		kept = append(kept, d)
 	}
 	s.responses = kept
+	if responsesObserved {
+		for _, status := range bridgeResponseStatuses {
+			values["responses_"+status] += 0
+		}
+	}
+	if _, observed := values["failed_prunes"]; observed || prunerObserved {
+		if hours, ok := cc.bridgeRetainedHours(); ok {
+			values["retained_hours"] = hours
+		}
+	}
+	if s.totals == nil {
+		s.totals = make(map[string]float64)
+	}
+	if s.resources == nil {
+		s.resources = make(map[string]float64)
+	}
+	for k, v := range values {
+		if !validBridgeValue(v) {
+			delete(values, k)
+			continue
+		}
+		if bridgeFields[k] == "sum" {
+			if total := s.totals[k] + v; validBridgeValue(total) {
+				s.totals[k] = total
+			}
+		} else {
+			s.resources[k] = v
+		}
+	}
 	cc.stateMux.Unlock()
+	c.bridgeData().record(cc.name, now, values, version)
 	if served > 0 || d.responses > 0 {
 		c.reportsMux.Lock()
 		h := c.reportHourLocked(cc.name, now)
@@ -175,6 +300,7 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 		h.BridgeErrors += d.errors
 		c.reportsMux.Unlock()
 	}
+	return cc.name
 }
 
 func bridgeVersion(version string) string { return "v" + strings.TrimPrefix(version, "v") }

@@ -64,6 +64,10 @@ func hideFibreDetails(provider func(string, string) (FibreHistory, error)) func(
 }
 
 func FibreHandler(provider func(string, string) (FibreHistory, error)) http.HandlerFunc {
+	return historyHandler(provider)
+}
+
+func historyHandler[T any](provider func(string, string) (T, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {

@@ -56,6 +56,11 @@ test('No data with action alerts is red; absent or notice-only alerts stay grey'
     }
 })
 
+test('A down endpoint without an alert leaves the chain healthy', () => {
+    const healthy = { height: 100, active_alerts: 0, nodes: 3, healthy_nodes: 2, window: 100, bonded: true, last_block_at: Date.now() / 1000 }
+    assert.deepEqual(state(healthy), { label: 'Healthy', tone: 'good', rank: 4 })
+})
+
 test('Priority lists three red chains in rank/name order and opens remaining alerts', () => {
     const alerts = Array.from({ length: 5 }, (_, i) => ({ text: `Alarm ${i}`, detail: `Detail ${i}` }))
     const out = summary([
@@ -107,4 +112,12 @@ test('No red chains hides and clears the priority list', () => {
     assert.equal(out.surfaces.get('attention-count').textContent, 0)
     assert.equal(out.surfaces.get('attention-section').hidden, true)
     assert.equal(out.surfaces.get('priority-list').children.length, 0)
+})
+
+test('Proposal-only alarms are notices and do not enter Priority', () => {
+    const pending = chain('Pending', { active_alerts: 2, notice_alerts: 2, notice_label: 'Vote pending', proposals: [{ id: 1, voted: false }] })
+    assert.deepEqual(state(pending), { label: 'Vote pending', tone: 'blue', rank: 3 })
+    const out = summary([pending])
+    assert.equal(out.surfaces.get('attention-section').hidden, true)
+    assert.equal(out.list.length, 0)
 })

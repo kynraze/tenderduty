@@ -5,8 +5,7 @@ const vm = require('node:vm')
 
 const source = fs.readFileSync(require.resolve('../td2/static/status.js'), 'utf8')
 
-function detail(chain) {
-    const surfaces = new Map()
+function detail(chain, surfaces = new Map()) {
     const element = (tag, className, text) => ({
         tag, className, text, children: [],
         appendChild(child) { this.children.push(child) },
@@ -48,6 +47,14 @@ test('Chain detail tolerates hidden node lists and displays unreadable versions'
     assert.deepEqual(detail({}), [])
     assert.deepEqual(detail({ rpc_nodes: [{ endpoint: 'localhost:26657', version: 'version unknown', down: true }] }),
         ['localhost:26657 · version unknown · down'])
+})
+
+test('Chain detail uses filtered alert lines without raw proposal alarms', () => {
+    const surfaces = new Map()
+    detail({ last_error: 'Proposal #1\nValidator has not voted', alerts: [{ text: 'RPC unavailable', detail: 'Endpoint down' }] }, surfaces)
+    assert.equal(surfaces.get('detail-error').textContent, 'RPC unavailable\nEndpoint down')
+    detail({ last_error: 'Proposal #1\nValidator has not voted' }, surfaces)
+    assert.equal(surfaces.get('detail-error').textContent, '')
 })
 
 test('Block summary counts the history, not since start', () => {

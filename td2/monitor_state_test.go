@@ -2,8 +2,10 @@ package tenderduty
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestNoticeAlarm(t *testing.T) {
@@ -24,7 +26,7 @@ func TestNoticeAlarm(t *testing.T) {
 		{"jailed", "critical", false, false},
 		{"node down", "critical", false, false},
 		{"stalled", "critical", false, false},
-		{"Proposal #1", "warning", false, false},
+		{"Proposal #1", "warning", true, false},
 		{"fibre warning", "warning", false, false},
 		{"informational alarm", "info", true, false},
 		{"old alarm without severity", "", false, false},
@@ -45,6 +47,67 @@ func TestNoticeAlarm(t *testing.T) {
 	cc.Nodes = nil
 	if notice, _ := cc.noticeAlarm("Version 11 upgrade at height 394", "critical"); !notice {
 		t.Fatal("public binary readiness was ignored")
+	}
+}
+
+func TestDashboardGovernanceAlerts(t *testing.T) {
+	auditConfig(t)
+	cc := &ChainConfig{name: "Chain"}
+	p := govProposal{ID: 1, Title: "Proposal", VotingEnd: time.Now().Add(time.Hour)}
+	open := cc.govOpenMessage(p)
+	for _, reminder := range []string{cc.govRemindMessage(p, "Validator"), cc.govEarlyRemindMessage(p, "Validator")} {
+		alarms.AllAlarms[cc.name] = map[string]time.Time{reminder: time.Now()}
+		alarms.AlarmSeverities = map[string]string{cc.name + "\x00" + reminder: "critical"}
+		status := cc.dashboardStatus()
+		if status.ActiveAlerts != 1 || status.NoticeAlerts != 1 || status.NoticeLabel != "Vote pending" {
+			t.Fatalf("reminder status: %+v", status)
+		}
+		if len(status.Alerts) != 0 {
+			t.Fatalf("proposal alert lines: %+v", status.Alerts)
+		}
+		alarms.AllAlarms[cc.name][open] = time.Now()
+		alarms.AllAlarms[cc.name]["RPC unavailable"] = time.Now()
+		lines := cc.dashboardAlertLines()
+		if len(lines) != 1 || strings.HasPrefix(lines[0].Text, "Proposal #") {
+			t.Fatalf("mixed alert lines: %+v", lines)
+		}
+		delete(alarms.AllAlarms[cc.name], "RPC unavailable")
+		upgrade := "Upgrade v4 at height 1000"
+		alarms.AllAlarms[cc.name][upgrade] = time.Now()
+		if _, _, label := cc.dashboardAlerts(); label != "Upgrade scheduled" {
+			t.Fatalf("upgrade label: %q", label)
+		}
+	}
+	alarms.AllAlarms[cc.name] = map[string]time.Time{open: time.Now()}
+	if active, notices, label := cc.dashboardAlerts(); active != 1 || notices != 1 || label != "Proposal open" {
+		t.Fatalf("open status: %d %d %q", active, notices, label)
+	}
+}
+
+func TestDashboardGovernanceProposals(t *testing.T) {
+	auditConfig(t)
+	end := time.Now().Add(time.Hour).Truncate(time.Second)
+	cc := &ChainConfig{
+		name: "Chain", Alerts: AlertConfig{GovAlerts: true},
+		proposals: []govProposal{
+			{ID: 1, Title: "Proposal", VotingEnd: end},
+			{ID: 2, Title: strings.Repeat("界", 100), VotingEnd: end, Voted: true},
+		},
+	}
+	if got := cc.dashboardStatus().Proposals; len(got) != 0 {
+		t.Fatalf("unloaded proposals: %+v", got)
+	}
+	cc.proposalsLoaded = true
+	got := cc.dashboardStatus().Proposals
+	if len(got) != 2 || got[0].ID != 1 || got[0].Title != "Proposal" || got[0].End != end.Unix() || got[0].Voted || !got[1].Voted {
+		t.Fatalf("proposals: %+v", got)
+	}
+	if len(got[1].Title) > 200 || len(got[1].Title) != 198 || !utf8.ValidString(got[1].Title) {
+		t.Fatalf("clipped title: %q", got[1].Title)
+	}
+	cc.Alerts.GovAlerts = false
+	if got := cc.dashboardStatus().Proposals; len(got) != 0 {
+		t.Fatalf("disabled proposals: %+v", got)
 	}
 }
 

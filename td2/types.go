@@ -94,8 +94,10 @@ type Config struct {
 	// FibreMetrics receives Fibre OTLP exports.
 	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
 
-	fibreOnce  sync.Once
-	fibreStore *fibreStore // recent exports and persisted hourly aggregates
+	bridgeOnce  sync.Once
+	bridgeStore *bridgeHistoryStore
+	fibreOnce   sync.Once
+	fibreStore  *fibreStore // recent exports and persisted hourly aggregates
 
 	settingsMux     sync.RWMutex
 	liveSettings    *Config
@@ -124,6 +126,7 @@ type savedState struct {
 	Proposals      map[string][]time.Time          `json:"missed_proposals,omitempty"`
 	TgMentions     []tgMention                     `json:"telegram_mentions,omitempty"`
 	Reports        *reportHistory                  `json:"reports,omitempty"`
+	BridgeHistory  json.RawMessage                 `json:"bridge_history,omitempty"`
 	FibreMinutes   json.RawMessage                 `json:"fibre_minutes,omitempty"`
 	FibreTenmin    json.RawMessage                 `json:"fibre_tenmin,omitempty"`
 	FibreEndorsing json.RawMessage                 `json:"fibre_endorsing,omitempty"`
@@ -995,6 +998,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	}
 	c.restoreReports(saved.Reports, time.Now())
 	restoreMentions(saved.TgMentions)
+	c.restoreBridgeHistory(saved.BridgeHistory)
 	c.fibreData().restoreHours(saved.FibreRollups)
 	c.fibreData().restoreEndorsing(saved.FibreEndorsing)
 	for name := range c.fibreData().endorsing {

@@ -76,6 +76,15 @@ h1 { margin: 0; font-size: 29px; font-weight: 680; letter-spacing: -.05em; line-
 .priority-more:hover { text-decoration: underline; }
 .priority-more:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
+#governance-section { margin-bottom: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.governance-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 8px 0; }
+.governance-row .chain-button { overflow-wrap: anywhere; }
+.governance-title { flex: 1 1 192px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.governance-end { color: var(--muted); font-size: 12px; }
+.governance-pill { padding: 4px 8px; border: 1px solid currentColor; border-radius: 6px; }
+#governance-more summary { padding: 8px 0; color: var(--accent); cursor: pointer; font-size: 12px; }
+#governance-more summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 .list-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.035em; }
 .list-head p { margin: 3px 0 0; color: var(--subtle); font-size: 12px; }
@@ -133,7 +142,7 @@ tbody tr:hover td, tbody tr:focus-within td { background: var(--raised); }
 .trace-mark.prevote { background: var(--prevote); }
 .trace-mark.missed { background: var(--critical); }
 .trace-mark.missed-proposal { background: var(--warning); }
-.cell-detail.missed-proposals { color: var(--warning); }
+.cell-detail.missed-proposals, .rpc-degraded { color: var(--warning); }
 .footnote { max-width: 55ch; color: var(--subtle); font-size: 12px; line-height: 1.5; }
 
 dialog { width: min(860px, calc(100% - 32px)); max-height: calc(100vh - 32px); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); overflow: auto; }
@@ -235,13 +244,13 @@ dialog::backdrop { background: #000a; }
 
 /* Fibre panels share the dashboard's appearance tokens. */
 .fibre-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 22px; }
-.fibre-controls select, #fibre-layout select { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 9px; max-width: 100%; }
-#fibre-customize, #fibre-layout button { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 9px 12px; cursor: pointer; min-height: 40px; }
-#fibre-layout button:disabled { opacity: .45; cursor: default; }
-#fibre-facts { margin-bottom: 20px; }
-#fibre-facts strong { overflow-wrap: anywhere; }
-#fibre-message { color: var(--muted); overflow-wrap: anywhere; }
-#fibre-message a { color: var(--accent); }
+.fibre-controls select, #fibre-layout select, #bridge-layout select { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 9px; max-width: 100%; }
+#fibre-customize, #fibre-layout button, #bridge-customize, #bridge-layout button { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 9px 12px; cursor: pointer; min-height: 40px; }
+#fibre-layout button:disabled, #bridge-layout button:disabled { opacity: .45; cursor: default; }
+#fibre-facts, #bridge-facts { margin-bottom: 20px; }
+#fibre-facts strong, #bridge-facts strong { overflow-wrap: anywhere; }
+#fibre-message, #bridge-message { color: var(--muted); overflow-wrap: anywhere; }
+#fibre-message a, #bridge-message a { color: var(--accent); }
 /* dense, so a wide panel doesn't leave a hole beside the one before it */
 .fibre-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: row dense; gap: 16px; }
 .fibre-panel { container-type: inline-size; position: relative; display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px 18px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
@@ -277,11 +286,11 @@ dialog::backdrop { background: #000a; }
 .fibre-tip em { font-style: normal; color: var(--muted); }
 .fibre-layout-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .fibre-layout-row label { flex: 1; min-width: 145px; }
-#fibre-layout-list { margin: 18px 0; }
-#fibre-layout select:focus-visible, .fibre-controls select:focus-visible, #fibre-layout input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+#fibre-layout-list, #bridge-layout-list { margin: 18px 0; }
+#fibre-layout select:focus-visible, .fibre-controls select:focus-visible, #fibre-layout input:focus-visible, #bridge-layout select:focus-visible, #bridge-layout input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 @media (max-width: 760px) {
   .fibre-panels { grid-template-columns: minmax(0, 1fr); }
   .fibre-panel { padding: 12px; }
-  #fibre .top { flex-wrap: wrap; }
+  #fibre .top, #bridge .top { flex-wrap: wrap; }
   .fibre-controls label { min-width: 0; max-width: 100%; }
 }

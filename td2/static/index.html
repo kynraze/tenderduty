@@ -10,6 +10,7 @@
   <script src="appearance.js" defer></script>
   <script src="status.js" defer></script>
   <script src="fibre.js" defer></script>
+  <script src="bridge.js" defer></script>
 </head>
 <body>
   <div class="app">
@@ -17,8 +18,8 @@
       <div class="brand"><span class="brand-mark">td</span> Tenderduty</div>
       <nav class="nav" aria-label="Main navigation">
         <a class="active" href="#overview" aria-current="page">Overview</a>
-        <a href="#activity" id="activity-nav">Activity</a>
         <a href="#fibre" id="fibre-nav" hidden>Fibre</a>
+        <a href="#bridge" id="bridge-nav" hidden>Bridge</a>
       </nav>
       <div class="side-bottom">
         <strong id="monitor-state">Connecting to monitor</strong>
@@ -52,6 +53,15 @@
           <div class="alert-main"><strong id="priority-context"></strong></div>
           <p id="priority-context-detail"></p>
         </div>
+      </section>
+
+      <section id="governance-section" hidden aria-labelledby="governance-heading">
+        <div class="sectioncap"><b id="governance-heading">Governance</b><span id="governance-count"></span></div>
+        <div id="governance-list"></div>
+        <details id="governance-more" hidden>
+          <summary id="governance-more-summary"></summary>
+          <div id="governance-more-list"></div>
+        </details>
       </section>
 
       <section aria-labelledby="chains-heading">
@@ -100,6 +110,13 @@
       <p id="fibre-message" role="status"></p>
       <div id="fibre-panels" class="fibre-panels"></div>
     </main>
+    <main id="bridge" hidden aria-labelledby="bridge-heading">
+      <header class="top"><div><h1 id="bridge-heading">Bridge</h1><p>Sync, serving and storage of the chain's bridge node.</p></div><button type="button" id="bridge-customize">Customize panels</button></header>
+      <div class="fibre-controls"><label id="bridge-chain-label">Chain <select id="bridge-chain"></select></label><div class="tools" id="bridge-ranges" role="group" aria-label="History range"></div></div>
+      <div id="bridge-facts" class="detail-facts"></div>
+      <p id="bridge-message" role="status"></p>
+      <div id="bridge-panels" class="fibre-panels"></div>
+    </main>
   </div>
 
   <dialog id="chain-dialog" aria-labelledby="detail-heading">
@@ -137,6 +154,7 @@
     <div class="appearance-actions"><button type="button" id="appearance-reset">Reset</button><div><button type="button" id="appearance-cancel">Cancel</button><button type="button" id="appearance-apply">Apply</button></div></div>
   </dialog>
   <dialog id="fibre-layout" aria-labelledby="fibre-layout-heading"><div class="dialog-head"><div><h2 id="fibre-layout-heading">Customize Fibre panels</h2><p>Drag to reorder, or use the up and down buttons.</p></div><button type="button" id="fibre-layout-close">Close</button></div><label>Default range <select id="fibre-default-range"><option>1h</option><option>24h</option><option>7d</option><option>30d</option></select></label><div id="fibre-layout-list"></div><button type="button" id="fibre-layout-reset">Reset to default</button><p class="footnote">Changes save automatically in this browser.</p></dialog>
+  <dialog id="bridge-layout" aria-labelledby="bridge-layout-heading"><div class="dialog-head"><div><h2 id="bridge-layout-heading">Customize Bridge panels</h2><p>Drag to reorder, or use the up and down buttons.</p></div><button type="button" id="bridge-layout-close">Close</button></div><label>Default range <select id="bridge-default-range"><option>1h</option><option>24h</option><option>7d</option><option>30d</option></select></label><div id="bridge-layout-list"></div><button type="button" id="bridge-layout-reset">Reset to default</button><p class="footnote">Changes save automatically in this browser.</p></dialog>
   <p id="appearance-feedback" class="sr-only" role="status"></p>
 </body>
 </html>

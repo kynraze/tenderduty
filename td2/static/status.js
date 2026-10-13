@@ -67,7 +67,6 @@ function stateFor(chain) {
     if (chain.last_block_at && Date.now() / 1000 - chain.last_block_at > 600) {
         return { label: 'No recent blocks', tone: 'amber', rank: 3 }
     }
-    if (chain.healthy_nodes < chain.nodes) return { label: 'RPC degraded', tone: 'amber', rank: 3 }
     if (chain.window <= 0) return { label: 'Signing info unavailable', tone: 'unknown', rank: 3 }
     if (!chain.bonded) return { label: 'Inactive', tone: 'unknown', rank: 3 }
     return { label: 'Healthy', tone: 'good', rank: 4 }
@@ -200,6 +199,41 @@ function renderSummary() {
     document.getElementById('priority-context-detail').textContent = priority.last_block_at ? `Last block observed ${age(priority.last_block_at)}` : 'No block has been observed yet'
 }
 
+function renderGovernance() {
+    const rows = []
+    for (const chain of chains.values()) {
+        for (const proposal of chain.proposals || []) rows.push({ ...proposal, name: chain.name })
+    }
+    rows.sort((left, right) => Number(left.voted) - Number(right.voted) || left.end - right.end || left.name.localeCompare(right.name) || left.id - right.id)
+    document.getElementById('governance-section').hidden = rows.length === 0
+    document.getElementById('governance-count').textContent = `${rows.length} open · ${rows.filter(row => !row.voted).length} not voted`
+    const list = document.getElementById('governance-list')
+    const moreList = document.getElementById('governance-more-list')
+    list.replaceChildren()
+    moreList.replaceChildren()
+    document.getElementById('governance-more').hidden = rows.length <= 5
+    document.getElementById('governance-more-summary').textContent = `Show ${Math.max(0, rows.length - 5)} more`
+    const now = Date.now() / 1000
+    for (const [index, proposal] of rows.entries()) {
+        const row = element('div', 'governance-row')
+        const chain = element('button', 'chain-button', proposal.name)
+        chain.type = 'button'
+        chain.addEventListener('click', () => showDetail(proposal.name))
+        row.appendChild(chain)
+        const title = element('span', 'governance-title', `#${proposal.id} ${proposal.title}`)
+        title.title = proposal.title
+        row.appendChild(title)
+        const end = new Date(proposal.end * 1000)
+        const date = `${end.getUTCDate()} ${end.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' })} ${String(end.getUTCHours()).padStart(2, '0')}:${String(end.getUTCMinutes()).padStart(2, '0')} UTC`
+        const left = proposal.end - now
+        row.appendChild(element('span', 'governance-end', `Ends ${date} · ${left <= 0 ? 'ended' : `${durationText(left)} left`}`))
+        const tone = proposal.voted ? 'good' : left < 86400 ? 'red' : 'amber'
+        row.appendChild(element('span', `status governance-pill ${tone}`, proposal.voted ? 'Voted' : 'Not voted'))
+        const target = index < 5 ? list : moreList
+        target.appendChild(row)
+    }
+}
+
 function renderRow(chain) {
     const state = stateFor(chain)
     const row = element('tr')
@@ -243,7 +277,11 @@ function renderRow(chain) {
     row.appendChild(missed)
 
     const rpc = element('td')
-    rpc.appendChild(element('span', 'mono', `${chain.healthy_nodes} / ${chain.nodes}`))
+    // a down endpoint without alert_if_down marks only this cell
+    const degraded = chain.healthy_nodes < chain.nodes
+    const count = element('span', degraded ? 'mono rpc-degraded' : 'mono', `${chain.healthy_nodes}/${chain.nodes}`)
+    if (degraded) count.title = `${chain.nodes - chain.healthy_nodes} of ${chain.nodes} RPC endpoints down`
+    rpc.appendChild(count)
     row.appendChild(rpc)
     return row
 }
@@ -257,6 +295,7 @@ function render() {
         else if (chain.height > drawn.height) drawnHeights.set(chain.name, { height: chain.height, at: Date.now() })
     }
     renderSummary()
+    renderGovernance()
     statusTable.replaceChildren()
     const visible = ordered.filter(chain => {
         if (filter === 'attention') return stateFor(chain).tone === 'red'
@@ -425,7 +464,7 @@ function fillDetail(name) {
     const history = document.getElementById('detail-blocks')
     history.replaceChildren()
     history.appendChild(blockTrace(chain.blocks, 512, `${name} block history`, newBlockAge(name)))
-    document.getElementById('detail-error').textContent = chain.last_error || ''
+    document.getElementById('detail-error').textContent = (chain.alerts || []).map(alert => alert.detail ? `${alert.text}\n${alert.detail}` : alert.text).join('\n')
     return true
 }
 
@@ -456,7 +495,6 @@ async function loadInitial() {
         if (!settings.ok || !snapshot.ok) throw new Error('Could not load monitor state')
         logsEnabled = (await settings.json()).enabled === true
         document.getElementById('log-section').hidden = !logsEnabled
-        document.getElementById('activity-nav').hidden = !logsEnabled
         setStatus(await snapshot.json())
         if (logsEnabled) {
             const response = await fetch('logs')
