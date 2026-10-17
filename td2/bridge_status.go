@@ -18,7 +18,7 @@ func (cc *ChainConfig) bridgeStatus() (text, tone string) {
 	case s.TokenRejected:
 		return "token rejected", "critical"
 	case !s.Up:
-		return "unreachable since " + s.DownSince.In(alertLocation()).Format("15:04"), "critical"
+		return "unreachable since " + s.DownSince.In(alertLocation()).Format("15:04 MST"), "critical"
 	}
 	tone = "ok"
 	if !s.BehindSince.IsZero() || !s.SamplingSince.IsZero() {
@@ -91,7 +91,7 @@ func (cc *ChainConfig) bridgeFacts(now time.Time) (title string, facts []bridgeF
 		add("\U0001f510", "Token", "rejected, check token_file", "critical")
 		return
 	case !s.Up:
-		down := "no, since " + s.DownSince.In(alertLocation()).Format("15:04")
+		down := "no, since " + s.DownSince.In(alertLocation()).Format("15:04 MST")
 		if s.Reason != "" {
 			down += " (" + s.Reason + ")"
 		}

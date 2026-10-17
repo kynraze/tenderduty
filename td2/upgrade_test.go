@@ -77,15 +77,18 @@ func TestStalledAtUpgradeHeightSaysSo(t *testing.T) {
 		name   string
 		plan   *upgradePlan
 		signal signalState
+		last   signalUpgrade
 		height int64
 		want   string
 	}{
-		{"gov", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, 999, "halted at the v4.0.0 upgrade height 1,000"},
-		{"signal", &upgradePlan{Name: "v11", Height: 395}, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, 394, "halted at the version 11 upgrade height 394"},
-		{"signal without plan", nil, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, 394, "halted at the version 11 upgrade height 394"},
-		{"plain stall", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, 900, ""},
+		{"gov", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, signalUpgrade{}, 999, "halted at the v4.0.0 upgrade height 1,000"},
+		{"signal", &upgradePlan{Name: "v11", Height: 395}, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, signalUpgrade{}, 394, "halted at the version 11 upgrade height 394"},
+		{"signal without plan", nil, signalState{Version: 11, UpgradeVersion: 11, UpgradeHeight: 394}, signalUpgrade{}, 394, "halted at the version 11 upgrade height 394"},
+		// devnet 17 Oct: the signal query no longer had the upgrade, the card said 524
+		{"signal gone at height", &upgradePlan{Name: "v11", Height: 524}, signalState{Version: 11}, signalUpgrade{Version: 11, Height: 523}, 523, "halted at the version 11 upgrade height 523"},
+		{"plain stall", &upgradePlan{Name: "v4.0.0", Height: 1000}, signalState{}, signalUpgrade{}, 900, ""},
 	} {
-		cc.upgrade, cc.signal, cc.lastBlockNum = tc.plan, tc.signal, tc.height
+		cc.upgrade, cc.signal, cc.signalLast, cc.lastBlockNum = tc.plan, tc.signal, tc.last, tc.height
 		lines := strings.SplitN(stalled.summary(), "\n", 2)
 		got := ""
 		if len(lines) == 2 {

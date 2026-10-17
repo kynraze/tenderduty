@@ -30,10 +30,12 @@ func TestLegacyJailMessages(t *testing.T) {
 
 // watchAlerts runs a chain's alarm loop and collects what it sends for a while.
 func watchAlerts(t *testing.T, c *Config, chain *ChainConfig) map[string]*alertMsg {
+	t.Helper()
+	fastWatch(t)
 	c.Chains["Chain"] = chain
 	c.startWorker(chain.watch)
 	got := make(map[string]*alertMsg)
-	deadline := time.After(2500 * time.Millisecond)
+	deadline := time.After(250 * time.Millisecond)
 	for {
 		select {
 		case alert := <-c.alertChan:

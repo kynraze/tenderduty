@@ -547,6 +547,26 @@ func TestReportStakingProtobuf(t *testing.T) {
 	}
 }
 
+func TestReportFullHourSurvivesTrim(t *testing.T) {
+	c := auditConfig(t)
+	start := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	cc := &ChainConfig{name: "Chain", monitoring: true, monitoringSince: start, reportWatchAt: start}
+	c.Chains[cc.name] = cc
+	cc.stateMux.Lock()
+	// 5.9s pieces: their float sum lands just above 3600
+	for at := start; at.Before(start.Add(time.Hour)); {
+		at = at.Add(5900 * time.Millisecond)
+		cc.reportWatchingLocked(at)
+		cc.monitoringSince = at
+	}
+	cc.stateMux.Unlock()
+	c.recordReportBlock(cc.name, start, StatusSigned, false)
+	saved := c.savedReports(time.Now())
+	if hours := saved.Hours[cc.name]; len(hours) == 0 || hours[0].Watched != 3600 || hours[0].Signed != 1 {
+		t.Fatalf("full hour dropped or miscounted: %+v", hours)
+	}
+}
+
 func TestReportStateAndWatching(t *testing.T) {
 	c := auditConfig(t)
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)

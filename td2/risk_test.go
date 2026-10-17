@@ -62,6 +62,7 @@ chains:
 }
 
 func TestJailRiskAlertFires(t *testing.T) {
+	fastWatch(t)
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "consensus", Window: 10_000, Missed: 3_000, MaxMissed: 5_000}}
 	chain.Alerts.MissedBlocksAlerts, chain.Alerts.JailRiskPercent = true, 50
@@ -84,6 +85,7 @@ func TestJailRiskAlertFires(t *testing.T) {
 }
 
 func TestJailSoonAlertFires(t *testing.T) {
+	fastWatch(t)
 	c := auditConfig(t)
 	// 100 misses left at 6s a block is 10 minutes away
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", statConsecutiveMiss: 5, blockTime: 6 * time.Second,

@@ -250,7 +250,9 @@ func (cc *ChainConfig) reportWatchingLocked(now time.Time) {
 		if next.After(end) {
 			next = end
 		}
-		td.reportHourLocked(cc.name, from).Watched += next.Sub(from).Seconds()
+		// float pieces can sum past 3600 and the trim would drop the whole hour
+		h := td.reportHourLocked(cc.name, from)
+		h.Watched = math.Min(h.Watched+next.Sub(from).Seconds(), 3600)
 		from = next
 	}
 }

@@ -205,21 +205,21 @@ var raisedRules = []cardRule{
 		if len(rest) > 0 {
 			value += " since " + strings.TrimPrefix(rest[0], "last received ")
 		}
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Metrics", dotRed+" "+value), row("", "Why", "OTel alerts (peers, serving, pruning) are paused")}, used: true}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Metrics", dotRed+" "+value), row("❓", "Why", "OTel alerts (peers, serving, pruning) are paused")}, used: true}
 	}},
 	{regexp.MustCompile(`^Bridge on (\S+) stopped pruning$`), func(_ *alertMsg, m, rest []string) cardParts {
 		value := "stalled"
 		if len(rest) > 0 {
 			value = "stalled at " + strings.TrimPrefix(rest[0], "stuck at ")
 		}
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("", "Why", "disk keeps growing")}, used: true}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("❓", "Why", "disk keeps growing")}, used: true}
 	}},
 	{regexp.MustCompile(`^Bridge on (\S+) is failing to prune$`), func(_ *alertMsg, m, rest []string) cardParts {
 		value := "blocks failed"
 		if len(rest) > 0 {
 			value = rest[0]
 		}
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("", "Why", "those blocks stay on disk")}, used: true}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Pruning", dotRed+" "+value), row("❓", "Why", "those blocks stay on disk")}, used: true}
 	}},
 	{regexp.MustCompile(`^Bridge on (\S+) has (too few|no) full peers$`), func(_ *alertMsg, m, rest []string) cardParts {
 		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("\U0001f309", "Bridge", dotRed+" too few full peers")}, used: true}
@@ -265,7 +265,11 @@ var raisedRules = []cardRule{
 		return cardParts{ident: who(m[1], m[3]), state: []alertField{row("📉", "Window", "> "+m[2]+"% missed")}}
 	}},
 	{cardStalled, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🧱", "Blocks", dotRed+" no new block in "+m[2]+" minutes")}}
+		minutes := m[2] + " minutes"
+		if m[2] == "1" {
+			minutes = "1 minute"
+		}
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🧱", "Blocks", dotRed+" no new block in "+minutes)}}
 	}},
 	{noRpcNodes, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🔌", "RPC", dotRed+" no endpoint working")}}

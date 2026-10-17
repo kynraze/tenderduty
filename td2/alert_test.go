@@ -50,6 +50,7 @@ func TestDiscordFailureCanBeRetriedAndResolved(t *testing.T) {
 }
 
 func TestRestoredAlertsRecover(t *testing.T) {
+	fastWatch(t)
 	for _, kind := range []string{"percentage", "stalled", "consecutive"} {
 		t.Run(kind, func(t *testing.T) {
 			oldConfig, oldAlarms := td, alarms

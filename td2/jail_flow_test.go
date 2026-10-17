@@ -1,6 +1,7 @@
 package tenderduty
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -104,6 +105,27 @@ func TestJailRiskRecoveryAndRate(t *testing.T) {
 		t.Fatalf("recovery %q", alert.summary())
 	}
 	checkCard(t, "jail risk recovered", alert.card())
+}
+
+// devnet 17 Oct: signing info said 1 miss while 8 in a row were seen, and the jail was noticed 53s late.
+func TestJailDetailsFromStaleSigningInfo(t *testing.T) {
+	c := auditConfig(t)
+	val := &ValInfo{Moniker: "validator", Valcons: "cons", Bonded: true, Missed: 1, MaxMissed: 10}
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", valInfo: val, blockTime: time.Second, statConsecutiveMiss: 8}
+	c.Chains[cc.name] = cc
+	if got := jailDetail(cc.name, "validator is close to jail on chain-1"); !strings.HasPrefix(got, "8 of 10 misses used") {
+		t.Fatal(got)
+	}
+	now := time.Date(2026, 10, 16, 17, 41, 45, 0, time.UTC)
+	jailed := &ValInfo{JailedUntil: now.Add(7 * time.Second), JailDuration: time.Minute}
+	if got := jailStart(jailed, now); !got.Equal(now.Add(-53 * time.Second)) {
+		t.Fatalf("jail start %s", got)
+	}
+	// an old jailed_until, e.g. jailed for low self-delegation: when it was noticed
+	jailed.JailedUntil = now.Add(-time.Hour)
+	if got := jailStart(jailed, now); !got.Equal(now) {
+		t.Fatalf("old jailed_until %s", got)
+	}
 }
 
 func TestJailSettingsAndDefaults(t *testing.T) {
@@ -356,5 +378,58 @@ func TestJailRiskFastChainNeedsConsecutiveThreshold(t *testing.T) {
 		}
 	default:
 		t.Fatal("consecutive threshold did not raise jail risk")
+	}
+}
+
+func TestJailStagesKeepIncidentStart(t *testing.T) {
+	c := auditConfig(t)
+	val := &ValInfo{Moniker: "validator", Valcons: "cons", Bonded: true, Missed: 9000, MaxMissed: 9990}
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", valInfo: val}
+	cc.Alerts.MissedBlocksAlerts, cc.Alerts.AlertIfInactive = true, true
+	c.Chains[cc.name] = cc
+	cc.jailAlarms(val, 0, false)
+	first := <-c.alertChan
+	start := time.Now().Add(-2 * time.Minute)
+	alarms.notifyMux.Lock()
+	alarms.AllAlarms[cc.name][first.message] = start
+	alarms.notifyMux.Unlock()
+	val.Jailed = true
+	cc.jailAlarms(val, 0, false)
+	jailed := "validator is jailed on chain-1"
+	if got := alarms.AllAlarms[cc.name][jailed]; !got.Equal(start) {
+		t.Fatalf("stage start %s, want %s", got, start)
+	}
+	saved, err := json.Marshal(alarms.AllAlarms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alarms.AllAlarms = make(map[string]map[string]time.Time)
+	if err := json.Unmarshal(saved, &alarms.AllAlarms); err != nil {
+		t.Fatal(err)
+	}
+	// Reconcile the saved stage as after a restart, without resetting its start.
+	cc.jailAlarms(val, 0, true)
+	if got := alarms.AllAlarms[cc.name][jailed]; !got.Equal(start) {
+		t.Fatalf("restored start %s", got)
+	}
+	val.Jailed, val.Missed = false, 0
+	cc.jailAlarms(val, 0, false)
+	found := false
+	for len(c.alertChan) > 0 {
+		a := <-c.alertChan
+		if a.resolved && !a.quiet {
+			found = true
+			if a.lasted < 2*time.Minute || a.uniqueId != first.uniqueId {
+				t.Fatalf("recovery lasted %s, id %s", a.lasted, a.uniqueId)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no recovery")
+	}
+	for _, incident := range c.reportData.Incidents {
+		if incident.Key == jailed && !incident.Start.Equal(start) {
+			t.Fatalf("report start %s", incident.Start)
+		}
 	}
 }

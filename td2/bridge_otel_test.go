@@ -609,7 +609,7 @@ func TestBridgeMetricsStopped(t *testing.T) {
 				}
 				return
 			}
-			message := "Bridge on mocha-5 stopped sending metrics\nlast received " + cc.bridge.MetricsAt.In(alertLocation()).Format("15:04")
+			message := "Bridge on mocha-5 stopped sending metrics\nlast received " + cc.bridge.MetricsAt.In(alertLocation()).Format("15:04 MST")
 			if len(active) != 1 || !active[message] || bridgeKind(message) != "metrics_stopped" || !bridgeMetricKind(bridgeKind(message)) {
 				t.Fatalf("missing metrics alarm: %v", active)
 			}
@@ -620,7 +620,7 @@ func TestBridgeMetricsStopped(t *testing.T) {
 				t.Fatal(label)
 			}
 			card := (&alertMsg{chain: cc.name, message: message, severity: "warning"}).card()
-			if !card.known() || len(card.Fields) < 3 || card.Fields[1] != row("\U0001f309", "Metrics", dotRed+" not received since "+cc.bridge.MetricsAt.In(alertLocation()).Format("15:04")) || card.Fields[2] != row("", "Why", "OTel alerts (peers, serving, pruning) are paused") {
+			if !card.known() || len(card.Fields) < 3 || card.Fields[1] != row("\U0001f309", "Metrics", dotRed+" not received since "+cc.bridge.MetricsAt.In(alertLocation()).Format("15:04 MST")) || card.Fields[2] != row("❓", "Why", "OTel alerts (peers, serving, pruning) are paused") {
 				t.Fatalf("raised card: %+v", card)
 			}
 		})

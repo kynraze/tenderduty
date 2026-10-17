@@ -258,7 +258,7 @@ func TestOwnNodeVersionsVisibility(t *testing.T) {
 	if len(cc.dashboardStatus().RPCNodes) != 0 {
 		t.Fatal("hidden dashboard contains nodes")
 	}
-	if got := cc.statusDetail(cc.name, time.Now()); strings.Contains(got, "rpc.example") || strings.Contains(got, "10.4.0") {
+	if got := cc.statusDetail(cc.name, time.Now()); strings.Contains(got, "rpc.example") || strings.Contains(got, "10.4.0") || !strings.Contains(got, "Node 1:</b> down") {
 		t.Fatalf("hidden telegram contains node version: %q", got)
 	}
 }

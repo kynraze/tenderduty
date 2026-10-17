@@ -96,7 +96,7 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 	cc.stateMux.Lock()
 	if val.Jailed {
 		if cc.jailedSince.IsZero() {
-			cc.jailedSince = time.Now()
+			cc.jailedSince = jailStart(val, time.Now())
 		}
 	} else {
 		cc.jailedSince = time.Time{}
@@ -177,6 +177,16 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 			}
 		}
 	}
+	var started time.Time
+	alarms.notifyMux.RLock()
+	for message := range active {
+		if saved := alarms.AlarmIDs[cc.name+"\x00"+message]; saved == id || saved == "" && jailAlarmID(val, message) == id {
+			if at := alarms.AllAlarms[cc.name][message]; !at.IsZero() && (started.IsZero() || at.Before(started)) {
+				started = at
+			}
+		}
+	}
+	alarms.notifyMux.RUnlock()
 	best := ""
 	for message := range active {
 		if message == wanted {
@@ -214,7 +224,7 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 		td.alert(cc.name, message, "info", true, &oldID)
 	}
 	if wanted != "" && (!active[wanted] || reconcile) {
-		td.alert(cc.name, wanted, severity, false, &id)
+		td.recordSince(cc.name, wanted, severity, false, false, &id, started)
 	}
 }
 
@@ -228,6 +238,12 @@ func jailDetail(chain, message string) string {
 	val, _ := cc.validatorState()
 	if val == nil {
 		return ""
+	}
+	// signing info lags; a run of misses seen since is at least that many
+	if _, _, consecutive := cc.blockState(); int64(consecutive) > val.Missed && val.MaxMissed > 0 {
+		copied := *val
+		copied.Missed = int64(consecutive)
+		val = &copied
 	}
 	if strings.Contains(message, " is tombstoned on ") {
 		return cc.slashSnapshot().detail(true, alertLocation())
@@ -275,6 +291,16 @@ func jailDetail(chain, message string) string {
 		return "not in the active set"
 	}
 	return ""
+}
+
+// jailStart is when a downtime jail began: jailed_until minus downtime_jail_duration.
+// ponytail: only trusted within 10 minutes of noticing, else a jail for another reason could read an old jailed_until.
+func jailStart(val *ValInfo, now time.Time) time.Time {
+	start := val.JailedUntil.Add(-val.JailDuration)
+	if val.JailDuration > 0 && !start.After(now) && now.Sub(start) < 10*time.Minute {
+		return start
+	}
+	return now
 }
 
 func (cc *ChainConfig) jailSince() time.Time {

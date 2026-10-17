@@ -51,6 +51,7 @@ type groupHarness struct {
 	discord  []DiscordMessage
 	slack    []SlackMessage
 	failTg   bool
+	failedTg int
 	lookups  atomic.Int32
 }
 
@@ -89,7 +90,6 @@ func newGroupHarness(t *testing.T, dns map[string]string) *groupHarness {
 	h.c.NodeDownMin, h.c.NodeDownSeverity = testNodeDownMin, "critical"
 	h.c.GroupNodeAlerts, h.c.GroupWaitSeconds = true, 2
 	h.c.Telegram.Enabled = yes(true)
-	h.c.stateFile = filepath.Join(t.TempDir(), "state.json")
 	return h
 }
 
@@ -107,6 +107,9 @@ func (h *groupHarness) serve(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		h.mux.Lock()
 		fail := h.failTg
+		if fail {
+			h.failedTg++
+		}
 		if !fail {
 			h.telegram = append(h.telegram, sentTelegram{chat: r.Form.Get("chat_id"), text: r.Form.Get("text")})
 		}
@@ -217,7 +220,7 @@ func (h *groupHarness) waitFor(what string, ok func() bool) {
 func (h *groupHarness) waitTelegram(n int) []sentTelegram {
 	h.t.Helper()
 	h.waitFor("telegram messages", func() bool { return len(h.telegramSent()) >= n })
-	time.Sleep(4 * groupUnit)
+	h.waitFor("the outbox to drain", h.drained)
 	sent := h.telegramSent()
 	if len(sent) != n {
 		h.t.Fatalf("%d telegram messages, want %d: %+v", len(sent), n, sent)
@@ -251,6 +254,7 @@ func TestGroupedNodesOfOneServerAreOneMessage(t *testing.T) {
 	h.down("AtomOne")
 	h.down("Realio")
 	sent := h.waitTelegram(1)
+	time.Sleep(4 * groupUnit)
 	if time.Since(started) < 3*groupUnit {
 		t.Errorf("sent after %v, before the group wait", time.Since(started))
 	}
@@ -286,6 +290,7 @@ func TestLoneNodeGetsItsOwnCardAfterTheWait(t *testing.T) {
 	started := time.Now()
 	h.down("AtomOne")
 	sent := h.waitTelegram(1)
+	time.Sleep(4 * groupUnit)
 	if time.Since(started) < 3*groupUnit {
 		t.Errorf("sent after %v, before the group wait", time.Since(started))
 	}
@@ -599,7 +604,7 @@ func TestDiscordAndSlackGetOneMessageToo(t *testing.T) {
 		defer h.mux.Unlock()
 		return len(h.discord) >= 1 && len(h.slack) >= 1
 	})
-	time.Sleep(4 * groupUnit)
+	h.waitFor("the outbox to drain", h.drained)
 	h.mux.Lock()
 	defer h.mux.Unlock()
 	if len(h.discord) != 1 || len(h.slack) != 1 {
@@ -618,6 +623,9 @@ func TestDiscordAndSlackGetOneMessageToo(t *testing.T) {
 }
 
 func TestFailedGroupMessageReleasesEveryNode(t *testing.T) {
+	old := notificationRetryDelay
+	notificationRetryDelay = 250 * time.Millisecond
+	t.Cleanup(func() { notificationRetryDelay = old })
 	h := newGroupHarness(t, map[string]string{"a1": hostAIP, "a2": hostAIP})
 	h.failTg = true
 	h.chain("AlphaOne", "http://a1:26657", "@one")
@@ -625,7 +633,14 @@ func TestFailedGroupMessageReleasesEveryNode(t *testing.T) {
 	h.run()
 	h.down("AlphaOne")
 	h.down("AlphaTwo")
-	time.Sleep(6 * groupUnit)
+	h.waitFor("the failed group to release every node", func() bool {
+		h.mux.Lock()
+		failed := h.failedTg > 0
+		h.mux.Unlock()
+		alarms.notifyMux.RLock()
+		defer alarms.notifyMux.RUnlock()
+		return failed && len(alarms.inFlight[tg]) == 0 && len(alarms.Groups) == 0
+	})
 	alarms.notifyMux.RLock()
 	outbox, sent, flying, groups := len(alarms.Outbox), len(alarms.SentTgAlarms), len(alarms.inFlight[tg]), len(alarms.Groups)
 	alarms.notifyMux.RUnlock()

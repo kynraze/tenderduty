@@ -21,6 +21,13 @@ import (
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
+func fastWatch(t *testing.T) {
+	t.Helper()
+	oldStartup, oldInterval := watchStartupInterval, watchInterval
+	watchStartupInterval, watchInterval = 10*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { watchStartupInterval, watchInterval = oldStartup, oldInterval })
+}
+
 func auditConfig(t *testing.T) *Config {
 	t.Helper()
 	resolutions.Range(func(key, _ interface{}) bool { resolutions.Delete(key); return true })
@@ -28,6 +35,8 @@ func auditConfig(t *testing.T) *Config {
 	ctx, cancel := context.WithCancel(context.Background())
 	delivery, cancelDelivery := context.WithCancel(context.Background())
 	c := &Config{ctx: ctx, cancel: cancel, deliveryCtx: delivery, deliveryCancel: cancelDelivery, alertChan: make(chan *alertMsg, 16), Chains: make(map[string]*ChainConfig)}
+	// made before the cleanup below so workers stop before the dir is removed
+	c.stateFile = filepath.Join(t.TempDir(), "state.json")
 	td, alarms = c, newAlarmCache()
 	t.Cleanup(func() { cancel(); cancelDelivery(); c.workers.Wait(); td, alarms = oldConfig, oldAlarms })
 	return c
@@ -72,6 +81,9 @@ func rpcStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestRPCFailoverUsesIndependentTimeouts(t *testing.T) {
+	old := rpcEndpointTimeout
+	rpcEndpointTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { rpcEndpointTimeout = old })
 	auditConfig(t)
 	release := make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-release }))
@@ -245,7 +257,6 @@ func notificationConfig(t *testing.T, endpoint string) *Config {
 	chain.Alerts.Discord.Enabled = yes(true)
 	chain.Alerts.Discord.Webhook = endpoint
 	c.Chains["Chain"] = chain
-	c.stateFile = filepath.Join(t.TempDir(), "state.json")
 	return c
 }
 
@@ -489,6 +500,7 @@ func TestLegacyRecoveryMigrationPreservesActiveIncident(t *testing.T) {
 }
 
 func TestStaleSigningInfoCannotClearSigningAlert(t *testing.T) {
+	fastWatch(t)
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Chain", ChainId: "test-chain", valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "consensus", Missed: 0, Window: 100, SigningStale: true}}
 	chain.Alerts.MissedBlocksAlerts = true
@@ -499,7 +511,7 @@ func TestStaleSigningInfoCannotClearSigningAlert(t *testing.T) {
 	select {
 	case alert := <-c.alertChan:
 		t.Fatalf("stale data changed the alert: %+v", alert)
-	case <-time.After(2200 * time.Millisecond):
+	case <-time.After(250 * time.Millisecond):
 	}
 	c.cancel()
 	c.workers.Wait()
@@ -567,6 +579,7 @@ func TestRejectedSubscriptionClosesConnectionWorkers(t *testing.T) {
 }
 
 func TestRuntimeShutdownSavesStateAfterMonitoringStops(t *testing.T) {
+	fastWatch(t)
 	oldConfig, oldAlarms := td, alarms
 	defer func() { td, alarms = oldConfig, oldAlarms }()
 	address, _ := bech32.ConvertAndEncode("cosmosvalcons", make([]byte, 20))
@@ -741,6 +754,7 @@ func TestSavedConsecutiveMissesSurviveGapsInHistory(t *testing.T) {
 }
 
 func TestRestoredBlockTimeDoesNotRaiseStallAlarm(t *testing.T) {
+	fastWatch(t)
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", observedBlock: true, lastBlockTime: time.Now().Add(-time.Hour),
 		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
@@ -752,13 +766,14 @@ func TestRestoredBlockTimeDoesNotRaiseStallAlarm(t *testing.T) {
 	select {
 	case alert := <-c.alertChan:
 		t.Fatalf("restart raised an alert from a saved block time: %+v", alert)
-	case <-time.After(3 * time.Second):
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
 // watchFor runs watch on the chain and returns the alerts it raised in that time.
 func watchFor(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration) []*alertMsg {
 	t.Helper()
+	fastWatch(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.Chains[chain.name] = chain
@@ -782,7 +797,7 @@ func TestNoRpcAlarmHasItsOwnDedupKey(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", noNodes: true}
 	chain.Alerts.AlertIfNoServers = true
-	raised := watchFor(t, c, chain, 2*time.Second)
+	raised := watchFor(t, c, chain, 200*time.Millisecond)
 	if len(raised) != 1 || raised[0].uniqueId != "junovaloper1examplenorpc" {
 		t.Fatalf("no RPC alarm used the wrong dedup key: %+v", raised)
 	}
@@ -794,11 +809,11 @@ func TestRestoredDownNodeIsCheckedBeforeAlerting(t *testing.T) {
 	node := &NodeConfig{Url: "http://node:26657", AlertIfDown: true, down: true, downSince: time.Now().Add(-time.Hour)}
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", Nodes: []*NodeConfig{node},
 		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 0 {
+	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 0 {
 		t.Fatalf("node restored as down alerted before it was checked: %+v", raised)
 	}
 	node.markDown("still down", false)
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || raised[0].resolved {
+	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 1 || raised[0].resolved {
 		t.Fatalf("node that is still down did not alert: %+v", raised)
 	}
 }
@@ -827,7 +842,7 @@ func TestRestoredAlarmsNoLongerMonitoredAreCleared(t *testing.T) {
 	for message := range orphaned {
 		alarms.AllAlarms["Juno"][message] = time.Now()
 	}
-	raised := watchFor(t, c, chain, time.Second)
+	raised := watchFor(t, c, chain, 100*time.Millisecond)
 	for _, alert := range raised {
 		if id, ok := orphaned[alert.message]; ok && alert.resolved && alert.uniqueId == id {
 			delete(orphaned, alert.message)
@@ -891,13 +906,13 @@ func TestInactiveAtStartupAlerts(t *testing.T) {
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
 		valInfo: &ValInfo{Moniker: "validator", Valcons: "junovalcons1example"}}
 	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 1 || !strings.Contains(raised[0].message, "active set") {
+	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 1 || !strings.Contains(raised[0].message, "active set") {
 		t.Fatalf("validator outside the active set did not alert at startup: %+v", raised)
 	}
 	chain.validatorMux.Lock()
 	chain.valInfo.Jailed = true
 	chain.validatorMux.Unlock()
-	if raised := watchFor(t, c, chain, 3*time.Second); len(raised) != 2 || !raised[0].quiet || !strings.Contains(raised[1].message, "jailed") {
+	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 2 || !raised[0].quiet || !strings.Contains(raised[1].message, "jailed") {
 		t.Fatalf("jailed validator did not alert: %+v", raised)
 	}
 }
@@ -960,7 +975,8 @@ func TestRefreshReusesSlashingWindow(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := rpchttp.New(server.URL, "/websocket")
-	chain := &ChainConfig{ValAddress: address, client: client}
+	// Token display metadata is unrelated to slashing-window reuse.
+	chain := &ChainConfig{ValAddress: address, client: client, bondTokenAt: time.Now()}
 	for _, first := range []bool{true, false, false, true} {
 		if err := chain.GetValInfo(first); err != nil {
 			t.Fatal(err)
@@ -992,7 +1008,7 @@ func TestDashboardOnlyUpdatedOnChange(t *testing.T) {
 	c.updateChan = make(chan *dash.ChainStatus, 16)
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", blocksResults: make([]int, showBLocks),
 		valInfo: &ValInfo{Moniker: "validator", Bonded: true, Valcons: "junovalcons1example"}}
-	watchFor(t, c, chain, 5*time.Second)
+	watchFor(t, c, chain, 500*time.Millisecond)
 	if len(c.updateChan) != 1 {
 		t.Fatalf("dashboard was sent %d updates for an unchanged chain", len(c.updateChan))
 	}

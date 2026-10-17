@@ -16,32 +16,33 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// TestParseTallyAbsentVotingPowerIsZero: captured from Celestia mainnet, 3 Oct 2026: version 10, nobody had signalled
-func TestParseTallyAbsentVotingPowerIsZero(t *testing.T) {
-	b, err := hex.DecodeString("109ced96bc0118d49ce8e101")
+func TestParseTally(t *testing.T) {
+	// Captured from Celestia mainnet, 3 Oct 2026: version 10, nobody had signalled.
+	absent, err := hex.DecodeString("109ced96bc0118d49ce8e101")
 	if err != nil {
 		t.Fatal(err)
 	}
-	power, threshold, total, err := parseTally(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if power != 0 || threshold != 394639004 || total != 473566804 {
-		t.Fatalf("power %d threshold %d total %d", power, threshold, total)
-	}
-}
-
-func TestParseTallyWithVotingPower(t *testing.T) {
-	var b []byte
+	var signalled []byte
 	for num, value := range map[protowire.Number]uint64{1: 52000000, 2: 394639004, 3: 473566804} {
-		b = protowire.AppendVarint(protowire.AppendTag(b, num, protowire.VarintType), value)
+		signalled = protowire.AppendVarint(protowire.AppendTag(signalled, num, protowire.VarintType), value)
 	}
-	power, threshold, total, err := parseTally(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if power != 52000000 || threshold != 394639004 || total != 473566804 {
-		t.Fatalf("power %d threshold %d total %d", power, threshold, total)
+	for _, tc := range []struct {
+		name  string
+		data  []byte
+		power uint64
+	}{
+		{"mainnet absent voting power", absent, 0},
+		{"with voting power", signalled, 52000000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			power, threshold, total, err := parseTally(tc.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if power != tc.power || threshold != 394639004 || total != 473566804 {
+				t.Fatalf("power %d threshold %d total %d", power, threshold, total)
+			}
+		})
 	}
 }
 

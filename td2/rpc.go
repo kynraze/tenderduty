@@ -12,12 +12,14 @@ import (
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
+var rpcEndpointTimeout = 10 * time.Second
+
 // newRpc sets up the rpc client used for monitoring. It will try nodes in order until a working node is found.
 // it will also get some initial info on the validator's status.
 func (cc *ChainConfig) newRpc() error {
 	// grab the first working endpoint
 	tryUrl := func(u string) (msg string, down, syncing bool) {
-		ctx, cancel := context.WithTimeout(cc.context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(cc.context(), rpcEndpointTimeout)
 		defer cancel()
 		_, err := url.Parse(u)
 		if err != nil {

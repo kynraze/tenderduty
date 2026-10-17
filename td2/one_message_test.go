@@ -122,6 +122,7 @@ func TestAThresholdClearedByItsScheduledUpgradeIsQuiet(t *testing.T) {
 
 // TestAnUnjailIsOneMessage: recovery announces the active set once; legacy "can unjail" alarms clear quietly.
 func TestAnUnjailIsOneMessage(t *testing.T) {
+	fastWatch(t)
 	oldConfig, oldAlarms := td, alarms
 	ctx, cancel := context.WithCancel(context.Background())
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),

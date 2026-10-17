@@ -204,6 +204,10 @@ func stalledUpgradeDetail(chain string) string {
 	}
 	cc.stateMux.RLock()
 	plan, signal, height := cc.upgrade, cc.signal, cc.lastBlockNum
+	// the signal query drops the upgrade once its height is reached
+	if signal.UpgradeHeight == 0 && cc.signalLast.Height > 0 {
+		signal.UpgradeVersion, signal.UpgradeHeight = cc.signalLast.Version, cc.signalLast.Height
+	}
 	cc.stateMux.RUnlock()
 	var name string
 	var at int64

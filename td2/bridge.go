@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -109,6 +110,10 @@ func (cc *ChainConfig) bridgeRPC(ctx context.Context, method string, result inte
 	if err != nil {
 		if e, ok := err.(net.Error); ok && e.Timeout() {
 			return false, "timed out"
+		}
+		var op *net.OpError
+		if errors.As(err, &op) {
+			return false, "connection failed: " + op.Err.Error()
 		}
 		return false, "connection failed"
 	}
@@ -356,7 +361,7 @@ func (cc *ChainConfig) bridgeAlarms(reconcile bool) {
 				}
 			}
 		} else if time.Since(s.MetricsAt) >= bridgeMetricsWindow {
-			want("Bridge on " + cc.ChainId + " stopped sending metrics\nlast received " + s.MetricsAt.In(alertLocation()).Format("15:04"))
+			want("Bridge on " + cc.ChainId + " stopped sending metrics\nlast received " + s.MetricsAt.In(alertLocation()).Format("15:04 MST"))
 		}
 		if s.metricsFresh(time.Now()) {
 			if s.PrunerKnown && s.LastPruned > 0 && !s.PrunedAt.IsZero() && time.Since(s.PrunedAt) >= bridgePruneWindow && s.Head > s.PrunedHead {

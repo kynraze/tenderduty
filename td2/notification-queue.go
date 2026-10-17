@@ -191,8 +191,10 @@ func (c *Config) acknowledge(sequence uint64) error {
 	return c.persistState()
 }
 
+var notificationRetryDelay = 5 * time.Second
+
 func (c *Config) deliverQueue(key string) {
-	delay := 5 * time.Second
+	delay := notificationRetryDelay
 	for c.context().Err() == nil {
 		item, exists, skip := c.queuedHead(key)
 		if !exists {
@@ -258,7 +260,7 @@ func (c *Config) deliverQueue(key string) {
 			if err := c.acknowledge(item.Sequence); err != nil {
 				l("could not save notification acknowledgement:", err)
 			}
-			delay = 5 * time.Second
+			delay = notificationRetryDelay
 			continue
 		}
 		if !errors.Is(err, errNotificationBusy) {

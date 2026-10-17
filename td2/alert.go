@@ -857,6 +857,11 @@ func (c *Config) resolveQuietly(chainName, message string, id *string) {
 }
 
 func (c *Config) record(chainName, message, severity string, resolved, quiet bool, id *string, silent ...bool) {
+	c.recordSince(chainName, message, severity, resolved, quiet, id, time.Time{}, silent...)
+}
+
+// recordSince carries the incident start across stage changes, including saved state.
+func (c *Config) recordSince(chainName, message, severity string, resolved, quiet bool, id *string, started time.Time, silent ...bool) {
 	a := c.makeAlert(chainName, message, severity, resolved, id)
 	if a == nil {
 		return
@@ -917,7 +922,10 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 		lasted = time.Since(alarms.AllAlarms[chainName][message])
 		delete(alarms.AllAlarms[chainName], message)
 	} else if !resolved && alarms.AllAlarms[chainName][message].IsZero() {
-		alarms.AllAlarms[chainName][message] = time.Now()
+		if started.IsZero() {
+			started = time.Now()
+		}
+		alarms.AllAlarms[chainName][message] = started
 		c.recordReportAlarm(chainName, message, alarms.AllAlarms[chainName][message], time.Time{})
 	}
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
@@ -956,6 +964,11 @@ func (c *Config) record(chainName, message, severity string, resolved, quiet boo
 	}
 }
 
+var (
+	watchStartupInterval = time.Second
+	watchInterval        = 2 * time.Second
+)
+
 // watch handles monitoring for missed blocks, stalled chain, node downtime
 // and also updates a few prometheus stats
 // FIXME: not watching for nodes that are lagging the head block!
@@ -981,7 +994,7 @@ func (cc *ChainConfig) watch() {
 			if cc.alertSettings().BridgeAlerts {
 				cc.bridgeAlarms(false)
 			}
-			if !waitContext(cc.context(), time.Second) {
+			if !waitContext(cc.context(), watchStartupInterval) {
 				return
 			}
 			if cc.alertSettings().AlertIfNoServers && !noNodes && cc.hasNoNodes() && noNodesSec >= 60*td.settings().NodeDownMin {
@@ -1018,7 +1031,7 @@ func (cc *ChainConfig) watch() {
 	}
 
 	for {
-		if !waitContext(cc.context(), 2*time.Second) {
+		if !waitContext(cc.context(), watchInterval) {
 			return
 		}
 		select {
