@@ -97,6 +97,9 @@ type registryAsset struct {
 }
 
 type registryChain struct {
+	LogoURIs struct {
+		PNG string `json:"png"`
+	} `json:"logo_URIs"`
 	Assets       []registryAsset `json:"assets"`
 	NetworkType  string          `json:"network_type"`
 	ChainID      string          `json:"chain_id"`
@@ -125,7 +128,12 @@ func fetchRegistryChain(ctx context.Context, chainID string) (registryChain, err
 		}
 		pathMux.Lock()
 		entry = cosmosPaths[chainID]
+		partial := registryPartial
 		pathMux.Unlock()
+		if entry.path == "" && partial {
+			// not "not in the registry": a testnet would be counted as mainnet until restart
+			return registryChain{}, fmt.Errorf("%s not found while a chain registry is unreachable", chainID)
+		}
 	}
 	if entry.path == "" {
 		reportNetworks.Store(chainID, false)

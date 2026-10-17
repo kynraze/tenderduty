@@ -335,3 +335,11 @@ func TestFibreStatusJSON(t *testing.T) {
 		t.Fatalf("unreachable %+v", f)
 	}
 }
+
+// endorsements before the first provider check still reach the dashboard, marked pending
+func TestFibreDashboardPending(t *testing.T) {
+	f := (&fibreReport{Pending: true, Endorsements: dash.FibreWindow{Endorsed: 1}}).dashboard()
+	if f == nil || !f.Pending || f.Registered {
+		t.Fatalf("got %+v", f)
+	}
+}

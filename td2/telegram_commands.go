@@ -36,10 +36,33 @@ func (c *Config) commandAllowed(chatId int64, chatType string, fromId int64) boo
 func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 	c.chainsMux.RLock()
 	defer c.chainsMux.RUnlock()
-	for chainName, chain := range c.Chains {
-		if strings.EqualFold(chainName, name) || strings.EqualFold(chain.ChainId, name) {
-			return chainName, chain
+	if chain := c.Chains[name]; chain != nil {
+		return name, chain
+	}
+	names := sortedReportNames(c.Chains)
+	for _, chainName := range names {
+		if strings.EqualFold(chainName, name) {
+			return chainName, c.Chains[chainName]
 		}
+	}
+	matches := make([]string, 0)
+	for _, chainName := range names {
+		if strings.EqualFold(c.Chains[chainName].ChainId, name) {
+			matches = append(matches, chainName)
+		}
+	}
+	if len(matches) == 0 {
+		for _, chainName := range names {
+			if strings.HasPrefix(strings.ToLower(chainName), strings.ToLower(name)) {
+				matches = append(matches, chainName)
+			}
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], c.Chains[matches[0]]
+	}
+	if len(matches) > 1 {
+		return fmt.Sprintf("%q matches %s; be more specific", name, strings.Join(matches, ", ")), nil
 	}
 	return "", nil
 }
@@ -74,6 +97,9 @@ func (c *Config) telegramCommand(command, args string, now time.Time, from tgMen
 	if name := strings.TrimSpace(args); name != "" {
 		chainName, cc := c.chainNamed(name)
 		if cc == nil {
+			if chainName != "" {
+				return html.EscapeString(chainName)
+			}
 			return "No chain named " + html.EscapeString(name)
 		}
 		return cc.statusDetail(chainName, now)
@@ -148,6 +174,26 @@ func statusField(icon, label, value string) string {
 	return icon + " <b>" + label + ":</b> " + value
 }
 
+// With every own node down but blocks still arriving, a public node is serving the chain.
+func (cc *ChainConfig) fallbackStatus(healthyNodes int) string {
+	if !cc.publicFallbackEnabled() {
+		return "⚪ off"
+	}
+	cc.stateMux.RLock()
+	noNodes, public := cc.noNodes, cc.publicNode
+	cc.stateMux.RUnlock()
+	switch {
+	case healthyNodes > 0 && len(cc.Nodes) > 0:
+		return "🟢 on, standby"
+	case noNodes:
+		return "🔴 on, no public node working"
+	case public != "" && !td.HideLogs:
+		return "🟡 in use · <code>" + html.EscapeString(nodeEndpoint(public)) + "</code>"
+	default:
+		return "🟡 in use"
+	}
+}
+
 // statusDetail shows validator, bridge, Fibre and active alerts.
 func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	info, _ := cc.validatorState()
@@ -175,13 +221,17 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 		}
 		lines = append(lines, statusField("🎯", "Missed", missed))
 	}
-	if info.VotingPower > 0 {
+	if info.VotingPower > 0 || info.stakeDisplay() != "" {
 		power := thousands(info.VotingPower)
+		if stake := info.stakeDisplay(); stake != "" {
+			power = html.EscapeString(stake)
+		}
 		if info.TotalPower > 0 {
 			power += " (" + html.EscapeString(percent(info.VotingPower, info.TotalPower)) + ")"
 		}
 		lines = append(lines, statusField("⚖️", "Voting power", power+fmt.Sprintf(" · #%d/%d", info.Rank, info.ActiveSet)))
 	}
+	lines = append(lines, cc.statusReportLines(name, now)...)
 	healthyNodes := 0
 	for _, node := range cc.Nodes {
 		if !node.snapshot().down {
@@ -196,20 +246,37 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 		rpc = "🟡"
 	}
 	lines = append(lines, statusField("🔌", "RPC", fmt.Sprintf("%s %d/%d healthy", rpc, healthyNodes, len(cc.Nodes))))
-	if !td.HideLogs {
-		for _, node := range cc.Nodes {
-			status := node.snapshot()
-			text := nodeEndpoint(node.Url)
-			if node.AlertIfDown {
-				text += " · " + nodeBinaryLabel(status)
-			}
-			if status.down {
-				text += " · down"
-			} else {
-				text += " · healthy"
-			}
-			lines = append(lines, statusField("🔌", "Node", text))
+	lines = append(lines, statusField("🛟", "Public fallback", cc.fallbackStatus(healthyNodes)))
+	for i, node := range cc.Nodes {
+		status := node.snapshot()
+		text := nodeEndpoint(node.Url)
+		label := "Node"
+		if td.HideLogs {
+			text = ""
+			label = fmt.Sprintf("Node %d", i+1)
 		}
+		// hide_logs also hides versions: a public channel shouldn't learn which node is unpatched
+		if node.AlertIfDown && !td.HideLogs {
+			if text != "" {
+				text += " · "
+			}
+			text += nodeBinaryLabel(status)
+		}
+		if status.down {
+			if text != "" {
+				text += " · "
+			}
+			text += "down"
+			if td.HideLogs && !status.downSince.IsZero() {
+				text += " " + shortDuration(now.Sub(status.downSince))
+			}
+		} else {
+			if text != "" {
+				text += " · "
+			}
+			text += "healthy"
+		}
+		lines = append(lines, statusField("🔌", label, html.EscapeString(text)))
 	}
 	if title, facts := cc.bridgeFacts(now); title != "" {
 		head := "\U0001f309 <b>Bridge</b>"
@@ -324,4 +391,59 @@ func (c *Config) telegramCommandsContext(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (cc *ChainConfig) statusReportLines(name string, now time.Time) []string {
+	lines := make([]string, 0)
+	history := td.savedReports(now)
+	var snapshot *reportSnapshot
+	if snapshots := history.Snapshots[name]; len(snapshots) > 0 {
+		snapshot = &snapshots[len(snapshots)-1]
+	}
+	if snapshot != nil && snapshot.Delegators != nil {
+		value := strconv.FormatUint(*snapshot.Delegators, 10)
+		if snapshot.Self != nil {
+			value += " · self " + compactReportNumber(*snapshot.Self)
+			if snapshot.Symbol != "" {
+				value += " " + snapshot.Symbol
+			}
+		}
+		lines = append(lines, statusField("🤝", "Delegators", html.EscapeString(value)))
+	}
+	total := reportTotals(history.Hours[name], now.Add(-24*time.Hour), now)
+	if signed, known := reportSigned(total); known {
+		value := fmt.Sprintf("%.2f%% · proposed %d/%d", signed, total.Proposed, total.Proposed+total.MissedProps)
+		lines = append(lines, statusField("✍️", "Signing 24h", value))
+	}
+	if cc.alertSettings().GovAlerts {
+		proposals, loaded := cc.govSnapshot()
+		open, unvoted := 0, 0
+		pending := make([]string, 0, 2)
+		sort.Slice(proposals, func(i, j int) bool { return proposals[i].VotingEnd.Before(proposals[j].VotingEnd) })
+		if loaded {
+			for _, p := range proposals {
+				if !p.VotingEnd.After(now) {
+					continue
+				}
+				open++
+				if !p.Voted {
+					unvoted++
+					if len(pending) < 2 {
+						pending = append(pending, fmt.Sprintf("#%d, ends %s", p.ID, reportDuration(p.VotingEnd.Sub(now))))
+					}
+				}
+			}
+		}
+		if open > 0 {
+			value := fmt.Sprintf("%d open · %d not voted", open, unvoted)
+			if len(pending) > 0 {
+				value += " (" + strings.Join(pending, "; ") + ")"
+			}
+			if unvoted > len(pending) {
+				value += fmt.Sprintf(" +%d more", unvoted-len(pending))
+			}
+			lines = append(lines, statusField("🗳", "Governance", html.EscapeString(value)))
+		}
+	}
+	return lines
 }

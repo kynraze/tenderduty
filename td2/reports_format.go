@@ -206,6 +206,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 	}
 	c.chainsMux.RUnlock()
 	partial := 0
+	partialMin, partialMax := span, time.Duration(0)
 	healthy, eventful, incidents, votes, due := 0, 0, 0, 0, 0
 	dueNames := make([]string, 0)
 	for _, name := range sortedReportNames(chains) {
@@ -247,6 +248,13 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			if previous != nil {
 				powerChange = reportPowerChange(current.Power, previous.Power)
 			}
+			if current.Stake != nil && current.Symbol != "" {
+				power = compactReportNumber(*current.Stake) + " " + current.Symbol
+				powerChange = ""
+				if previous != nil && previous.Stake != nil && previous.Symbol == current.Symbol {
+					powerChange = reportChange(*current.Stake-*previous.Stake) + " " + current.Symbol
+				}
+			}
 			if current.Rank != nil && *current.Rank > 0 {
 				rank = fmt.Sprintf("#%d", *current.Rank)
 				if previous != nil {
@@ -262,7 +270,10 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			}
 			if current.Self != nil {
 				self = compactReportNumber(*current.Self)
-				if previous != nil && previous.Self != nil {
+				if current.Symbol != "" {
+					self += " " + current.Symbol
+				}
+				if previous != nil && previous.Self != nil && current.Symbol == previous.Symbol {
 					self += " (" + reportChange(*current.Self-*previous.Self) + ")"
 				}
 			}
@@ -420,6 +431,13 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		}
 		if total.Watched < span.Seconds()-60 {
 			partial++
+			duration := time.Duration(total.Watched) * time.Second
+			if duration < partialMin {
+				partialMin = duration
+			}
+			if duration > partialMax {
+				partialMax = duration
+			}
 			watched := reportWatchedDuration(time.Duration(total.Watched)*time.Second) + " of " + reportWatchedDuration(span)
 			if row.Compact {
 				row.Summary += " · watched " + watched
@@ -456,7 +474,15 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 	result.Footer = "Watched " + reportWatchedDuration(span) + " of " + reportWatchedDuration(span)
 	if partial > 0 {
 		result.Header[0] += fmt.Sprintf(" · %d of %d watched partly", partial, len(result.Rows))
-		result.Footer += fmt.Sprintf(" on %d of %d chains", len(result.Rows)-partial, len(result.Rows))
+		watched := reportWatchedDuration(partialMin)
+		if maximum := reportWatchedDuration(partialMax); maximum != watched {
+			watched += "–" + maximum
+		}
+		if partial == len(result.Rows) {
+			result.Footer = "Watched " + watched + " of " + reportWatchedDuration(span) + fmt.Sprintf(" on %d chains", partial)
+		} else {
+			result.Footer += fmt.Sprintf(" on %d of %d chains, %d partly (%s)", len(result.Rows)-partial, len(result.Rows), partial, watched)
+		}
 	}
 	result.Footer += " · " + loc.String()
 	return result

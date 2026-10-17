@@ -3,6 +3,7 @@ package tenderduty
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -61,4 +62,17 @@ func parseReportSelf(b []byte) (*float64, error) {
 		return nil, err
 	}
 	return amount, nil
+}
+
+func (info *ValInfo) stakeDisplay() string {
+	if !info.Token.stakeKnown() {
+		return ""
+	}
+	amount, ok := new(big.Int).SetString(info.Tokens, 10)
+	if !ok || amount.Sign() < 0 {
+		return ""
+	}
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(info.Token.Exponent)), nil)
+	value, _ := new(big.Rat).SetFrac(amount, scale).Float64()
+	return compactReportNumber(value) + " " + info.Token.Symbol
 }

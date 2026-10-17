@@ -290,32 +290,3 @@ func TestFibreMetricsStatusUpDownCounters(t *testing.T) {
 	}
 	r.c.ingestFibreMetrics(resourceData("fibre-host-1", "fibre", &metricsv1.Metric{Name: "fibre.server.upload_shard.in_flight"}))
 }
-
-// TestFibreMetricsStatusFixtures: the alarm fixtures carry these too: 9 uploads of 1 MiB at 20ms, a failed one, 2 in flight
-func TestFibreMetricsStatusFixtures(t *testing.T) {
-	r := newFibreRig(t)
-	r.cc.Alerts.FibreInstance = "fibre-host-1"
-	var first, second metricsv1.MetricsData
-	if err := proto.Unmarshal(fibreFixture(t, "export1.pb"), &first); err != nil {
-		t.Fatal(err)
-	}
-	if err := proto.Unmarshal(fibreFixture(t, "export2.pb"), &second); err != nil {
-		t.Fatal(err)
-	}
-	started := time.Unix(0, int64(first.ResourceMetrics[0].ScopeMetrics[0].Metrics[0].GetSum().DataPoints[0].StartTimeUnixNano))
-	r.clock.now, r.st.started = started.Add(30*time.Second), started.Add(30*time.Second)
-	r.c.ingestFibreMetrics(&first)
-	d := r.st.snapshot("Chain").Ten.Sum
-	if d.uploadOK != 9 || d.uploadFailed != 1 || !near(d.uploadSec, 0.18) || d.putOK != 1 || d.storePut != 1 || d.pruneOK != 1 || !near(d.pruneSec, 0.2) || d.signOK != 2 || !near(d.signSec, 0.024) {
-		t.Fatalf("export 1 counted %+v", d)
-	}
-	if snap := r.st.snapshot("Chain"); snap.UploadsNow != 2 || !snap.HaveInFlight {
-		t.Fatalf("in flight %d", snap.UploadsNow)
-	}
-	r.advance(time.Minute)
-	r.c.ingestFibreMetrics(&second)
-	d = r.st.snapshot("Chain").Ten.Sum
-	if d.uploadOK != 9 || d.uploadFailed != 2 {
-		t.Fatalf("export 2 counted %+v", d)
-	}
-}

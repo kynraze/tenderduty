@@ -107,3 +107,27 @@ func TestMentionMeRegistersAndPings(t *testing.T) {
 		t.Fatalf("still pinging after off: %q", got)
 	}
 }
+
+func TestFallbackStatus(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Chain", Nodes: []*NodeConfig{{Url: "http://own:26657"}}}
+	if got := cc.fallbackStatus(1); got != "⚪ off" {
+		t.Fatalf("off: %q", got)
+	}
+	cc.PublicFallback = true
+	if got := cc.fallbackStatus(1); got != "🟢 on, standby" {
+		t.Fatalf("standby: %q", got)
+	}
+	cc.publicNode = "https://rpc.public.example:443"
+	if got := cc.fallbackStatus(0); !strings.HasPrefix(got, "🟡 in use") || !strings.Contains(got, "rpc.public.example") {
+		t.Fatalf("in use: %q", got)
+	}
+	c.HideLogs = true
+	if got := cc.fallbackStatus(0); got != "🟡 in use" {
+		t.Fatalf("hidden host: %q", got)
+	}
+	cc.noNodes = true
+	if got := cc.fallbackStatus(0); got != "🔴 on, no public node working" {
+		t.Fatalf("none working: %q", got)
+	}
+}

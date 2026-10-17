@@ -23,28 +23,31 @@ import (
 
 // ValInfo holds most of the stats/info used for secondary alarms. It is refreshed roughly every minute.
 type ValInfo struct {
-	SlashDoubleSign  string    `json:"slash_double_sign,omitempty"`
-	SlashDowntime    string    `json:"slash_downtime,omitempty"`
-	Moniker          string    `json:"moniker"`
-	Unbonding        bool      `json:"unbonding"`
-	Bonded           bool      `json:"bonded"`
-	Jailed           bool      `json:"jailed"`
-	Tombstoned       bool      `json:"tombstoned"`
-	JailedUntil      time.Time `json:"jailed_until"` // when it can unjail
-	Missed           int64     `json:"missed"`
-	Window           int64     `json:"window"`
-	Conspub          []byte    `json:"conspub"`           // 20-byte consensus address
-	ConsKey          []byte    `json:"conskey,omitempty"` // raw ed25519 public key, nil for other key types
-	Valcons          string    `json:"valcons"`
-	SigningUpdatedAt time.Time `json:"signing_updated_at"`
-	SigningStale     bool      `json:"signing_stale"`
-	ValidatorStale   bool      `json:"validator_stale"`
-	VotingPower      int64     `json:"voting_power"`
-	TotalPower       int64     `json:"total_power"`
-	Rank             int       `json:"rank"` // 0 when not in the active set
-	ActiveSet        int       `json:"active_set"`
-	MaxValidators    int       `json:"max_validators"` // 0 when unknown
-	MaxMissed        int64     `json:"max_missed"`     // 0 when unknown
+	Tokens           string        `json:"tokens,omitempty"`
+	Token            bondToken     `json:"token,omitempty"`
+	SlashDoubleSign  string        `json:"slash_double_sign,omitempty"`
+	SlashDowntime    string        `json:"slash_downtime,omitempty"`
+	Moniker          string        `json:"moniker"`
+	Unbonding        bool          `json:"unbonding"`
+	Bonded           bool          `json:"bonded"`
+	Jailed           bool          `json:"jailed"`
+	Tombstoned       bool          `json:"tombstoned"`
+	JailedUntil      time.Time     `json:"jailed_until"` // when it can unjail
+	JailDuration     time.Duration `json:"jail_duration,omitempty"`
+	Missed           int64         `json:"missed"`
+	Window           int64         `json:"window"`
+	Conspub          []byte        `json:"conspub"`           // 20-byte consensus address
+	ConsKey          []byte        `json:"conskey,omitempty"` // raw ed25519 public key, nil for other key types
+	Valcons          string        `json:"valcons"`
+	SigningUpdatedAt time.Time     `json:"signing_updated_at"`
+	SigningStale     bool          `json:"signing_stale"`
+	ValidatorStale   bool          `json:"validator_stale"`
+	VotingPower      int64         `json:"voting_power"`
+	TotalPower       int64         `json:"total_power"`
+	Rank             int           `json:"rank"` // 0 when not in the active set
+	ActiveSet        int           `json:"active_set"`
+	MaxValidators    int           `json:"max_validators"` // 0 when unknown
+	MaxMissed        int64         `json:"max_missed"`     // 0 when unknown
 }
 
 // GetValInfo the first bool is used to determine if extra information about the validator should be printed.
@@ -66,7 +69,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 				if !signingRead {
 					info.Tombstoned, info.Missed, info.JailedUntil = previous.Tombstoned, previous.Missed, previous.JailedUntil
 				}
-				info.Window, info.MaxMissed, info.MaxValidators = previous.Window, previous.MaxMissed, previous.MaxValidators
+				info.Window, info.MaxMissed, info.MaxValidators, info.JailDuration = previous.Window, previous.MaxMissed, previous.MaxValidators, previous.JailDuration
 				info.SigningUpdatedAt = previous.SigningUpdatedAt
 			}
 			info.SigningStale = true
@@ -79,13 +82,16 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 	if client == nil {
 		return errors.New("nil rpc client")
 	}
+	tokenCtx, tokenCancel := context.WithTimeout(cc.context(), 10*time.Second)
+	info.Token = cc.cachedBondToken(tokenCtx)
+	tokenCancel()
 	ctx, cancel := context.WithTimeout(cc.context(), 10*time.Second)
 	defer cancel()
 
 	// Fetch info from /cosmos.staking.v1beta1.Query/Validator
 	// it's easier to ask people to provide valoper since it's readily available on
 	// explorers, so make it easy and lookup the consensus key for them.
-	info.Conspub, info.ConsKey, info.Moniker, info.Jailed, info.Bonded, err = getValStatus(ctx, client, cc.ValAddress, &info.Unbonding)
+	info.Conspub, info.ConsKey, info.Moniker, info.Jailed, info.Bonded, err = getValStatus(ctx, client, cc.ValAddress, &info.Unbonding, &info.Tokens)
 	if err != nil {
 		return
 	}
@@ -167,7 +173,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 
 	// finally get the signed blocks window, it rarely changes so only on (re)connect
 	if !first && previous.Valcons == info.Valcons {
-		info.Window, info.MaxMissed, info.MaxValidators = previous.Window, previous.MaxMissed, previous.MaxValidators
+		info.Window, info.MaxMissed, info.MaxValidators, info.JailDuration = previous.Window, previous.MaxMissed, previous.MaxValidators, previous.JailDuration
 	}
 	if info.Window == 0 {
 		qParams := &slashing.QueryParamsRequest{}
@@ -195,6 +201,7 @@ func (cc *ChainConfig) GetValInfo(first bool) (err error) {
 			info.SlashDowntime = params.Params.SlashFractionDowntime.String()
 		}
 		info.Window = params.Params.SignedBlocksWindow
+		info.JailDuration = params.Params.DowntimeJailDuration
 		info.MaxMissed = maxMissed(info.Window, params.Params.MinSignedPerWindow)
 		info.MaxValidators = getMaxValidators(ctx, client)
 	}
@@ -239,7 +246,7 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub, con
 	return getValStatus(ctx, client, valoper, nil)
 }
 
-func getValStatus(ctx context.Context, client *rpchttp.HTTP, valoper string, unbonding *bool) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
+func getValStatus(ctx context.Context, client *rpchttp.HTTP, valoper string, unbonding *bool, tokens ...*string) (pub, consKey []byte, moniker string, jailed, bonded bool, err error) {
 	if strings.Contains(valoper, "valcons") {
 		_, bz, err := bech32.DecodeAndConvert(valoper)
 		if err != nil {
@@ -294,6 +301,9 @@ func getValStatus(ctx context.Context, client *rpchttp.HTTP, valoper string, unb
 		return nil, nil, "", false, false, errors.New("could not get pubkey for" + valoper)
 	}
 
+	if len(tokens) > 0 && tokens[0] != nil && !val.Validator.Tokens.IsNil() {
+		*tokens[0] = val.Validator.Tokens.String()
+	}
 	if unbonding != nil {
 
 		*unbonding = val.Validator.Status == 2

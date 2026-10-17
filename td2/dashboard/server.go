@@ -52,7 +52,7 @@ func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	return &copy
 }
 
-func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre func(string, string) (FibreHistory, error), bridge func(string, string) (BridgeHistory, error)) error {
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre func(string, string) (FibreHistory, error), bridge func(string, string) (BridgeHistory, error), logo func(string) []byte) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var err error
@@ -156,6 +156,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	upgrader.EnableCompression = true
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/logo", LogoHandler(logo))
 	if fibre != nil {
 		if hideLogs {
 			fibre = hideFibreDetails(fibre)

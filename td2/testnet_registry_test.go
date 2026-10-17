@@ -179,8 +179,11 @@ func TestRegistryKeepsWhatLoaded(t *testing.T) {
 		if name, err := registryName(ctx, "osmosis-1"); err != nil || name != "Osmosis" {
 			t.Fatalf("name = %q, %v", name, err)
 		}
-		if _, err := registryName(ctx, "mocha-4"); !errors.Is(err, errNotInRegistry) {
+		if _, err := registryName(ctx, "mocha-4"); err == nil || errors.Is(err, errNotInRegistry) {
 			t.Fatalf("testnet chain resolved without its registry: %v", err)
+		}
+		if _, known := reportNetworks.Load("mocha-4"); known {
+			t.Fatal("network stored while the testnet registry is down")
 		}
 	})
 	t.Run("mainnet down", func(t *testing.T) {
@@ -335,5 +338,50 @@ func TestRegistryAssetDenoms(t *testing.T) {
 				t.Fatal("testnet wasn't marked for reports")
 			}
 		})
+	}
+}
+
+func TestDashboardNetwork(t *testing.T) {
+	c := auditConfig(t)
+	useRegistries(t, mainnetRegistry(t), testnetRegistry(t))
+	for _, id := range []string{"mocha-4", "missing-dashboard"} {
+		id := id
+		reportNetworks.Delete(id)
+		dashboardNetworkLookups.Delete(id)
+		t.Cleanup(func() { reportNetworks.Delete(id); dashboardNetworkLookups.Delete(id) })
+	}
+	cc := &ChainConfig{name: "Chain", ChainId: "mocha-4"}
+	c.Chains[cc.name] = cc
+	if cc.dashboardStatus().Testnet {
+		t.Fatal("unknown network must default to mainnet")
+	}
+	cc.lookupDashboardNetwork(context.Background())
+	if !cc.dashboardStatus().Testnet {
+		t.Fatal("registry testnet missing from dashboard")
+	}
+	mainnet := false
+	cc.Testnet = &mainnet
+	if cc.dashboardStatus().Testnet {
+		t.Fatal("mainnet override ignored")
+	}
+	testnet := true
+	cc.ChainId = "missing-dashboard"
+	cc.Testnet = &testnet
+	cc.lookupDashboardNetwork(context.Background())
+	if !cc.dashboardStatus().Testnet {
+		t.Fatal("testnet override ignored")
+	}
+	if _, started := dashboardNetworkLookups.Load(cc.ChainId); started {
+		t.Fatal("override must skip registry")
+	}
+	cc.Testnet = nil
+	cc.lookupDashboardNetwork(context.Background())
+	if cc.dashboardStatus().Testnet {
+		t.Fatal("missing registry entry must stay mainnet")
+	}
+	reportNetworks.Delete(cc.ChainId)
+	cc.lookupDashboardNetwork(context.Background())
+	if _, known := reportNetworks.Load(cc.ChainId); known {
+		t.Fatal("registry lookup repeated")
 	}
 }

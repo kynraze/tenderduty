@@ -5,8 +5,8 @@
         { id: 'sync', title: 'Sync', fields: ['head_lag', 'sample_lag'], labels: ['Head behind chain', 'Sampling behind head'], colors: ['precommit', 'warning'], unit: 'count', tooltip: ['head_lag_max', 'sample_lag_max'] },
         { id: 'da_lag', title: 'Core → DA lag', fields: ['da_lag_ms'], labels: ['Average'], colors: ['precommit'], unit: 'ms', tooltip: ['da_blocks'], note: "Seconds from a block's consensus time to the bridge broadcasting it." },
         { id: 'peers', title: 'Peers', fields: ['full_peers', 'archival_peers'], labels: ['Full', 'Archival'], colors: ['precommit', 'prevote'], unit: 'count', tooltip: ['full_peers_min'] },
-        { id: 'served', title: 'Data served', fields: ['served_bytes'], labels: ['Served'], colors: ['precommit'], stacked: true, unit: 'bytes' },
         { id: 'responses', title: 'Responses', fields: ['responses_success', 'responses_not_found', 'responses_rate_limited', 'responses_internal_err', 'responses_peer_err', 'responses_other'], labels: ['Success', 'Not found', 'Rate limited', 'Internal error', 'Peer error', 'Other'], colors: ['good', 'muted', 'warning', 'critical', 'prevote', 'precommit'], stacked: true, unit: 'count', note: 'Internal errors are the bridge failing to read its own store. Peer errors come from the requesting peer or the network.' },
+        { id: 'served', title: 'Data served', fields: ['served_bytes'], labels: ['Served'], colors: ['precommit'], stacked: true, unit: 'bytes' },
         { id: 'serve_latency', title: 'Serving latency', fields: ['serve_ms'], labels: ['Average'], colors: ['precommit'], unit: 'ms', tooltip: ['serve_requests'] },
         { id: 'disk_latency', title: 'Disk write latency', fields: ['put_ms'], labels: ['Average'], colors: ['precommit'], unit: 'ms', tooltip: ['puts', 'put_failures'] },
         { id: 'pruning', title: 'Pruning', fields: ['retained_hours'], labels: ['Hours kept'], colors: ['precommit'], unit: 'count', tooltip: ['reclaimed_bytes', 'failed_prunes'] },
@@ -15,7 +15,7 @@
     ]
     const ranges = ['1h', '24h', '7d', '30d']
     const chartStyles = ['auto', 'bars', 'area', 'line']
-    const defaults = () => ({ range: '24h', panels: definitions.map(d => ({ id: d.id, show: !['memory', 'restarts'].includes(d.id), wide: false, chart: 'auto' })) })
+    const defaults = () => ({ range: '24h', panels: definitions.map(d => ({ id: d.id, show: !['memory', 'restarts'].includes(d.id), wide: ['peers', 'pruning'].includes(d.id), chart: 'auto' })) })
     function normalize(value) {
         const result = defaults()
         if (!value || !Array.isArray(value.panels)) return result
@@ -86,10 +86,16 @@
         }
         return out
     }
-    if (typeof module !== 'undefined') module.exports = { normalize, definitions, headline }
+    function splitFact(fact) {
+        const text = String(fact.value ?? ''), at = text.indexOf(' · ')
+        return { ...fact, value: at < 0 ? text : text.slice(0, at), sub: at < 0 ? '' : text.slice(at + 3) }
+    }
+    if (typeof module !== 'undefined') module.exports = { normalize, definitions, headline, splitFact }
     if (typeof document === 'undefined') return
+    // v2 resets defaults for the content-led panel layout.
+    const storageKey = 'tenderduty-bridge-panels-v2'
     let layout = defaults()
-    try { layout = normalize(JSON.parse(localStorage.getItem('tenderduty-bridge-panels'))) } catch (_) { /* storage is optional */ }
+    try { layout = normalize(JSON.parse(localStorage.getItem(storageKey))) } catch (_) { /* storage is optional */ }
     let range = layout.range, watched = [], selected = '', data = null, timer = null, request = null, dragID = null
     const $ = id => document.getElementById(id)
     const node = (tag, text, cls) => {
@@ -100,7 +106,7 @@
     }
     const tooltipLabels = { head_lag_max: 'Maximum head lag', sample_lag_max: 'Maximum sampling lag', da_blocks: 'Blocks', full_peers_min: 'Minimum full peers', serve_requests: 'Requests', puts: 'Writes', put_failures: 'Failed writes', reclaimed_bytes: 'Reclaimed', failed_prunes: 'Failed prunes', goroutines: 'Goroutines' }
     function save() {
-        try { localStorage.setItem('tenderduty-bridge-panels', JSON.stringify(layout)) } catch (_) { /* session preferences work without storage */ }
+        try { localStorage.setItem(storageKey, JSON.stringify(layout)) } catch (_) { /* session preferences work without storage */ }
     }
     function active() { return location.hash === '#bridge' && !document.hidden && watched.length > 0 }
     function route() {
@@ -121,23 +127,26 @@
     }
     function cards() {
         const bridge = watched.find(c => c.name === selected)?.bridge
-        $('bridge-facts').replaceChildren(...(bridge?.facts || []).map(f => {
-            const div = node('div', undefined, 'detail-fact'), strong = node('strong', f.value)
+        const grid = node('div', undefined, 'summary-grid bridge-summary')
+        grid.append(...(bridge?.facts || []).map(splitFact).map(f => {
+            const div = node('div', undefined, 'summary-cell'), strong = node('strong', f.value)
+            strong.title = f.value
             if (['critical', 'warning'].includes(f.tone)) strong.style.color = `var(--${f.tone})`
-            div.append(node('small', f.label), strong)
+            div.append(node('small', f.label), strong, node('span', f.sub, 'summary-sub'))
             return div
         }))
+        // the title carries the version while metrics are fresh
+        const meta = node('dl', undefined, 'summary-meta'), pair = node('div')
+        pair.append(node('dt', 'Version'), node('dd', (bridge?.title || '').replace(/^Bridge\s*/, '') || 'Unknown'))
+        meta.append(pair)
+        $('bridge-facts').replaceChildren(grid, meta)
     }
     document.addEventListener('fibre-state', event => {
         const previous = selected
         watched = event.detail.filter(c => c.bridge)
         $('bridge-nav').hidden = watched.length === 0
         if (!watched.some(c => c.name === selected)) selected = watched[0]?.name || ''
-        $('bridge-chain').replaceChildren(...watched.map(c => {
-            const option = node('option', c.name); option.value = c.name; option.selected = c.name === selected; return option
-        }))
-        $('bridge-chain-label').hidden = watched.length < 2
-        $('bridge-heading').textContent = selected ? `Bridge · ${selected}` : 'Bridge'
+        window.tdCharts.chainPicker('bridge', watched, selected)
         cards()
         if (selected !== previous) data = null
         if (!watched.length || !timer || selected !== previous) route()
@@ -225,7 +234,7 @@
     $('bridge-layout-close').onclick = () => $('bridge-layout').close()
     $('bridge-default-range').onchange = event => { layout.range = event.target.value; save() }
     $('bridge-layout-reset').onclick = () => { layout = defaults(); range = layout.range; data = null; save(); customize(); rangeButtons(); refresh() }
-    $('bridge-chain').onchange = event => { selected = event.target.value; $('bridge-heading').textContent = `Bridge · ${selected}`; data = null; cards(); refresh() }
+    $('bridge-chain').onchange = event => { selected = event.target.value; window.tdCharts.chainPicker('bridge', watched, selected); data = null; cards(); refresh() }
     window.addEventListener('hashchange', route)
     let resized = null
     window.addEventListener('resize', () => { clearTimeout(resized); resized = setTimeout(() => { if (active()) drawPanels() }, 200) })

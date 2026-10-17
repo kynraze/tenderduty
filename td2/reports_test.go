@@ -768,7 +768,7 @@ func TestReportHeaderCountsPartlyWatched(t *testing.T) {
 			if !strings.HasSuffix(report.Header[0], " · 1 of 3 watched partly") {
 				t.Fatalf("header %q", report.Header[0])
 			}
-			if want := "Watched " + duration + " of " + duration + " on 2 of 3 chains · UTC"; report.Footer != want {
+			if want := "Watched " + duration + " of " + duration + " on 2 of 3 chains, 1 partly (2h) · UTC"; report.Footer != want {
 				t.Fatalf("footer %q, want %q", report.Footer, want)
 			}
 			if len(report.Rows) != 3 {

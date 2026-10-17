@@ -108,6 +108,7 @@ type Config struct {
 	chainsMux             sync.RWMutex // prevents concurrent map access for Chains
 	configWarnings        []string
 	chainDirectoryPresent bool
+	configData            []byte
 	// Chains has settings for each validator to monitor. The map's name does not need to match the chain-id.
 	Chains map[string]*ChainConfig `yaml:"chains"`
 }
@@ -155,6 +156,8 @@ type ChainConfig struct {
 	signedSince     time.Time
 	slash           slashDetails
 	slashMux        sync.Mutex
+	bondToken       bondToken
+	bondTokenAt     time.Time
 	slashSearchDone bool
 	valInfo         *ValInfo // recent validator state, only refreshed every few minutes
 	lastValInfo     *ValInfo // use for detecting newly-jailed/tombstone
@@ -194,6 +197,7 @@ type ChainConfig struct {
 	fibre               fibreState
 	fibreLoaded         bool
 	fibreUnsupported    bool  // no x/valaddr, not asked again
+	fibreNamespaced     bool  // fed by a Fibre with service.namespace, so it no longer claims unlabeled ones
 	fibreFullStake      int64 // x/fibre's full_stake_storage_budget, 0 until read
 	fibreParamsFailing  bool  // last read failed, logged once per streak
 
@@ -874,6 +878,9 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 			return nil, e
 		}
 		if strings.HasSuffix(yamlFile, ".asc") {
+			if *password == "" {
+				return nil, fmt.Errorf("%s is encrypted; pass -password or env PASSWORD", yamlFile)
+			}
 			b, e = decrypt(b, *password)
 			if e != nil {
 				return nil, e
@@ -884,6 +891,10 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 			return nil, e
 		}
 		configData = b
+	}
+
+	if quiet {
+		c.configData = configData
 	}
 
 	// Load additional chain configuration files

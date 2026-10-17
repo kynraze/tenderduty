@@ -17,9 +17,11 @@ type RPCNodeStatus struct {
 }
 
 type AlertLine struct {
-	Text   string `json:"text"`
-	Detail string `json:"detail,omitempty"`
-	Notice bool   `json:"notice,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	Since    int64  `json:"since,omitempty"`
+	Text     string `json:"text"`
+	Detail   string `json:"detail,omitempty"`
+	Notice   bool   `json:"notice,omitempty"`
 }
 
 type Proposal struct {
@@ -30,6 +32,9 @@ type Proposal struct {
 }
 
 type ChainStatus struct {
+	Stake          string          `json:"stake,omitempty"`
+	Logo           bool            `json:"logo,omitempty"`
+	Testnet        bool            `json:"testnet,omitempty"`
 	MsgType        string          `json:"msgType"`
 	Name           string          `json:"name"`
 	ChainId        string          `json:"chain_id"`
@@ -109,6 +114,7 @@ type FibreStatus struct {
 	LatestMissed   []FibreMissedBlob `json:"latest_missed"`
 
 	Resources     map[string]float64 `json:"resources,omitempty"`
+	Pending       bool               `json:"pending,omitempty"` // provider not checked yet
 	Registered    bool               `json:"registered"`
 	Host          string             `json:"host,omitempty"`
 	Reachable     bool               `json:"reachable"`

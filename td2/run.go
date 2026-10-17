@@ -81,7 +81,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	td.startWorker(td.runReports)
 	if td.EnableDash {
 		td.startWorker(func() {
-			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory, td.bridgeHistory); err != nil {
+			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory, td.bridgeHistory, td.dashboardLogo); err != nil {
 				failures <- err
 			}
 		})

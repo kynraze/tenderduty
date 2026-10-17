@@ -5,15 +5,14 @@
         // fields: left axis; right: right axis; tooltip: hover only
         { id: 'endorsements', title: 'Endorsements', fields: ['endorsements_endorsed', 'endorsements_missed'], labels: ['Endorsed', 'Missed'], colors: ['good', 'critical'], stacked: true, unit: 'count' },
         { id: 'uploads', title: 'Uploads', fields: ['uploads_ok', 'uploads_failed', 'uploads_rejected'], labels: ['OK', 'Failed', 'Rejected'], colors: ['good', 'critical', 'warning'], stacked: true, unit: 'count' },
-        { id: 'received', title: 'Data received', fields: ['bytes_received'], labels: ['Received'], colors: ['precommit'], stacked: true, unit: 'bytes' },
-        { id: 'signing', title: 'Signing', fields: ['signatures_fast', 'signatures_slow', 'signatures_failed'], labels: ['Under 10 ms', 'Over 10 ms', 'Failed'], colors: ['good', 'warning', 'critical'], stacked: true, unit: 'count', tooltip: ['avg_sign_ms'] },
-        { id: 'storage', title: 'Shards stored', fields: ['occupancy'], labels: ['Used'], colors: ['precommit'], unit: 'bytes', tooltip: ['budget'] },
-        { id: 'errors', title: 'Errors', fields: ['store_put_errors', 'store_get_errors', 'prune_errors', 'object_storage_errors'], labels: ['Store put', 'Store get misses', 'Prune', 'Storage backend'], colors: ['critical', 'muted', 'prevote', 'precommit'], stacked: true, unit: 'count' },
         { id: 'downloads', title: 'Downloads', fields: ['downloads_ok', 'downloads_failed'], labels: ['OK', 'Failed'], colors: ['good', 'critical'], stacked: true, unit: 'count', tooltip: ['bytes_served', 'object_storage_bytes', 'object_storage_requests', 'object_storage_in_flight'] },
+        { id: 'latency', title: 'Latency', fields: ['upload_p50_ms', 'upload_p95_ms', 'download_p50_ms', 'download_p95_ms', 'sign_p50_ms', 'sign_p95_ms', 'store_put_p50_ms', 'store_put_p95_ms', 'store_get_p50_ms', 'store_get_p95_ms', 'prune_p50_ms', 'prune_p95_ms'], labels: ['Upload p50', 'Upload p95', 'Download p50', 'Download p95', 'Signing p50', 'Signing p95', 'Store put p50', 'Store put p95', 'Store get p50', 'Store get p95', 'Prune p50', 'Prune p95'], colors: ['precommit', 'precommit', 'prevote', 'prevote', 'precommit', 'precommit', 'warning', 'warning', 'prevote', 'prevote', 'critical', 'critical'], unit: 'ms', log: true, tooltip: ['upload_samples', 'download_samples', 'sign_samples', 'store_put_samples', 'store_get_samples', 'prune_samples'] },
+        { id: 'storage', title: 'Shards stored', fields: ['occupancy'], labels: ['Used'], colors: ['precommit'], unit: 'bytes', tooltip: ['budget'] },
+        { id: 'received', title: 'Data received', fields: ['bytes_received'], labels: ['Received'], colors: ['precommit'], stacked: true, unit: 'bytes' },
+        { id: 'errors', title: 'Errors', fields: ['store_put_errors', 'store_get_errors', 'prune_errors', 'object_storage_errors'], labels: ['Store put', 'Store get misses', 'Prune', 'Storage backend'], colors: ['critical', 'muted', 'prevote', 'precommit'], stacked: true, unit: 'count' },
         { id: 'reach', title: 'Reachability', fields: ['reachable'], labels: ['Reachable'], colors: ['good'], strip: true },
-        { id: 'request_latency', title: 'Request latency', fields: ['upload_p50_ms', 'upload_p95_ms', 'download_p50_ms', 'download_p95_ms'], labels: ['Upload p50', 'Upload p95', 'Download p50', 'Download p95'], colors: ['precommit', 'precommit', 'prevote', 'prevote'], unit: 'ms', log: true, tooltip: ['upload_samples', 'download_samples'] },
-        { id: 'internal_latency', title: 'Internal latency', fields: ['sign_p50_ms', 'sign_p95_ms', 'store_put_p50_ms', 'store_put_p95_ms', 'store_get_p50_ms', 'store_get_p95_ms', 'prune_p50_ms', 'prune_p95_ms'], labels: ['Signing p50', 'Signing p95', 'Store put p50', 'Store put p95', 'Store get p50', 'Store get p95', 'Prune p50', 'Prune p95'], colors: ['precommit', 'precommit', 'warning', 'warning', 'prevote', 'prevote', 'critical', 'critical'], unit: 'ms', log: true, tooltip: ['sign_samples', 'store_put_samples', 'store_get_samples', 'prune_samples'] },
-        { id: 'resources', title: 'Resources', fields: ['go_memory_used_bytes'], labels: ['Memory used'], colors: ['precommit'], stacked: true, area: true, unit: 'bytes', lines: ['go_gc_goal_bytes', 'go_memory_limit_bytes'], lineLabels: ['GC goal', 'Memory limit'], lineColors: ['warning', 'critical'], tooltip: ['go_goroutines', 'go_allocation_bytes_per_second', 'go_schedule_p95_ms', 'go_memory_allocations'] }
+        { id: 'resources', title: 'Resources', fields: ['go_memory_used_bytes'], labels: ['Memory used'], colors: ['precommit'], stacked: true, area: true, unit: 'bytes', lines: ['go_gc_goal_bytes', 'go_memory_limit_bytes'], lineLabels: ['GC goal', 'Memory limit'], lineColors: ['warning', 'critical'], tooltip: ['go_goroutines', 'go_allocation_bytes_per_second', 'go_schedule_p95_ms', 'go_memory_allocations'] },
+        { id: 'signing', title: 'Signing', fields: ['signatures_fast', 'signatures_slow', 'signatures_failed'], labels: ['Under 10 ms', 'Over 10 ms', 'Failed'], colors: ['good', 'warning', 'critical'], stacked: true, unit: 'count', tooltip: ['avg_sign_ms'] }
     ]
     const tooltipLabels = {
         download_samples: 'Download ops', store_get_samples: 'Store get ops', prune_samples: 'Prune ops', bytes_served: 'Bytes served', go_goroutines: 'Goroutines', upload_samples: 'Upload ops', sign_samples: 'Signing ops', store_put_samples: 'Store put ops',
@@ -24,13 +23,13 @@
     }
     const ranges = ['1h', '24h', '7d', '30d']
     const chartStyles = ['auto', 'bars', 'area', 'line']
-    const defaults = () => ({ range: '24h', panels: definitions.map(d => ({ id: d.id, show: true, wide: d.id === 'storage', chart: 'auto' })) })
+    const defaults = () => ({ range: '24h', panels: definitions.map(d => ({ id: d.id, show: d.id !== 'signing', wide: ['endorsements', 'latency', 'storage'].includes(d.id), chart: 'auto' })) })
     function normalize(value) {
         const result = defaults()
         if (!value || !Array.isArray(value.panels)) return result
         result.range = ranges.includes(value.range) ? value.range : '24h'
         const seen = new Set()
-        const panels = value.panels.flatMap(p => p?.id === 'latency' ? ['request_latency', 'internal_latency'].map(id => ({ ...p, id, show: true })) : [p])
+        const panels = value.panels.map(p => ['request_latency', 'internal_latency'].includes(p?.id) ? { ...p, id: 'latency' } : p)
         result.panels = panels.filter(p => p && definitions.some(d => d.id === p.id) && !seen.has(p.id) && seen.add(p.id))
             .map(p => ({ id: p.id, show: p.show !== false, wide: p.wide === true, chart: chartStyles.includes(p.chart) ? p.chart : 'auto' }))
         for (const p of defaults().panels) if (!seen.has(p.id)) { if (p.id === 'endorsements') result.panels.unshift(p); else result.panels.push(p) }
@@ -67,6 +66,45 @@
             const age = seconds < 60 ? `${seconds}s ago` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h ago` : `${Math.floor(seconds / 86400)}d ago`
             return { height: Number(blob.height).toLocaleString(), commitment: short, full: commitment, size: compact(blob.blob_size, true), signatures: blob.validators > 0 ? `${blob.signed || 0}/${blob.validators} · ${Math.round(blob.power || 0)}%` : '', age }
         })
+    }
+    const rangeSeconds = { '1h': 3600, '24h': 86400, '7d': 604800, '30d': 2592000 }
+    const reachIntervals = { '1h': [12, 300, '5 minutes'], '24h': [48, 1800, '30 minutes'], '7d': [42, 14400, '4 hours'], '30d': [30, 86400, '1 day'] }
+    const reachColor = v => v === null ? 'line' : v >= 0.999 ? 'good' : v >= 0.5 ? 'warning' : 'critical'
+    function reachSlots(points, range, start = points[0]?.time ?? Date.now() / 1000 - rangeSeconds[range]) {
+        const [count, seconds] = reachIntervals[range]
+        return Array.from({ length: count }, (_, i) => {
+            const time = start + i * seconds, end = time + seconds
+            const observed = points.filter(p => p.time >= time && p.time < end && value(p, 'reachable') !== null)
+            const reachable = observed.length ? observed.reduce((total, p) => total + value(p, 'reachable'), 0) / observed.length : null
+            return { time, end, reachable, color: reachColor(reachable) }
+        })
+    }
+    function leadingUnrecorded(def, points) {
+        const fields = [...def.fields, ...(def.lines || []), ...(def.right || [])]
+        const first = points.findIndex(p => fields.some(f => value(p, f) !== null))
+        const fraction = first < 0 ? 0 : first / points.length
+        return fraction > 0.03 ? fraction : 0
+    }
+    const chainGroups = chains => ['Mainnet', 'Testnet'].map(label => ({ label, chains: chains.filter(c => Boolean(c.testnet) === (label === 'Testnet')) })).filter(group => group.chains.length)
+    const ageText = (at, now = Date.now() / 1000) => {
+        const seconds = Math.max(0, Math.floor(now - at))
+        return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 86400)}d`
+    }
+    function summaryFacts(f, points, range, now = Date.now() / 1000) {
+        const n = v => Number(v).toLocaleString()
+        const endorsed = sumOf(points, 'endorsements_endorsed') || 0, missed = sumOf(points, 'endorsements_missed') || 0
+        const ok = sumOf(points, 'uploads_ok') || 0, failed = sumOf(points, 'uploads_failed') || 0, rejected = sumOf(points, 'uploads_rejected') || 0
+        const observed = points.map(p => value(p, 'reachable')).filter(v => v !== null)
+        let budget = f.chain_budget > 0 ? `of ${compact(f.chain_budget, true)}` : f.budget_reported && f.unlimited ? 'no budget limit' : 'of Unknown'
+        if (f.budget_reported && f.chain_budget > 0 && f.unlimited) budget += ' · Fibre unlimited'
+        else if (f.budget_reported && !f.unlimited && f.fibre_budget !== f.chain_budget) budget += ` · Fibre reports ${compact(f.fibre_budget, true)}`
+        return [
+            f.pending ? { label: 'Reachable', value: 'Checking…', tone: '', sub: '' } : { label: 'Reachable', value: f.reachable ? 'Yes' : 'No', tone: f.reachable ? 'good' : 'critical', sub: !f.reachable ? [f.down_since ? `down ${ageText(f.down_since, now)}` : 'down', f.down_reason].filter(Boolean).join(' · ') : observed.length ? `${Math.round(100 * observed.reduce((a, b) => a + b, 0) / observed.length)}% over ${range}` : '' },
+            { label: 'Endorsed', value: endorsed + missed ? `${(100 * endorsed / (endorsed + missed)).toFixed(1)}%` : '—', sub: endorsed + missed ? `${n(missed)} missed of ${n(endorsed + missed)}` : 'none seen' },
+            { label: 'Uploads ok', value: ok + failed + rejected ? `${Math.round(100 * ok / (ok + failed + rejected))}%` : '—', sub: `${n(failed)} failed · ${n(rejected)} rejected`, failed },
+            { label: 'Last upload', value: f.last_upload_at ? `${ageText(f.last_upload_at, now)} ago` : 'none yet', sub: f.last_upload_at ? new Date(f.last_upload_at * 1000).toLocaleString() : '' },
+            { label: 'Shards stored', value: f.occupancy_known ? compact(f.occupancy, true) : 'Unknown', sub: budget }
+        ]
     }
     let data = null
     function headline(def, points) {
@@ -128,13 +166,10 @@
             if (share !== null) add(`${Math.round(100 * share)}% reachable`, share < 1 ? 'warning' : 'good')
             break
         }
-        case 'request_latency': case 'internal_latency': {
-            // whole-range percentiles avoid jumps from intervals with few operations
-            const whole = data?.latency || {}
-            for (let i = 1; i < def.fields.length; i += 2) {
-                const field = def.fields[i]
-                if (whole[field] != null) add(`${def.labels[i].toLowerCase()} ${ms(whole[field])}`)
-            }
+        case 'latency': {
+            const fast = sumOf(points, 'signatures_fast') || 0, slow = sumOf(points, 'signatures_slow') || 0, failed = sumOf(points, 'signatures_failed') || 0
+            if (fast + slow > 0) add(`signing ${Math.floor(100 * fast / (fast + slow))}% under 10 ms`, slow === 0 ? 'good' : 'warning')
+            if (failed > 0) add(`${n(failed)} signing failed`, 'critical')
             break
         }
         case 'resources': {
@@ -158,11 +193,13 @@
         if (!observed.length || !observed.every(p => value(p, 'go_memory_heap_bytes') !== null && value(p, 'go_memory_stack_bytes') !== null && (value(p, 'go_memory_max_bytes') === null || (value(p, 'go_memory_heap_max_bytes') || 0) + (value(p, 'go_memory_stack_max_bytes') || 0) === value(p, 'go_memory_max_bytes')))) return def
         return { ...def, fields: ['go_memory_heap_bytes', 'go_memory_stack_bytes'], labels: ['Heap', 'Stack'], colors: ['precommit', 'prevote'], tooltip: [...def.tooltip, 'go_memory_used_bytes'] }
     }
-    if (typeof module !== 'undefined') module.exports = { normalize, definitions, headline, resourceDefinition, missedRows }
-    if (typeof window !== 'undefined') window.tdCharts = { drawChart, legend }
+    if (typeof module !== 'undefined') module.exports = { normalize, definitions, headline, resourceDefinition, missedRows, summaryFacts, reachSlots, reachColor, leadingUnrecorded, chainGroups }
+    if (typeof window !== 'undefined') window.tdCharts = { drawChart, legend, chainPicker }
     if (typeof document === 'undefined') return
+    // v2 resets defaults for the merged latency and content-led layout.
+    const storageKey = 'tenderduty-fibre-panels-v2'
     let layout = defaults()
-    try { layout = normalize(JSON.parse(localStorage.getItem('tenderduty-fibre-panels'))) } catch (_) { /* storage is optional */ }
+    try { layout = normalize(JSON.parse(localStorage.getItem(storageKey))) } catch (_) { /* storage is optional */ }
     let range = layout.range
     let watched = []
     let selected = ''
@@ -184,7 +221,7 @@
         return n
     }
     function save() {
-        try { localStorage.setItem('tenderduty-fibre-panels', JSON.stringify(layout)) } catch (_) { /* session preferences work without storage */ }
+        try { localStorage.setItem(storageKey, JSON.stringify(layout)) } catch (_) { /* session preferences work without storage */ }
     }
     function active() { return location.hash === '#fibre' && !document.hidden && watched.length > 0 }
     function route() {
@@ -212,39 +249,54 @@
         $('fibre-nav').hidden = watched.length === 0
         if (!watched.some(c => c.name === selected)) selected = watched[0]?.name || ''
         if (selected !== previous && pushed !== null) { clearTimeout(pushed); pushed = null }
-        $('fibre-chain').replaceChildren(...watched.map(c => {
-            const option = node('option', c.name); option.value = c.name; option.selected = c.name === selected; return option
-        }))
-        $('fibre-chain-label').hidden = watched.length < 2
-        $('fibre-heading').textContent = selected ? `Fibre · ${selected}` : 'Fibre'
+        chainPicker('fibre', watched, selected)
         if (!watched.length || !timer) route()
         else if (selected !== previous) { data = null; refresh() }
     })
+    function chainPicker(tab, chains, selected) {
+        $(`${tab}-chain`).replaceChildren(...chainGroups(chains).map(group => {
+            const optgroup = node('optgroup'); optgroup.label = group.label
+            optgroup.append(...group.chains.map(c => {
+                const option = node('option', c.name); option.value = c.name; option.selected = c.name === selected; return option
+            }))
+            return optgroup
+        }))
+        $(`${tab}-chain`).value = selected
+        $(`${tab}-chain-label`).hidden = chains.length < 2
+        $(`${tab}-chain-name`).textContent = selected
+        $(`${tab}-chain-name`).hidden = chains.length !== 1
+        $(`${tab}-testnet`).hidden = !chains.find(c => c.name === selected)?.testnet
+        $(`${tab}-heading`).textContent = tab === 'fibre' ? 'Fibre' : 'Bridge'
+    }
     function cards(f) {
         if (!f) { $('fibre-facts').replaceChildren(node('p', 'Provider check pending.')); return }
-        let budget = `${f.occupancy_known ? compact(f.occupancy, true) : 'Unknown'} of ${f.chain_budget > 0 ? compact(f.chain_budget, true) : 'Unknown'}`
-        if (f.budget_reported) {
-            if (f.unlimited) budget += ' · Fibre unlimited'
-            else if (f.fibre_budget !== f.chain_budget) budget += ` · Fibre reports ${compact(f.fibre_budget, true)}`
-        }
-        const facts = [
-            ['Provider', f.host || 'Not registered'],
-            ['Reachable', f.reachable ? '● Yes' : '● No'], ['Identity', f.identity || 'Unchecked'],
-            ['Assigned rows', `${f.rows}/${f.total_rows} · ${Number(f.row_percent.toFixed(2))}%`],
-            ['Shard budget', budget],
-            ['Endorsing', f.endorsing?.text || 'none seen yet'],
-            ['Endorsed (24h)', (f.last_24h?.endorsed || 0) + (f.last_24h?.missed || 0) ? `${f.last_24h.endorsed || 0} of ${(f.last_24h.endorsed || 0) + (f.last_24h.missed || 0)} · ${(100 * (f.last_24h.endorsed || 0) / ((f.last_24h.endorsed || 0) + (f.last_24h.missed || 0))).toFixed(1)}%` : 'none seen yet'],
-            ['Metrics last received', f.metrics_received ? new Date(f.metrics_at * 1000).toLocaleString() : 'Not received'],
-            ['Fibre version', f.version || 'Unknown']
-        ]
-        if (f.storage_backend) facts.push(['Storage backend', f.storage_backend])
-        facts.push(['Last successful upload', f.last_upload_at ? new Date(f.last_upload_at * 1000).toLocaleString() : 'none yet'])
-        $('fibre-facts').replaceChildren(...facts.map(([label, text]) => {
-            const div = node('div', undefined, 'detail-fact'); div.append(node('small', label), node('strong', text))
-            if (label === 'Endorsing' && f.endorsing?.stopped) div.lastChild.style.color = 'var(--critical)'
-            if (label === 'Reachable') div.lastChild.style.color = `var(--${f.reachable ? 'good' : 'critical'})`
-            return div
+        const grid = node('div', undefined, 'summary-grid')
+        grid.append(...summaryFacts(f, data?.series || [], range).map(fact => {
+            const cell = node('div', undefined, 'summary-cell'), strong = node('strong', fact.value), sub = node('span', fact.sub, 'summary-sub')
+            strong.title = fact.value
+            if (fact.tone) strong.style.color = `var(--${fact.tone})`
+            if (fact.failed > 0) {
+                const failed = node('span', fact.sub.split(' · ')[0]); failed.style.color = 'var(--critical)'
+                sub.replaceChildren(failed, document.createTextNode(` · ${fact.sub.split(' · ')[1]}`))
+            }
+            cell.append(node('small', fact.label), strong, sub); return cell
         }))
+        const meta = node('dl', undefined, 'summary-meta')
+        const facts = [
+            ['Provider', f.pending ? 'checking…' : f.host || 'Not registered', '', f.pending ? '' : 'mono'],
+            ['Identity', f.pending ? 'checking…' : f.identity === 'failed' ? `failed${f.identity_error ? ` · ${f.identity_error}` : ''}` : f.identity || 'unchecked', f.identity === 'verified' ? 'good' : f.identity === 'failed' ? 'critical' : ''],
+            ['Version', f.version || 'Unknown'],
+            ...(f.storage_backend ? [['Storage', f.storage_backend]] : []),
+            ['Rows', f.pending ? 'checking…' : `${Number(f.rows || 0).toLocaleString()} / ${Number(f.total_rows || 0).toLocaleString()} · ${Number(f.row_percent || 0).toFixed(2)}%`],
+            ['Last endorsed', (f.endorsing?.text || 'none seen yet').replace(/^last endorsed /i, ''), f.endorsing?.stopped ? 'critical' : ''],
+            ['Metrics', f.metrics_received ? `${ageText(f.metrics_at)} ago` : 'not received']
+        ]
+        meta.append(...facts.map(([label, text, tone, cls]) => {
+            const pair = node('div'), dd = node('dd', text, cls)
+            if (tone) dd.style.color = `var(--${tone})`
+            pair.append(node('dt', label), dd); return pair
+        }))
+        $('fibre-facts').replaceChildren(grid, meta)
     }
     async function refresh() {
         if (location.hash !== '#fibre' || !watched.length || !selected) return
@@ -321,14 +373,15 @@
                 points.push({ time, end: date.getTime() / 1000, metrics })
             }
         }
+        if (def.strip) points = reachSlots(points, view.range)
         const right = def.right || []
         const lines = def.lines || []
         const all = [...def.fields, ...lines, ...right]
         const body = node('div', undefined, 'fibre-chart')
-        if (!points.some(p => all.some(f => value(p, f) !== null))) { body.append(node('p', 'No observations in this range', 'empty')); return body }
+        if (!def.strip && !points.some(p => all.some(f => value(p, f) !== null))) { body.append(node('p', 'No observations in this range', 'empty')); return body }
         // drawn at actual width so labels don't scale with the view box
         const width = Math.max(def.mini ? 180 : 280, Math.round(chartWidth))
-        const height = def.mini ? 120 : 190, left = 62, end = width - (right.length ? 40 : 8), top = 10, bottom = height - 32
+        const height = def.strip ? 152 : def.mini ? 120 : 190, left = 62, end = width - (right.length ? 40 : 8), top = 10, bottom = height - 32
         const step = (end - left) / points.length
         const x = i => left + (i + 0.5) * step
         // auto uses bars when intervals are wide enough
@@ -351,12 +404,24 @@
         if (!def.strip) for (const tick of ticks) {
             const fraction = tick / top1
             const at = y(tick)
-            chart.append(svg('line', { x1: left, x2: end, y1: at, y2: at, stroke: 'var(--line)' }))
-            const label = svg('text', { x: left - 8, y: at + 4, 'text-anchor': 'end', fill: 'var(--subtle)', 'font-size': 12 })
+            chart.append(svg('line', { x1: left, x2: end, y1: at, y2: at, stroke: 'color-mix(in srgb, var(--line) 55%, var(--panel))' }))
+            const label = svg('text', { x: left - 8, y: at + 4, 'text-anchor': 'end', fill: 'var(--subtle)', 'font-size': 11 })
             label.textContent = axisText(def, tick); chart.append(label)
             if (right.length) {
-                const second = svg('text', { x: end + 6, y: at + 4, fill: 'var(--subtle)', 'font-size': 12 })
+                const second = svg('text', { x: end + 6, y: at + 4, fill: 'var(--subtle)', 'font-size': 11 })
                 second.textContent = compact(top2 * fraction, false); chart.append(second)
+            }
+        }
+        const leading = leadingUnrecorded(def, axisPoints) * (end - left)
+        if (leading > 0 && !def.strip) {
+            const id = `not-recorded-${def.id}-${view.range}${def.mini ? `-${def.fields[0]}` : ''}`
+            const pattern = svg('pattern', { id, width: 8, height: 8, patternUnits: 'userSpaceOnUse' })
+            pattern.append(svg('path', { d: 'M-2,2 L2,-2 M0,8 L8,0 M6,10 L10,6', stroke: 'color-mix(in srgb, var(--line) 65%, var(--panel))', 'stroke-width': 1 }))
+            const defs = svg('defs', {}); defs.append(pattern); chart.append(defs)
+            chart.append(svg('rect', { x: left, y: top, width: leading, height: bottom - top, fill: `url(#${id})` }))
+            if (leading >= 120) {
+                const label = svg('text', { x: left + leading / 2, y: (top + bottom) / 2, 'text-anchor': 'middle', fill: 'var(--subtle)', 'font-size': 11.5 })
+                label.textContent = 'Not recorded yet'; chart.append(label)
             }
         }
         if (mode === 'area') {
@@ -380,10 +445,10 @@
                     }
                     const upper = run(totals), under = run(lower).reverse()
                     const color = `var(--${def.colors[j]})`
-                    chart.append(svg('path', { d: `M${upper.map(at).join(' L')} L${under.map(at).join(' L')} Z`, fill: color, 'fill-opacity': 0.45, stroke: 'none' }))
+                    chart.append(svg('path', { d: `M${upper.map(at).join(' L')} L${under.map(at).join(' L')} Z`, fill: `color-mix(in srgb, ${color} 82%, var(--panel))`, stroke: 'none' }))
                     // outline only where this band is thicker than zero, or an empty top band paints the whole edge
                     let edge = []
-                    const flush = () => { if (edge.length > 1) chart.append(svg('path', { d: `M${edge.map(at).join(' L')}`, fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round' })); edge = [] }
+                    const flush = () => { if (edge.length > 1) chart.append(svg('path', { d: `M${edge.map(at).join(' L')}`, fill: 'none', stroke: color, 'stroke-width': 1.6, 'stroke-linejoin': 'round' })); edge = [] }
                     for (let m = i; m <= k; m++) {
                         if ((value(points[m], f) || 0) > 0) {
                             if (!edge.length) edge.push([x(m) - step / 2, totals[m]])
@@ -400,15 +465,15 @@
                 let base = 0
                 def.fields.forEach((f, j) => {
                     const v = value(p, f)
-                    if (v === null || v === 0 && !def.strip) return
+                    if (!def.strip && (v === null || v === 0)) return
                     const box = def.strip
-                        ? { y: top + 40, height: bottom - top - 80, fill: v >= 1 ? 'var(--good)' : v === 0 ? 'var(--critical)' : 'var(--warning)' }
-                        : { y: y(base + v), height: Math.max(1, v / top1 * (bottom - top)), fill: `var(--${def.colors[j]})` }
+                        ? { y: top, height: bottom - top, fill: v === null ? 'color-mix(in srgb, var(--line) 55%, var(--panel))' : `var(--${reachColor(v)})` }
+                        : { y: y(base + v), height: Math.max(1, v / top1 * (bottom - top)), fill: `color-mix(in srgb, var(--${def.colors[j]}) 82%, var(--panel))` }
                     // overlap narrow bars to avoid visible seams
-                    const dense = step < 4
+                    const dense = step < 4 && !def.strip
                     chart.append(svg('rect', dense
                         ? { x: x(i) - step / 2, width: step + 0.5, ...box }
-                        : { x: x(i) - step / 2 + 0.5, width: step - 1, rx: step > 6 ? 1.5 : 0, ...box }))
+                        : { x: x(i) - step / 2 + (def.strip ? 1 : 0.5), width: step - (def.strip ? 2 : 1), rx: def.strip ? 2 : step > 6 ? 1.5 : 0, ...box }))
                     base += v
                 })
             })
@@ -426,7 +491,7 @@
                     joined = true
                 })
                 const dashed = field.endsWith('_p95_ms') || field === 'go_gc_goal_bytes'
-                chart.append(svg('path', { d: path, fill: 'none', stroke: `var(--${color})`, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-dasharray': dashed ? '5 4' : 'none' }))
+                chart.append(svg('path', { d: path, fill: 'none', stroke: `var(--${color})`, 'stroke-width': 1.6, 'stroke-linejoin': 'round', 'stroke-dasharray': dashed ? '5 4' : 'none' }))
             }
             if (mode === 'line') def.fields.forEach((f, j) => line(f, def.colors[j], false))
             lines.forEach((f, j) => line(f, def.lineColors[j], false))
@@ -435,7 +500,7 @@
         const last = points.length - 1
         if (counting && !def.strip) chart.append(svg('rect', { x: x(last) - step / 2, y: top, width: end - x(last) + step / 2, height: bottom - top + 1, fill: 'var(--panel)', 'fill-opacity': 0.6 }))
         for (const i of [0, Math.floor(points.length / 2), points.length - 1]) {
-            const label = svg('text', { x: x(i), y: bottom + 22, 'text-anchor': i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle', fill: 'var(--subtle)', 'font-size': def.mini ? 11 : 12 })
+            const label = svg('text', { x: x(i), y: bottom + 22, 'text-anchor': i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle', fill: 'var(--subtle)', 'font-size': 11 })
             const date = new Date(points[i].time * 1000)
             label.textContent = ['7d', '30d'].includes(view.range) ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date.toLocaleTimeString(undefined, hours ? { hour: 'numeric' } : { hour: '2-digit', minute: '2-digit' })
             chart.append(label)
@@ -447,8 +512,9 @@
                 .map(([label, f]) => [label, f === 'go_memory_limit_bytes' && value(p, f) === null && value(p, 'go_memory_used_bytes') !== null ? 'no limit' : value(p, f) === null ? null : shown(f, value(p, f))])
                 .filter(([, text]) => text !== null)
             tip.replaceChildren(node('strong', new Date(p.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + (p.end ? `\u2013${new Date(p.end * 1000).toLocaleString(undefined, { ...(hours === 24 ? { month: 'short', day: 'numeric' } : {}), hour: '2-digit', minute: '2-digit' })}` : '')))
-            if (!rows.length) tip.append(node('span', 'No observation'))
-            if (counting && i === last) tip.append(node('span', 'Still counting'))
+            if (def.strip) { rows.length = 0; tip.append(node('span', p.reachable === null ? 'No data' : `${Math.round(100 * p.reachable)}% reachable`)) }
+            else if (!rows.length) tip.append(node('span', 'No observation'))
+            if (counting && !def.strip && i === last) tip.append(node('span', 'Still counting'))
             for (const [label, text] of rows) { const row = node('span'); row.append(node('em', label), document.createTextNode(text)); tip.append(row) }
             tip.hidden = false
             const share = x(i) / width
@@ -465,8 +531,10 @@
         body.append(chart, tip)
         return body
     }
-    function latencyCharts(def, points, width) {
+    function latencyCharts(def, points, width, wide = false) {
         const grid = node('div', undefined, 'fibre-latency-grid')
+        const columns = wide && width >= 840 ? 3 : 2
+        grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`
         for (let i = 0; i < def.fields.length; i += 2) {
             const title = def.labels[i].replace(' p50', '')
             const mini = { ...def, title, mini: true, fields: def.fields.slice(i, i + 2), labels: ['p50', 'p95'], colors: def.colors.slice(i, i + 2), tooltip: [def.tooltip[i / 2]] }
@@ -475,7 +543,7 @@
             const heading = node('h3', undefined, 'fibre-latency-title'), dot = node('i')
             dot.style.background = `var(--${mini.colors[0]})`
             heading.append(dot, document.createTextNode(`${title}${p95 == null ? '' : ` \u00b7 p95 ${ms(p95)}`}`))
-            box.append(heading, drawChart(mini, points, width < 520 ? width : (width - 16) / 2, 'line'))
+            box.append(heading, drawChart(mini, points, (width - 16 * (columns - 1)) / columns, 'line'))
             grid.append(box)
         }
         return grid
@@ -486,7 +554,9 @@
             const item = node('span'); const dot = node('i'); dot.style.background = `var(--${color})`
             item.append(dot, document.createTextNode(label)); if (note) item.append(node('small', note)); box.append(item)
         }
-        if (def.unit === 'ms' && def.log) {
+        if (def.strip) {
+            for (const [label, color] of [['Reachable', 'good'], ['Partly down', 'warning'], ['Down', 'critical'], ['No data', 'line']]) entry(label, color)
+        } else if (def.unit === 'ms' && def.log) {
             // line style tells p50 from p95
             box.append(node('span', 'solid p50 · dashed p95', 'note'))
         } else if (def.fields.length > 1 || def.right || def.lines) {
@@ -517,24 +587,28 @@
             const width = panel.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
             const head = node('header', undefined, 'fibre-panel-head')
             const stats = node('p', undefined, 'fibre-stats')
-            // latency minis title their own p95
-            if (!def.id.endsWith('_latency')) for (const [text, tone] of headline(def, points)) { const stat = node('span', text); if (tone) stat.className = tone; stats.append(stat) }
+            for (const [text, tone] of headline(def, points)) { const stat = node('span', text); if (tone) stat.className = tone; stats.append(stat) }
             head.append(node('h2', def.title), stats)
             const notes = []
             if (def.id === 'endorsements') notes.push("From the chain: blobs paid for with or without this validator's signature.")
             if (def.id === 'uploads') notes.push("Failed includes payments Fibre refused (e.g. the payer's escrow was too low) and uploads under the validator's min_upload_size.")
             if (def.id === 'downloads') notes.push("Failed includes shards this validator doesn't hold.")
-            panel.replaceChildren(head, legend(def), ...notes.map(text => node('p', text, 'fibre-note')), def.log ? latencyCharts(def, points, width) : drawChart(def, points, width, preference.chart))
+            if (def.strip) notes.push(`Each bar is ${reachIntervals[range][2]}`)
+            panel.replaceChildren(head, legend(def), ...notes.map(text => node('p', text, 'fibre-note')))
             if (def.id === 'endorsements') {
                 const list = node('div', undefined, 'fibre-missed'); list.append(node('h3', 'Latest missed'))
                 const rows = missedRows(data.summary?.latest_missed)
                 if (!rows.length) list.append(node('p', 'None seen yet', 'fibre-note'))
                 for (const row of rows) {
                     const item = node('p', undefined, 'fibre-note'), commitment = node('code', row.commitment); commitment.title = row.full
-                    item.append(node('span', `Height ${row.height} · `), commitment, document.createTextNode(` · ${row.size} · ${row.signatures ? `${row.signatures} · ` : ''}${row.age}`)); list.append(item)
+                    item.append(node('span', `${row.height} · `), commitment, node('span', `${row.size} · ${row.signatures ? `${row.signatures} · ` : ''}${row.age}`, 'fibre-missed-meta')); list.append(item)
                 }
-                panel.append(list)
-            }
+                const split = node('div', undefined, 'fibre-endorsements')
+                const chart = node('div'); split.append(chart, list); panel.append(split)
+                const splitStyle = getComputedStyle(split)
+                const chartWidth = splitStyle.gridTemplateColumns.split(' ').length > 1 ? width - list.getBoundingClientRect().width - parseFloat(splitStyle.columnGap) : width
+                chart.replaceChildren(drawChart(def, points, chartWidth, preference.chart))
+            } else panel.append(def.log ? latencyCharts(def, points, width, preference.wide) : drawChart(def, points, width, preference.chart))
         })
     }
     function rangeButtons() {
@@ -579,7 +653,7 @@
     $('fibre-layout-close').onclick = () => $('fibre-layout').close()
     $('fibre-default-range').onchange = event => { layout.range = event.target.value; save() }
     $('fibre-layout-reset').onclick = () => { layout = defaults(); range = layout.range; data = null; save(); customize(); rangeButtons(); refresh() }
-    $('fibre-chain').onchange = event => { if (pushed !== null) { clearTimeout(pushed); pushed = null }; selected = event.target.value; $('fibre-heading').textContent = `Fibre · ${selected}`; data = null; refresh() }
+    $('fibre-chain').onchange = event => { if (pushed !== null) { clearTimeout(pushed); pushed = null }; selected = event.target.value; chainPicker('fibre', watched, selected); data = null; refresh() }
     document.addEventListener('fibre-update', event => {
         if (!active() || event.detail.name !== selected || pushed !== null) return
         const chain = selected

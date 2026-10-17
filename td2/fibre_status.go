@@ -263,6 +263,7 @@ func (r *fibreReport) dashboard() *dash.FibreStatus {
 		StorageBackend: strings.Join(m.BackendNames, ", "),
 		LatestMissed:   r.LatestMissed,
 		Endorsing:      r.Endorsing,
+		Pending:        r.Pending,
 		Registered:     s.Registered, Host: s.Host, Reachable: s.Reachable, DownReason: s.DownReason,
 		Resources: m.Resources,
 		Identity:  s.identity(), IdentityError: s.IdentityError, Version: m.Version,

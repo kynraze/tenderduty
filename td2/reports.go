@@ -125,6 +125,8 @@ type reportHour struct {
 }
 
 type reportSnapshot struct {
+	Stake      *float64  `json:"stake,omitempty"`
+	Symbol     string    `json:"symbol,omitempty"`
 	At         time.Time `json:"at"`
 	Power      *int64    `json:"power,omitempty"`
 	Total      *int64    `json:"total,omitempty"`
@@ -153,6 +155,22 @@ type reportHistory struct {
 }
 
 var reportNetworks sync.Map
+var dashboardNetworkLookups sync.Map
+
+func (cc *ChainConfig) lookupDashboardNetwork(ctx context.Context) {
+	if cc.ChainId == "" || cc.reportTestnet() != nil {
+		return
+	}
+	if _, known := reportNetworks.Load(cc.ChainId); known {
+		return
+	}
+	if _, started := dashboardNetworkLookups.LoadOrStore(cc.ChainId, true); started {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, _ = fetchRegistryChain(ctx, cc.ChainId)
+}
 
 func (cc *ChainConfig) reportTestnet() *bool {
 	cc.stateMux.RLock()
@@ -443,15 +461,26 @@ func (cc *ChainConfig) reportStake(now time.Time) reportSnapshot {
 			}
 		}
 	}
+	token := cc.cachedBondToken(ctx)
 	requestVal := staking.QueryValidatorRequest{ValidatorAddr: cc.ValAddress}
 	if b, err := requestVal.Marshal(); err == nil {
 		if response, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Validator", b); err == nil && response != nil && response.Response.Code == 0 {
 			val := staking.QueryValidatorResponse{}
-			if val.Unmarshal(response.Response.Value) == nil && !val.Validator.Tokens.IsNil() && s.Self != nil {
+			if val.Unmarshal(response.Response.Value) == nil && !val.Validator.Tokens.IsNil() {
 				tokens, err := strconv.ParseFloat(val.Validator.Tokens.String(), 64)
-				// delegation is in base units, power in consensus power; scale by tokens per power
-				if err == nil && tokens > 0 && !math.IsInf(tokens, 0) && s.Power != nil && *s.Power > 0 {
-					scale := float64(*s.Power) / tokens
+				// Use token units when known, otherwise keep consensus-power units.
+				if err == nil && tokens >= 0 && !math.IsInf(tokens, 0) && (token.stakeKnown() || tokens > 0 && s.Power != nil && *s.Power > 0) {
+					scale := 0.0
+					if token.stakeKnown() {
+						scale = 1 / math.Pow10(int(token.Exponent))
+						stake := tokens * scale
+						s.Stake, s.Symbol = &stake, token.Symbol
+					} else {
+						scale = float64(*s.Power) / tokens
+					}
+					if s.Self == nil {
+						return s
+					}
 					self, delegated := *s.Self*scale, (tokens-*s.Self)*scale
 					s.Self = &self
 					if delegated >= 0 {

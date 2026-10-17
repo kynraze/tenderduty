@@ -51,6 +51,8 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 	}
 	active, notices, noticeLabel := cc.dashboardAlerts()
 	status := &dash.ChainStatus{
+		Logo:    len(cachedDashboardLogo(cc.ChainId)) > 0,
+		Testnet: cc.reportIsTestnet(),
 		MsgType: "status", Name: cc.name, ChainId: cc.ChainId, Moniker: info.Moniker,
 		Bonded: info.Bonded, Jailed: info.Jailed, Tombstoned: info.Tombstoned,
 		Missed: info.Missed, Window: info.Window, Nodes: len(cc.Nodes), HealthyNodes: healthy, RPCNodes: rpcNodes,
@@ -58,7 +60,7 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 		NoNodes: unavailable, ActiveAlerts: active, NoticeAlerts: notices, NoticeLabel: noticeLabel, Height: height,
 		LastBlockAt: lastBlockAt, LastError: message, Alerts: cc.dashboardAlertLines(), Blocks: blocks,
 		Signed: signed, Proposed: proposed, MissedProps: missedProps,
-		VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
+		Stake: info.stakeDisplay(), VotingPower: info.VotingPower, TotalPower: info.TotalPower, Rank: info.Rank, ActiveSet: info.ActiveSet,
 		MaxValidators: info.MaxValidators, MaxMissed: info.MaxMissed,
 	}
 	if cc.alertSettings().GovAlerts {
@@ -91,12 +93,13 @@ func (cc *ChainConfig) dashboardStatus() *dash.ChainStatus {
 }
 
 func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
-	if td.HideLogs {
-		return nil
-	}
 	alarms.notifyMux.RLock()
 	messages := make(map[string]string, len(alarms.AllAlarms[cc.name]))
-	for message := range alarms.AllAlarms[cc.name] {
+	since := make(map[string]int64, len(alarms.AllAlarms[cc.name]))
+	for message, started := range alarms.AllAlarms[cc.name] {
+		if !started.IsZero() {
+			since[message] = started.Unix()
+		}
 		messages[message] = alarms.AlarmSeverities[cc.name+"\x00"+message]
 	}
 	alarms.notifyMux.RUnlock()
@@ -112,8 +115,15 @@ func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
 		if _, close := messages[message+" is close"]; close {
 			continue
 		}
-		body := (&alertMsg{chain: cc.name, message: strings.TrimPrefix(message, "🚨 "), severity: severity}).summary()
-		text, rest, _ := strings.Cut(body, "\n")
+		msg := &alertMsg{chain: cc.name, message: strings.TrimPrefix(message, "🚨 "), severity: severity}
+		notice, _ := cc.noticeAlarm(message, severity)
+		if td.HideLogs {
+			// only the alert's kind, as in its title; messages can name hosts
+			_, kind := msg.header()
+			lines = append(lines, line{dash.AlertLine{Text: kind, Notice: notice, Severity: severity, Since: since[message]}, severity})
+			continue
+		}
+		text, rest, _ := strings.Cut(msg.summary(), "\n")
 		text = strings.TrimPrefix(text, "🚨 ")
 		if strings.HasPrefix(text, "Severity: ") {
 			_, text, _ = strings.Cut(strings.TrimPrefix(text, "Severity: "), " ")
@@ -125,8 +135,7 @@ func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
 				break
 			}
 		}
-		notice, _ := cc.noticeAlarm(message, severity)
-		lines = append(lines, line{dash.AlertLine{Text: text, Detail: detail, Notice: notice}, severity})
+		lines = append(lines, line{dash.AlertLine{Text: text, Detail: detail, Notice: notice, Severity: severity, Since: since[message]}, severity})
 	}
 	sort.Slice(lines, func(i, j int) bool {
 		if lines[i].Notice != lines[j].Notice {

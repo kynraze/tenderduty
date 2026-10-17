@@ -2,7 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
 const vm = require('node:vm')
-const { normalize, definitions, headline } = require('../td2/static/bridge.js')
+const { normalize, definitions, headline, splitFact } = require('../td2/static/bridge.js')
 const def = id => definitions.find(d => d.id === id)
 const points = (...metrics) => metrics.map(m => ({ metrics: m }))
 
@@ -10,6 +10,9 @@ test('Bridge defaults show eight panels and hide memory and restarts', () => {
     const layout = normalize(null)
     assert.equal(layout.range, '24h')
     assert.equal(layout.panels.length, 10)
+    assert.deepEqual(layout.panels.map(p => p.id), ['sync', 'da_lag', 'peers', 'responses', 'served', 'serve_latency', 'disk_latency', 'pruning', 'memory', 'restarts'])
+    assert.deepEqual(layout.panels.filter(p => p.wide).map(p => p.id), ['peers', 'pruning'])
+    assert.ok(layout.panels.every(p => p.chart === 'auto'))
     assert.deepEqual(layout.panels.filter(p => !p.show).map(p => p.id), ['memory', 'restarts'])
     assert.equal(def('memory').area, true)
 })
@@ -95,25 +98,37 @@ test('Bridge routing follows watched chains, refreshes history and aborts on lea
     const handlers = {}, windowHandlers = {}, elements = new Map(), fetches = [], intervals = new Map()
     const element = tag => ({ tag, hidden: false, style: {}, dataset: {}, children: [], clientWidth: 600, attributes: {}, classList: { toggle() {} }, append(...nodes) { this.children.push(...nodes) }, replaceChildren(...nodes) { this.children = nodes }, setAttribute(key, value) { this.attributes[key] = value }, removeAttribute(key) { delete this.attributes[key] }, addEventListener() {}, querySelectorAll() { return this.children.filter(n => n.dataset.panel) } })
     const get = id => { if (!elements.has(id)) { const e = element('div'); e.id = id; elements.set(id, e) } return elements.get(id) }
-    const links = ['overview', 'fibre', 'bridge'].map(id => { const e = get(`${id}-nav`); e.hash = `#${id}`; return e })
+    const html = readFileSync(require.resolve('../td2/static/index.html'), 'utf8')
+    const nav = html.match(/<nav class="nav"[\s\S]*?<\/nav>/)[0]
+    const links = [...nav.matchAll(/<a[^>]*href="#([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map(([, id, content]) => {
+        const e = get(`${id}-nav`)
+        e.hash = `#${id}`
+        e.children = [element('svg')]
+        if (id === 'overview') e.children.push(get('attention-count'))
+        assert.match(content, /<svg[^>]*viewBox="0 0 16 16"/)
+        return e
+    })
+    assert.equal(links.length, 3)
     get('fibre-nav').hidden = true
     const location = { hash: '#bridge' }
-    const window = { addEventListener(event, handler) { windowHandlers[event] = handler }, tdCharts: { legend: () => element('legend'), drawChart: () => element('chart') } }
+    const window = { addEventListener(event, handler) { windowHandlers[event] = handler }, tdCharts: { chainPicker(tab, chains, selected) { get(`${tab}-chain-label`).hidden = chains.length < 2; get(`${tab}-heading`).textContent = 'Bridge' }, legend: () => element('legend'), drawChart: () => element('chart') } }
     const context = vm.createContext({ window, location, document: { hidden: false, getElementById: get, createElement: element, createTextNode: text => ({ text }), querySelectorAll: () => links, addEventListener(event, handler) { handlers[event] = handler } }, localStorage: { getItem: () => null, setItem() {} }, AbortController, getComputedStyle: () => ({ paddingLeft: '16', paddingRight: '16' }), setInterval(fn, delay) { intervals.set(fn, delay); return fn }, clearInterval(fn) { intervals.delete(fn) }, setTimeout, clearTimeout, async fetch(url, options) { fetches.push({ url, options }); return { ok: true, async json() { return { chains: [{ name: 'Chain', series: [{ time: 1, metrics: { served_bytes: 0 } }] }] } } } } })
     vm.runInContext(readFileSync(require.resolve('../td2/static/bridge.js'), 'utf8'), context)
     assert.equal(get('overview').hidden, false)
-    const watched = [{ name: 'Chain', bridge: { facts: [{ label: 'Head', value: '100', tone: 'warning' }] } }]
+    const watched = [{ name: 'Chain', bridge: { title: 'Bridge v0.34.3-mocha', facts: [{ label: 'Head', value: '100', tone: 'warning' }] } }]
     handlers['fibre-state']({ detail: watched })
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(get('bridge-nav').hidden, false)
     assert.equal(get('bridge').hidden, false)
     assert.equal(get('overview').hidden, true)
     assert.equal(get('bridge-chain-label').hidden, true)
-    assert.equal(get('bridge-heading').textContent, 'Bridge · Chain')
+    assert.equal(get('bridge-heading').textContent, 'Bridge')
     assert.equal(fetches[0].url, 'bridge?range=24h&chain=Chain')
     assert.deepEqual([...intervals.values()], [60000])
     assert.equal(get('bridge-panels').children.length, 8)
-    assert.equal(get('bridge-facts').children[0].children[1].style.color, 'var(--warning)')
+    const [grid, meta] = get('bridge-facts').children
+    assert.equal(grid.children[0].children[1].style.color, 'var(--warning)')
+    assert.equal(meta.children[0].children[1].textContent, 'v0.34.3-mocha')
     assert.equal(get('bridge-message').children.length, 0)
     // Begin another request, then leave before its continuation runs.
     windowHandlers.hashchange()
@@ -124,6 +139,8 @@ test('Bridge routing follows watched chains, refreshes history and aborts on lea
     assert.equal(get('bridge').hidden, true)
     assert.equal(intervals.size, 0)
     assert.equal(get('overview-nav').attributes['aria-current'], 'page')
+    assert.equal(get('overview-nav').children[0].tag, 'svg')
+    assert.equal(get('overview-nav').children[1].id, 'attention-count')
     location.hash = '#activity'
     windowHandlers.hashchange()
     assert.equal(get('overview').hidden, false)
@@ -132,4 +149,11 @@ test('Bridge routing follows watched chains, refreshes history and aborts on lea
     handlers['fibre-state']({ detail: [] })
     assert.equal(get('overview').hidden, false)
     assert.equal(get('bridge-nav').hidden, true)
+})
+
+
+test('Bridge fact splits only the first separator and retains its tone', () => {
+    assert.deepEqual(splitFact({ label: 'Head', value: '0 · head 123 · sampling 120', tone: 'warning' }), { label: 'Head', value: '0', sub: 'head 123 · sampling 120', tone: 'warning' })
+    assert.deepEqual(splitFact({ label: 'Peers', value: '16 full' }), { label: 'Peers', value: '16 full', sub: '' })
+    assert.equal(splitFact({ value: '0 · ' }).value, '0')
 })

@@ -26,24 +26,40 @@ func TestDashboardAlertLines(t *testing.T) {
 	alarms.AllAlarms[cc.name] = make(map[string]time.Time)
 	alarms.AlarmSeverities = make(map[string]string)
 	for message, severity := range messages {
-		alarms.AllAlarms[cc.name][message] = time.Now()
+		alarms.AllAlarms[cc.name][message] = time.Unix(1000, 0)
 		alarms.AlarmSeverities[cc.name+"\x00"+message] = severity
 	}
 	want := []dash.AlertLine{
-		{Text: "Alpha"},
-		{Text: "Beta"},
-		{Text: "RPC node down"},
-		{Text: "Warning"},
-		{Text: "Version 11 upgrade at height 394 is close"},
-		{Text: "Upgrade v4 at height 1000", Notice: true},
-		{Text: "Information", Notice: true},
+		{Text: "Alpha", Severity: "critical", Since: 1000},
+		{Text: "Beta", Severity: "critical", Since: 1000},
+		{Text: "RPC node down", Severity: "critical", Since: 1000},
+		{Text: "Warning", Severity: "warning", Since: 1000},
+		{Text: "Version 11 upgrade at height 394 is close", Severity: "info", Since: 1000},
+		{Text: "Upgrade v4 at height 1000", Notice: true, Severity: "critical", Since: 1000},
+		{Text: "Information", Notice: true, Severity: "info", Since: 1000},
 	}
 	if got := cc.dashboardStatus().Alerts; !reflect.DeepEqual(got, want) {
 		t.Fatalf("alerts: %+v, want %+v", got, want)
 	}
+	// hide_logs keeps the kind, never the host
 	c.HideLogs = true
-	if got := cc.dashboardStatus().Alerts; len(got) != 0 {
+	down := nodeDownMessage("http://secret-host:26657", "chain-1")
+	inactive := "Kynraze is no longer in the active set on chain-1"
+	alarms.AllAlarms[cc.name] = map[string]time.Time{down: time.Unix(1000, 0), inactive: time.Unix(1000, 0)}
+	alarms.AlarmSeverities = map[string]string{cc.name + "\x00" + down: "critical", cc.name + "\x00" + inactive: "critical"}
+	got := cc.dashboardStatus().Alerts
+	if len(got) != 2 {
 		t.Fatalf("hidden alerts: %+v", got)
+	}
+	kinds := map[string]bool{}
+	for _, a := range got {
+		if strings.Contains(a.Text, "secret-host") || a.Detail != "" || a.Since != 1000 {
+			t.Fatalf("hidden alert leaks or lost its start: %+v", a)
+		}
+		kinds[a.Text] = true
+	}
+	if !kinds["Not in the active set"] {
+		t.Fatalf("hidden kinds: %+v", got)
 	}
 }
 
@@ -71,5 +87,17 @@ func TestDashboardAlertDetail(t *testing.T) {
 	}
 	if !strings.Contains(status.LastError, message) || !strings.Contains(status.LastError, node.lastMsg) {
 		t.Fatalf("legacy errors lost: %q", status.LastError)
+	}
+}
+
+func TestDashboardAlertZeroStart(t *testing.T) {
+	c := auditConfig(t)
+	cc := &ChainConfig{name: "Chain"}
+	c.Chains[cc.name] = cc
+	alarms.AllAlarms[cc.name] = map[string]time.Time{"Warning": {}}
+	alarms.AlarmSeverities = map[string]string{cc.name + "\x00Warning": "warning"}
+	lines := cc.dashboardAlertLines()
+	if len(lines) != 1 || lines[0].Since != 0 || lines[0].Severity != "warning" {
+		t.Fatalf("zero start: %+v", lines)
 	}
 }

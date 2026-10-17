@@ -357,7 +357,41 @@ func (cc *ChainConfig) enrichSlash(ctx context.Context, remote string, d *slashD
 	}
 }
 
+type bondToken struct {
+	Denom        string
+	Symbol       string
+	Exponent     uint32
+	DisplayKnown bool
+	Multistaking bool
+}
+
+func (t bondToken) stakeKnown() bool {
+	return t.DisplayKnown && t.Symbol != "" && t.Exponent <= 30 && !t.Multistaking
+}
+
+func (cc *ChainConfig) cachedBondToken(ctx context.Context) bondToken {
+	cc.stateMux.Lock()
+	token := cc.bondToken
+	if token.DisplayKnown || time.Since(cc.bondTokenAt) < 10*time.Minute {
+		cc.stateMux.Unlock()
+		return token
+	}
+	cc.bondTokenAt = time.Now()
+	cc.stateMux.Unlock()
+	token = cc.resolveBondToken(ctx)
+	cc.stateMux.Lock()
+	cc.bondToken = token
+	cc.stateMux.Unlock()
+	return token
+}
+
 func (cc *ChainConfig) slashToken(ctx context.Context, d *slashDetails) {
+	token := cc.cachedBondToken(ctx)
+	d.Denom, d.Symbol, d.Exponent, d.DisplayKnown = token.Denom, token.Symbol, token.Exponent, token.DisplayKnown
+}
+
+func (cc *ChainConfig) resolveBondToken(ctx context.Context) (token bondToken) {
+	d := &token
 	client := cc.clientSnapshot()
 	if client == nil {
 		return
@@ -365,6 +399,7 @@ func (cc *ChainConfig) slashToken(ctx context.Context, d *slashDetails) {
 	request := append(binary.AppendUvarint([]byte{0x0a}, uint64(len(cc.ValAddress))), cc.ValAddress...)
 	if resp, err := client.ABCIQuery(ctx, "/multistaking.v1.Query/ValidatorMultiStakingCoin", request); err == nil && resp != nil && resp.Response.Code == 0 {
 		d.Denom, _ = firstStringField(resp.Response.Value)
+		d.Multistaking = d.Denom != ""
 	}
 	if d.Denom == "" {
 		b, _ := (&staking.QueryParamsRequest{}).Marshal()
@@ -403,6 +438,7 @@ func (cc *ChainConfig) slashToken(ctx context.Context, d *slashDetails) {
 			}
 		}
 	}
+	return
 }
 
 func groupedAmount(value string) string {

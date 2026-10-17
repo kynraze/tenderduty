@@ -123,6 +123,9 @@ func mainnetPaths(paths map[string]string) map[string]registryPath {
 
 var pathMux sync.Mutex
 
+// registryPartial: a registry list failed on the last refresh, so a missing chain may still be listed; under pathMux.
+var registryPartial bool
+
 var (
 	registryJson        = "https://chains.cosmos.directory/"
 	testnetRegistryJson = "https://chains.testcosmos.directory/"
@@ -175,6 +178,7 @@ func refreshRegistry(ctx context.Context) error {
 	}
 	pathMux.Lock()
 	defer pathMux.Unlock()
+	registryPartial = mainErr != nil || testErr != nil
 	if cosmosPaths == nil {
 		cosmosPaths = make(map[string]registryPath)
 	}

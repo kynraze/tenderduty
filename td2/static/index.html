@@ -15,81 +15,64 @@
 <body>
   <div class="app">
     <aside class="side">
-      <div class="brand"><span class="brand-mark">td</span> Tenderduty</div>
+      <div class="brand">Tender<span>duty</span></div>
       <nav class="nav" aria-label="Main navigation">
-        <a class="active" href="#overview" aria-current="page">Overview</a>
-        <a href="#fibre" id="fibre-nav" hidden>Fibre</a>
-        <a href="#bridge" id="bridge-nav" hidden>Bridge</a>
+        <a class="active" href="#overview" id="overview-nav" aria-current="page"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4"/><rect x="10" y="2" width="4" height="4"/><rect x="2" y="10" width="4" height="4"/><rect x="10" y="10" width="4" height="4"/></svg>Overview<span class="nav-count" id="attention-count" hidden>0</span></a>
+        <a href="#fibre" id="fibre-nav" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h3l2-5 4 10 2-5h3"/></svg>Fibre</a>
+        <a href="#bridge" id="bridge-nav" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13V3m12 10V3M2 9c3-7 9-7 12 0M1 13h14"/></svg>Bridge</a>
       </nav>
       <div class="side-bottom">
-        <strong id="monitor-state">Connecting to monitor</strong>
-        <span id="monitor-detail">Waiting for the first update</span>
+        <strong id="monitor-state" class="offline" role="status">Monitor disconnected</strong>
+        <span id="monitor-detail">Waiting for the first update</span><span id="monitor-networks" hidden></span>
       </div>
     </aside>
     <main id="overview">
       <header class="top">
-        <div>
-          
-          <h1>Validator overview</h1>
-          <p>Find what needs attention, then inspect block and RPC evidence.</p>
+        <div><h1>Overview</h1><p id="overview-date"></p></div>
+        <div class="header-actions">
+          <label class="search"><input id="chain-search" type="search" placeholder="Find a chain or validator" aria-label="Find a chain or validator"><kbd>/</kbd></label>
+          <button type="button" id="customize-appearance">Appearance</button>
         </div>
-        <div class="header-actions"><div class="live" id="connection-state" aria-label="Monitor connection">Connecting</div><button type="button" id="customize-appearance">Customize</button></div>
       </header>
-
-      <section class="strip" aria-label="Fleet summary">
-        <div class="metric"><div class="label">Monitored</div><div class="value"><span id="chain-count">—</span><small id="chain-count-label">validators</small></div></div>
-        <div class="metric urgent"><div class="label">Needs attention</div><div class="value"><span id="attention-count">—</span><small id="attention-count-label">validators</small></div></div>
-        <div class="metric warn"><div class="label">RPC degraded</div><div class="value"><span id="rpc-count">—</span><small id="rpc-count-label">validators</small></div></div>
-        <div class="metric"><div class="label">Data coverage</div><div class="value"><span id="coverage-count">—</span><small>validators reporting</small></div></div>
+      <section class="summary-cards" aria-label="Fleet summary">
+        <div class="summary-card"><div class="label">RPC endpoints</div><div class="value"><span id="rpc-value">—</span><small>up</small></div><div class="rpc-bar" aria-hidden="true"><i id="rpc-up-bar"></i><i id="rpc-down-bar"></i></div></div>
+        <div class="summary-card"><div class="label">Closest to jail</div><div class="value jail-value" id="jail-value">—</div><div class="foot" id="jail-foot"></div></div>
       </section>
-
-      <section class="attention" id="attention-section" aria-label="Current priority" hidden>
-        <div class="alert danger">
-          <div class="sectioncap"><b>Current priority</b><span id="priority-count"></span></div>
-          <div id="priority-list" class="priority-list"></div>
-        </div>
-        <div class="alert upgrade">
-          <div class="sectioncap"><b>Monitoring context</b></div>
-          <div class="alert-main"><strong id="priority-context"></strong></div>
-          <p id="priority-context-detail"></p>
-        </div>
-      </section>
-
-      <section id="governance-section" hidden aria-labelledby="governance-heading">
-        <div class="sectioncap"><b id="governance-heading">Governance</b><span id="governance-count"></span></div>
-        <div id="governance-list"></div>
-        <details id="governance-more" hidden>
-          <summary id="governance-more-summary"></summary>
-          <div id="governance-more-list"></div>
-        </details>
-      </section>
-
-      <section aria-labelledby="chains-heading">
-        <div class="list-head">
-          <div><h2 id="chains-heading">All validators</h2><p>Latest observed blocks, newest on the left · open a chain for the full history · sort stays fixed while you inspect</p></div>
-          <div class="tools" role="group" aria-label="Filter validators">
-            <button type="button" class="tool current" data-filter="all" aria-pressed="true">All</button>
-            <button type="button" class="tool" data-filter="attention" aria-pressed="false">Needs attention</button>
-            <button type="button" class="tool" data-filter="unavailable" aria-pressed="false">No data</button>
-            <button type="button" class="tool" id="sort-urgency">Sort by urgency</button>
+      <div class="attention-grid" id="attention-grid" hidden>
+        <section class="overview-card" id="attention-section" aria-labelledby="attention-heading" hidden>
+          <div class="card-head"><h2 id="attention-heading">Needs attention</h2><span id="priority-count"></span></div>
+          <div id="priority-list"></div><button type="button" class="card-more" id="attention-more" aria-controls="priority-list" hidden></button>
+        </section>
+        <section class="overview-card" id="governance-section" aria-labelledby="governance-heading" hidden>
+          <div class="card-head"><h2 id="governance-heading">Governance</h2><span id="governance-count"></span></div>
+          <div id="governance-list"></div><button type="button" class="card-more" id="governance-more" aria-controls="governance-list" hidden></button>
+        </section>
+      </div>
+      <section aria-label="Validators">
+        <div class="table-toolbar">
+          <div class="segmented" role="group" aria-label="Filter validators">
+            <button type="button" class="current" data-filter="all" aria-pressed="true">All <span id="filter-count-all">0</span></button>
+            <button type="button" data-filter="attention" aria-pressed="false">Needs attention <span id="filter-count-attention">0</span></button>
+            <button type="button" data-filter="notice" aria-pressed="false">Notice <span id="filter-count-notice">0</span></button>
+            <button type="button" data-filter="unavailable" aria-pressed="false">No data <span id="filter-count-unavailable">0</span></button>
           </div>
+          <div class="segmented" id="network-filters" role="group" aria-label="Filter networks" hidden>
+            <button type="button" class="current" data-network="all" aria-pressed="true">All networks</button>
+            <button type="button" data-network="mainnet" aria-pressed="false">Mainnet <span id="network-count-mainnet">0</span></button>
+            <button type="button" data-network="testnet" aria-pressed="false">Testnet <span id="network-count-testnet">0</span></button>
+          </div>
+          <button type="button" id="sort-urgency">Sort by urgency</button>
         </div>
         <div class="table-wrap">
           <table aria-label="Validator status by chain">
-            <colgroup><col style="width:15%"><col style="width:12%"><col style="width:14%"><col style="width:11%"><col style="width:30%"><col style="width:12%"><col style="width:6%"></colgroup>
-            <thead><tr><th scope="col">Chain / validator</th><th scope="col">Status</th><th scope="col">Voting power</th><th scope="col">Height</th><th scope="col">Block trace</th><th scope="col">Missed / window</th><th scope="col">RPC</th></tr></thead>
-            <tbody id="status-table"><tr><td colspan="6" class="empty">Waiting for chain data…</td></tr></tbody>
+            <colgroup><col style="width:17%"><col style="width:14%"><col style="width:13%"><col style="width:11%"><col style="width:23%"><col style="width:12%"><col style="width:10%"></colgroup>
+            <thead><tr><th scope="col">Chain</th><th scope="col">Status</th><th scope="col">Voting power</th><th scope="col">Height</th><th scope="col">Recent blocks</th><th scope="col">Signing window</th><th scope="col">RPC</th></tr></thead>
+            <tbody id="status-table"><tr><td colspan="7" class="empty">Waiting for chain data…</td></tr></tbody>
           </table>
         </div>
       </section>
 
-      <section class="below" id="activity" aria-labelledby="activity-heading">
-        <div id="log-section">
-          <h3 id="activity-heading">Monitor activity</h3>
-          <ol id="activity-list" class="activity-list"><li class="empty">Waiting for activity…</li></ol>
-        </div>
-        <div>
-          <h3>Block trace key</h3>
+      <div class="overview-legend">
           <div class="trace-key" aria-label="Block trace status key">
             <span><i class="trace-mark signed"></i> Signed</span>
             <span><i class="trace-mark proposed"></i> Proposed</span>
@@ -99,21 +82,29 @@
             <span><i class="trace-mark missed"></i> Missed</span>
             <span><i class="trace-mark unobserved"></i> No data</span>
           </div>
-          <p class="footnote">A missing observation is not a signed block. The signing window count is chain state, not a 24-hour uptime rate.</p>
-        </div>
+        <div class="rpc-key"><span><i class="rpc-dot"></i>endpoint up</span><span><i class="rpc-dot down"></i>endpoint down</span></div>
+      </div>
+      <p class="footnote overview-footnote">A missing observation is not a signed block. The signing window count is chain state, not a 24-hour uptime rate.</p>
+      <section class="overview-card activity-card" id="log-section" aria-labelledby="activity-heading" hidden>
+        <div class="card-head"><h2 id="activity-heading">Recent activity</h2></div>
+        <ol id="activity-list" class="activity-list"><li class="empty">Waiting for activity…</li></ol>
       </section>
     </main>
     <main id="fibre" hidden aria-labelledby="fibre-heading">
-      <header class="top"><div><h1 id="fibre-heading">Fibre</h1><p>Uploads, signing and storage alongside the chain's provider checks.</p></div><button type="button" id="fibre-customize">Customize panels</button></header>
-      <div class="fibre-controls"><label id="fibre-chain-label">Chain <select id="fibre-chain"></select></label><div class="tools" id="fibre-ranges" role="group" aria-label="History range"></div></div>
-      <div id="fibre-facts" class="detail-facts"></div>
+      <header class="top history-top"><h1 id="fibre-heading">Fibre</h1><div class="fibre-controls">
+        <div class="history-chain"><label id="fibre-chain-label"><span class="sr-only">Chain</span><select id="fibre-chain"></select></label><span id="fibre-chain-name" hidden></span><span id="fibre-testnet" class="network-tag" hidden>TESTNET</span></div>
+        <div class="segmented" id="fibre-ranges" role="group" aria-label="History range"></div><button type="button" id="fibre-customize">Customize panels</button>
+      </div></header>
+      <section id="fibre-facts" class="history-summary" aria-label="Fibre summary"></section>
       <p id="fibre-message" role="status"></p>
       <div id="fibre-panels" class="fibre-panels"></div>
     </main>
     <main id="bridge" hidden aria-labelledby="bridge-heading">
-      <header class="top"><div><h1 id="bridge-heading">Bridge</h1><p>Sync, serving and storage of the chain's bridge node.</p></div><button type="button" id="bridge-customize">Customize panels</button></header>
-      <div class="fibre-controls"><label id="bridge-chain-label">Chain <select id="bridge-chain"></select></label><div class="tools" id="bridge-ranges" role="group" aria-label="History range"></div></div>
-      <div id="bridge-facts" class="detail-facts"></div>
+      <header class="top history-top"><h1 id="bridge-heading">Bridge</h1><div class="fibre-controls">
+        <div class="history-chain"><label id="bridge-chain-label"><span class="sr-only">Chain</span><select id="bridge-chain"></select></label><span id="bridge-chain-name" hidden></span><span id="bridge-testnet" class="network-tag" hidden>TESTNET</span></div>
+        <div class="segmented" id="bridge-ranges" role="group" aria-label="History range"></div><button type="button" id="bridge-customize">Customize panels</button>
+      </div></header>
+      <section id="bridge-facts" class="history-summary" aria-label="Bridge summary"></section>
       <p id="bridge-message" role="status"></p>
       <div id="bridge-panels" class="fibre-panels"></div>
     </main>
