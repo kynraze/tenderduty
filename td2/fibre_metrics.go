@@ -30,7 +30,7 @@ const (
 	fibreMaxDecoding = 4       // concurrent decoders; excess requests get 503
 	fibreMaxSenders  = 64      // per chain; evict the oldest sender
 	fibreMaxIgnored  = 256     // unclaimed instances; evict the oldest
-	fibreMaxIdentity = 128     // bytes of service.instance.id and service.version
+	fibreMaxIdentity = 128     // bytes of service.namespace, service.instance.id and service.version
 	fibreMinSamples  = 20
 	fibreMetricPfx   = "fibre.server."
 	fibreFastBound   = 0.01 // seconds, the signing threshold
@@ -203,7 +203,7 @@ type fibreStore struct {
 	started    time.Time
 	now        func() time.Time
 	senders    map[string]*fibreSender
-	ignored    map[string]time.Time // instance to last-seen time
+	ignored    map[string]time.Time // sender key to last-seen time
 	oversized  map[string]time.Time // sender address to last-log time
 	hours      map[string]map[int64]*fibreHour
 	totals     map[string]map[string]float64
@@ -318,12 +318,21 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 }
 
 // Match the hostname, or the sole unnamed chain with Fibre alerts.
+// Chains found without x/valaddr don't compete, so fibre_enabled in alert_defaults still works.
+// Neither do chains a labeled Fibre feeds: label only the new Fibre and the old one keeps its chain.
+// ponytail: the mark is not saved, so after a restart unlabeled exports wait for the labeled Fibre's first export (≤1 min).
 func (c *Config) fibreChainFor(instance string) string {
 	c.chainsMux.RLock()
 	defer c.chainsMux.RUnlock()
 	unnamed, count := "", 0
 	for key, cc := range c.Chains {
 		if cc == nil || !cc.alertSettings().FibreAlerts {
+			continue
+		}
+		cc.stateMux.RLock()
+		unsupported, namespaced := cc.fibreUnsupported, cc.fibreNamespaced
+		cc.stateMux.RUnlock()
+		if unsupported {
 			continue
 		}
 		name := cc.name
@@ -333,7 +342,7 @@ func (c *Config) fibreChainFor(instance string) string {
 		if instance != "" && cc.alertSettings().FibreInstance == instance {
 			return name
 		}
-		if cc.alertSettings().FibreAlerts && cc.alertSettings().FibreInstance == "" {
+		if cc.alertSettings().FibreAlerts && cc.alertSettings().FibreInstance == "" && !namespaced {
 			unnamed, count = name, count+1
 		}
 	}
@@ -341,6 +350,58 @@ func (c *Config) fibreChainFor(instance string) string {
 		return unnamed
 	}
 	return ""
+}
+
+// A namespace must identify one chain, even when instance names are duplicated.
+func (c *Config) fibreNamespaceChainFor(namespace, instance string) (string, string) {
+	c.chainsMux.RLock()
+	defer c.chainsMux.RUnlock()
+	chain, matched, count, matches := "", "", 0, 0
+	var only, matchedCC *ChainConfig
+	for key, cc := range c.Chains {
+		if cc == nil || cc.ChainId != namespace || !cc.alertSettings().FibreAlerts {
+			continue
+		}
+		cc.stateMux.RLock()
+		unsupported := cc.fibreUnsupported
+		cc.stateMux.RUnlock()
+		if unsupported {
+			continue
+		}
+		chain, only = cc.name, cc
+		if chain == "" {
+			chain = key
+		}
+		count++
+		if instance != "" && cc.alertSettings().FibreInstance == instance {
+			matched, matchedCC, matches = chain, cc, matches+1
+		}
+	}
+	if count == 1 {
+		only.markFibreNamespaced()
+		return chain, ""
+	}
+	if count == 0 {
+		return "", "no chain with that chain_id has fibre_enabled"
+	}
+	if matches == 1 {
+		matchedCC.markFibreNamespaced()
+		return matched, ""
+	}
+	return "", "multiple chains with that chain_id have fibre_enabled; need one matching fibre_instance"
+}
+
+func (cc *ChainConfig) markFibreNamespaced() {
+	cc.stateMux.Lock()
+	cc.fibreNamespaced = true
+	cc.stateMux.Unlock()
+}
+
+func fibreSenderKey(namespace, instance string) string {
+	if namespace == "" {
+		return instance
+	}
+	return strconv.Quote(namespace) + ":" + strconv.Quote(instance)
 }
 
 func fibreAttr(attrs []*commonv1.KeyValue, key string) (string, bool) {
@@ -518,15 +579,15 @@ func temporalityCumulative(t metricsv1.AggregationTemporality) bool {
 	return t != metricsv1.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 }
 
-func (st *fibreStore) record(chain, instance, version string, metrics []*metricsv1.Metric) {
+func (st *fibreStore) record(chain, senderKey, version string, metrics []*metricsv1.Metric) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	now := st.now()
-	s := st.senders[instance]
+	s := st.senders[senderKey]
 	if s == nil {
 		st.makeRoom(chain)
 		s = &fibreSender{series: make(map[string]fibreSeries)}
-		st.senders[instance] = s
+		st.senders[senderKey] = s
 	}
 	known := !s.lastReceived.IsZero()
 	if !known {
@@ -786,10 +847,23 @@ func (c *Config) ingestFibreMetrics(data *metricsv1.MetricsData) {
 		instance, _ := fibreAttr(attrs, "service.instance.id")
 		version, _ := fibreAttr(attrs, "service.version")
 		instance, version = clipBytes(instance, fibreMaxIdentity), clipBytes(version, fibreMaxIdentity)
-		chain := c.fibreChainFor(instance)
+		namespace, _ := fibreAttr(attrs, "service.namespace")
+		namespace = clipBytes(namespace, fibreMaxIdentity)
+		senderKey := fibreSenderKey(namespace, instance)
+		chain, reason := "", ""
+		if namespace == "" {
+			chain = c.fibreChainFor(instance)
+			reason = "no chain has fibre_instance set to it, and not exactly one chain with fibre_enabled leaves it empty"
+		} else {
+			chain, reason = c.fibreNamespaceChainFor(namespace, instance)
+		}
 		if chain == "" {
-			if st.noteIgnored(instance) {
-				l("ignoring Fibre metrics from", strconv.Quote(instance)+": no chain has fibre_instance set to it, and not exactly one chain with fibre_enabled leaves it empty")
+			if st.noteIgnored(senderKey) {
+				sender := strconv.Quote(instance)
+				if namespace != "" {
+					sender += " on " + namespace
+				}
+				l("ignoring Fibre metrics from", sender+": "+reason)
 			}
 			continue
 		}
@@ -797,7 +871,7 @@ func (c *Config) ingestFibreMetrics(data *metricsv1.MetricsData) {
 		for _, sm := range rm.GetScopeMetrics() {
 			metrics = append(metrics, sm.GetMetrics()...)
 		}
-		st.record(chain, instance, version, metrics)
+		st.record(chain, senderKey, version, metrics)
 		if c.EnableDash {
 			select {
 			case c.updateChan <- &dash.ChainStatus{MsgType: "fibre", Name: chain, Fibre: &dash.FibreStatus{MetricsAt: st.now().Unix()}}:
@@ -1041,20 +1115,15 @@ func validateFibreMetrics(c *Config) (fatal bool, problems []string) {
 	if !fibreMetricsLoopback(host) && m.Token != "" && m.TLSCert == "" {
 		problems = append(problems, fmt.Sprintf("warning: fibre_metrics listens on %s with a token but no tls_cert, the token travels in cleartext. Set tls_cert and tls_key, or put it behind a TLS proxy", m.Listen))
 	}
-	enabled, unnamed := 0, 0
+	// several unnamed chains are fine: Fibres with service.namespace route by chain_id, others are logged as ignored
+	enabled := 0
 	for _, v := range c.Chains {
 		if v != nil && v.Alerts.FibreAlerts {
 			enabled++
-			if v.Alerts.FibreInstance == "" {
-				unnamed++
-			}
 		}
 	}
 	if enabled == 0 {
 		problems = append(problems, "warning: fibre_metrics is listening but no chain has fibre_enabled, nothing will use the metrics")
-	}
-	if enabled > 1 && unnamed > 0 {
-		problems = append(problems, "warning: more than one chain has fibre_enabled and some have no fibre_instance, only one chain can take metrics from a Fibre that isn't named")
 	}
 	return
 }

@@ -38,6 +38,7 @@ Usage:
 Available Commands:
   start       Run tenderduty (the same as no command)
   chain       Add, change, remove or list chains
+  config      Show or change config.yml
   reload      Reload a running tenderduty
   help        Help about any command
 
@@ -70,8 +71,8 @@ Usage:
   tenderduty reload [flags]
 
 Flags:
-  -home, -f, -cc, -state    as for tenderduty
-`
+  -h, -help                  help for reload
+` + td2.GlobalFlagsHelp
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -200,6 +201,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		switch rest[0] {
 		case "chain":
 			err = td2.ChainCommand(context.Background(), commandOptions, rest[1:], stdin, stdout)
+		case "config":
+			err = td2.ConfigCommand(context.Background(), commandOptions, rest[1:], stdin, stdout)
 		case "reload":
 			err = reloadCommand(home, configFile, stateFile, rest[1:], stdout)
 		case "help":
@@ -227,7 +230,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	err = td2.Run(configFile, stateFile, chainConfigDirectory, &password)
 	if err != nil {
 		//#nosec G706 -- local startup error
-		log.Println(err.Error(), "... exiting.")
+		log.Println(err.Error())
 		return 1
 	}
 	return 0
@@ -303,6 +306,10 @@ func helpCommand(topic []string, stdout io.Writer) error {
 	case topic[0] == "chain":
 		if text, ok = td2.ChainHelp(topic[1:]); !ok {
 			return &unknownCommandError{name: topic[1], parent: "tenderduty chain"}
+		}
+	case topic[0] == "config":
+		if text, ok = td2.ConfigHelp(topic[1:]); !ok {
+			return &unknownCommandError{name: topic[1], parent: "tenderduty config"}
 		}
 	case topic[0] == "reload" && len(topic) == 1:
 		text = reloadHelpText

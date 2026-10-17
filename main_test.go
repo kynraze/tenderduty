@@ -47,10 +47,10 @@ func TestCommandHelp(t *testing.T) {
 		{[]string{"help", "chain"}, "Usage:\n  tenderduty chain [command]"},
 		{[]string{"chain", "add", "-h"}, "--node string"},
 		{[]string{"help", "chain", "add"}, "--node string"},
-		{[]string{"-cc", "x", "chain", "set", "--help"}, "tenderduty chain set <Name> key=value"},
+		{[]string{"-cc", "x", "chain", "set", "--help"}, "tenderduty chain set <Name> [<Name> ...] key=value"},
 		{[]string{"chain", "remove", "-h"}, "--yes"},
 		{[]string{"chain", "list", "-h"}, "tenderduty chain list"},
-		{[]string{"reload", "-h"}, "-home, -f, -cc, -state    as for tenderduty"},
+		{[]string{"reload", "-h"}, "Global Flags:\n  -home string"},
 		{[]string{"help", "reload"}, "Usage:\n  tenderduty reload [flags]"},
 	} {
 		code, stdout, stderr := runCLI(tc.args...)
@@ -81,7 +81,7 @@ func TestUsageErrorShowsTheUsage(t *testing.T) {
 	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "Error: --node is required") || !strings.Contains(stderr, "\nUsage:\n  tenderduty chain add <valoper|valcons> --node <url> [flags]\n") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	code, _, stderr = runCLI("-cc", dir, "chain", "set", "Celestia")
+	code, _, stderr = runCLI("-home", homeFixture(t), "chain", "set", "Celestia")
 	if code != 1 || !strings.Contains(stderr, "chain set takes a chain name") || !strings.Contains(stderr, "\nUsage:\n  tenderduty chain set <Name>") {
 		t.Fatalf("set: exit %d, stderr %q", code, stderr)
 	}
@@ -147,7 +147,7 @@ func TestHomeFlagAndEnvFindTheChains(t *testing.T) {
 	} {
 		t.Setenv("TENDERDUTY_HOME", tc.env)
 		code, stdout, stderr := runCLI(tc.args...)
-		if code != 0 || !strings.Contains(stdout, "Homed") || !strings.Contains(stdout, filepath.Join(home, "chains.d", "Homed.yml")) {
+		if code != 0 || !strings.Contains(stdout, "\nHomed ") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
 		}
 	}
@@ -242,16 +242,16 @@ func TestChainCLISystemLayout(t *testing.T) {
 		args                          []string
 		wantFile                      string
 	}{
-		{name: "system", cwd: empty, args: []string{"chain", "list"}, wantFile: filepath.Join(system, "chains.d", "Homed.yml")},
-		{name: "cwd wins", cwd: local, args: []string{"chain", "list"}, wantFile: filepath.Join("chains.d", "Homed.yml")},
-		{name: "cc before", cwd: empty, args: []string{"-cc", filepath.Join(local, "chains.d"), "chain", "list"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
-		{name: "cc after", cwd: empty, args: []string{"chain", "list", "-cc", filepath.Join(local, "chains.d")}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
+		{name: "system", cwd: empty, args: []string{"chain", "show", "Homed"}, wantFile: filepath.Join(system, "chains.d", "Homed.yml")},
+		{name: "cwd wins", cwd: local, args: []string{"chain", "show", "Homed"}, wantFile: filepath.Join("chains.d", "Homed.yml")},
+		{name: "cc before", cwd: empty, args: []string{"-cc", filepath.Join(local, "chains.d"), "chain", "show", "Homed"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
+		{name: "cc after", cwd: empty, args: []string{"chain", "show", "Homed", "-cc", filepath.Join(local, "chains.d")}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
 		{name: "f before", cwd: empty, args: []string{"-f", filepath.Join(local, "config.yml"), "chain", "list"}},
 		{name: "f after", cwd: empty, args: []string{"chain", "list", "-f", filepath.Join(local, "config.yml")}},
 		{name: "CONFIG", cwd: empty, configEnv: filepath.Join(local, "config.yml"), args: []string{"chain", "list"}},
-		{name: "home before", cwd: empty, args: []string{"-home", local, "chain", "list"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
-		{name: "home after", cwd: empty, args: []string{"chain", "list", "-home", local}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
-		{name: "home env", cwd: empty, homeEnv: local, args: []string{"chain", "list"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
+		{name: "home before", cwd: empty, args: []string{"-home", local, "chain", "show", "Homed"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
+		{name: "home after", cwd: empty, args: []string{"chain", "show", "Homed", "-home", local}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
+		{name: "home env", cwd: empty, homeEnv: local, args: []string{"chain", "show", "Homed"}, wantFile: filepath.Join(local, "chains.d", "Homed.yml")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(tc.cwd)

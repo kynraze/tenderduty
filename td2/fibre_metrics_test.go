@@ -327,6 +327,15 @@ func TestFibreMetricsFixtures(t *testing.T) {
 		t.Fatalf("export 1 counted %+v", w)
 	}
 
+	// The fixtures also carry uploads and in-flight gauges.
+	d := snap.Ten.Sum
+	if d.uploadOK != 9 || d.uploadFailed != 1 || !near(d.uploadSec, 0.18) || d.putOK != 1 || d.storePut != 1 || d.pruneOK != 1 || !near(d.pruneSec, 0.2) || d.signOK != 2 || !near(d.signSec, 0.024) {
+		t.Fatalf("export 1 counted %+v", d)
+	}
+	if snap.UploadsNow != 2 || !snap.HaveInFlight {
+		t.Fatalf("in flight %d", snap.UploadsNow)
+	}
+
 	var second metricsv1.MetricsData
 	if err := proto.Unmarshal(fibreFixture(t, "export2.pb"), &second); err != nil {
 		t.Fatal(err)
@@ -335,6 +344,10 @@ func TestFibreMetricsFixtures(t *testing.T) {
 	r.c.ingestFibreMetrics(&second)
 	// the counters are cumulative: 3 rejections became 5, with the same start time
 	w2 := r.st.snapshot("Chain").Window
+	d = r.st.snapshot("Chain").Ten.Sum
+	if d.uploadOK != 9 || d.uploadFailed != 2 {
+		t.Fatalf("export 2 counted %+v", d)
+	}
 	if w2.rejected-w.rejected != 2 {
 		t.Fatalf("export 2 added rejected %d, window %+v", w2.rejected-w.rejected, w2)
 	}
@@ -498,6 +511,15 @@ func TestFibreMetricsChainMapping(t *testing.T) {
 				t.Fatalf("mapped to %q, want %q", got, tc.want)
 			}
 		})
+	}
+	// fibre_enabled from alert_defaults: chains without x/valaddr drop out once checked
+	c := cfg(map[string][2]interface{}{"Mocha": {true, ""}, "Akash": {true, ""}})
+	if got := c.fibreChainFor("anything"); got != "" {
+		t.Fatalf("unchecked chains still compete, got %q", got)
+	}
+	c.Chains["Akash"].fibreUnsupported = true
+	if got := c.fibreChainFor("anything"); got != "Mocha" {
+		t.Fatalf("mapped to %q, want Mocha", got)
 	}
 }
 
@@ -1841,8 +1863,8 @@ func TestValidateFibreMetrics(t *testing.T) {
 		{name: "a url", listen: "http://127.0.0.1:4318", chains: [][2]interface{}{one}, fatal: "not a valid host:port"},
 		{name: "no chain has Fibre alerts", listen: "127.0.0.1:4318", chains: [][2]interface{}{{false, ""}}, warning: "no chain has fibre_enabled"},
 		{name: "no chains with Fibre", listen: "127.0.0.1:4318", warning: "no chain has fibre_enabled"},
-		{name: "two chains, one unnamed", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, "host-a"}, {true, ""}}, warning: "no fibre_instance"},
-		{name: "two chains, both unnamed", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, ""}, {true, ""}}, warning: "no fibre_instance"},
+		{name: "two chains, one unnamed", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, "host-a"}, {true, ""}}},
+		{name: "two chains, both unnamed: namespace routes them", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, ""}, {true, ""}}},
 		{name: "two chains, both named", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, "host-a"}, {true, "host-b"}}},
 		{name: "two chains, one with Fibre alerts off", listen: "127.0.0.1:4318", chains: [][2]interface{}{{true, ""}, {false, ""}}},
 	} {

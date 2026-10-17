@@ -94,7 +94,7 @@ The CLI reads `<state file>.pid`, so use the same state path and working directo
 
 | Config Setting | Description |
 | --- | --- |
-| `enable_dashboard` | Enable the dashboard. |
+| `enable_dashboard` | Enable the dashboard. Chain logos come from the chain registry (PNG, GitHub chain-registry only), with initials as fallback. |
 | `listen_port` | TCP port of the dashboard. |
 | `hide_logs` | Disable the log feed and hide the RPC node list (with node versions) and error details, for a public dashboard, and the node lines of Telegram `/status`. Also hides Fibre failure reasons and identity errors; runtime metrics and Fibre's version stay. Not fully vetted against leaking node names. Needs a restart. |
 | `node_down_alert_minutes` | Minutes to wait before alerting that a node is down. 3 when empty, under 3 can give false alarms. |
@@ -211,3 +211,7 @@ Empty `daily` or `weekly` turns that report off. `timezone` takes an IANA name o
 - With Telegram commands on, `/report` and `/report weekly` show the current report.
 - Reports missed while tenderduty was down are sent up to six hours late, marked `(late)`.
 - The state file keeps 30 days of history for this. Restart downtime is not counted as watched time.
+
+## From the CLI
+
+`tenderduty config show` shows effective settings; add a section, e.g. `config show telegram`. Secrets are masked. Change settings with `tenderduty config set reports.daily=09:00`. Use `telegram.api_key=-` to read a secret from stdin, or `fibre_metrics.token=generate` to generate a token and print it once. Listener settings need a restart; other changes reload the running process. For encrypted configurations, decrypt with `tenderduty -decrypt`, edit, then encrypt again with `tenderduty -encrypt`.

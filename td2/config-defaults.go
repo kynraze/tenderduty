@@ -11,6 +11,17 @@ import (
 
 type yamlMap map[interface{}]interface{}
 
+// Keep compatibility names in one place for loader warnings and CLI notes.
+var legacyAlertSettings = map[string]string{
+	"discord_alerts":       "now alerts.discord.enabled",
+	"telegram_alerts":      "now alerts.telegram.enabled",
+	"pagerduty_alerts":     "now alerts.pagerduty.enabled",
+	"percentage_missed":    "now alerts.jail_risk_percent",
+	"percentage_enabled":   "now alerts.missed_blocks_enabled",
+	"percentage_priority":  "ignored; stage severities are fixed",
+	"consecutive_priority": "ignored; stage severities are fixed",
+}
+
 func validHTTPURL(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Host != "" && (parsed.Scheme == "https" || parsed.Scheme == "http")
@@ -137,6 +148,16 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		inspect(overrides)
+		var old []string
+		for key, replacement := range legacyAlertSettings {
+			if _, ok := overrides[key]; ok && strings.HasSuffix(key, "_alerts") {
+				old = append(old, "alerts."+key+" ("+replacement+")")
+			}
+		}
+		if len(old) > 0 {
+			sort.Strings(old)
+			c.configWarnings = append(c.configWarnings, "warning: old setting names on "+name+": "+strings.Join(old, "; "))
+		}
 		merged := mergeMaps(defaults, overrides)
 		data, err := yaml.Marshal(merged)
 		if err != nil {

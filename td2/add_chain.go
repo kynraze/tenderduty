@@ -154,23 +154,25 @@ func registryValoperPrefix(ctx context.Context, node, chainID string) string {
 // AddChain writes a standalone chain file.
 func AddChain(ctx context.Context, options AddChainOptions, output io.Writer) error {
 	return addChain(ctx, options, output, addChainFetchers{
-		status: func(ctx context.Context, node string) (addChainStatus, error) {
-			client, err := rpchttp.New(node, "/websocket")
-			if err != nil {
-				return addChainStatus{}, err
-			}
-			status, err := client.Status(ctx)
-			if err != nil {
-				return addChainStatus{}, err
-			}
-			return addChainStatus{status.NodeInfo.Network, status.SyncInfo.CatchingUp}, nil
-		},
+		status:         nodeChainStatus,
 		validator:      registryValidator,
 		registry:       registryName,
 		selectRegistry: selectedRegistryName,
 		valoperPrefix:  registryValoperPrefix,
 		stakingToken:   registryStakingToken,
 	})
+}
+
+func nodeChainStatus(ctx context.Context, node string) (addChainStatus, error) {
+	client, err := rpchttp.New(node, "/websocket")
+	if err != nil {
+		return addChainStatus{}, err
+	}
+	status, err := client.Status(ctx)
+	if err != nil {
+		return addChainStatus{}, err
+	}
+	return addChainStatus{status.NodeInfo.Network, status.SyncInfo.CatchingUp}, nil
 }
 
 // getVal already accepts other operator prefixes and valcons.
@@ -207,13 +209,22 @@ func registryName(ctx context.Context, chainID string) (string, error) {
 	return chain.ChainName, nil
 }
 
+var errNodeRequired = errors.New("--node is required: tenderduty watches your own validator node; public RPC is only a fallback")
+
 func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fetch addChainFetchers) error {
+	if options.ConfigFile != "" {
+		var err error
+		options.ConfigFile, err = requireChainConfig(options.ConfigFile, "")
+		if err != nil {
+			return err
+		}
+	}
 	// local input first, so a typo never waits on the network
 	if options.Valoper == "" {
 		return fmt.Errorf("chain add needs a validator address")
 	}
 	if options.Node == "" {
-		return fmt.Errorf("--node is required: tenderduty watches your own validator node; public RPC is only a fallback")
+		return errNodeRequired
 	}
 	if !validHTTPURL(options.Node) {
 		return fmt.Errorf("--node must be an http:// or https:// URL, got %q", options.Node)
@@ -221,7 +232,16 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 	if err := validateChainSettings(options.Settings); err != nil {
 		return err
 	}
-	if options.Name != "" && badChainFileName(strings.TrimSpace(options.Name)) {
+	if options.Name != "" {
+		if badChainFileName(strings.TrimSpace(options.Name)) {
+			return errBadChainName
+		}
+		options.Name = chainFileName(options.Name)
+		if options.Name == "" {
+			return errBadChainName
+		}
+	}
+	if options.Name != "" && badChainFileName(options.Name) {
 		return errBadChainName
 	}
 	if options.To == "" && options.Label != "" {
@@ -264,8 +284,14 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 	if status.ChainID == "" {
 		return fmt.Errorf("node returned an empty chain id")
 	}
+	if target != nil {
+		options.To = strings.TrimSuffix(filepath.Base(target.filename), ".yml")
+	}
 	if target != nil && status.ChainID != target.config.ChainId {
 		return fmt.Errorf("node reports chain id %s, but %s has %s", stripControl(status.ChainID), options.To, stripControl(target.config.ChainId))
+	}
+	if err := duplicateChainValidator(options, status.ChainID, target); err != nil {
+		return err
 	}
 	selectedName := ""
 	if options.RegistryChain != "" {
@@ -274,6 +300,33 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 		}
 		selectedName, err = fetch.selectRegistry(ctx, options.RegistryChain, status.ChainID, options.Valoper)
 		if err != nil {
+			return err
+		}
+	}
+	name := options.Name
+	notInRegistry := false
+	if target == nil {
+		if name == "" {
+			if selectedName != "" {
+				name = selectedName
+			} else {
+				name, err = fetch.registry(ctx, status.ChainID)
+			}
+			notInRegistry = errors.Is(err, errNotInRegistry)
+			if err != nil && !notInRegistry {
+				fmt.Fprintf(output, "Could not read registry name: %v; using chain id\n", stripControl(err.Error()))
+			}
+			if name == "" {
+				name = status.ChainID
+			}
+		}
+		name = chainFileName(name)
+		name = strings.TrimSpace(name)
+		if badChainFileName(name) {
+			return errBadChainName
+		}
+		options.Name = name
+		if err := duplicateChainValidator(options, status.ChainID, nil); err != nil {
 			return err
 		}
 	}
@@ -304,38 +357,23 @@ func addChain(ctx context.Context, options AddChainOptions, output io.Writer, fe
 	if target != nil {
 		return appendChainValidator(ctx, options, output, fetch, node, validator, target)
 	}
-	name := options.Name
-	notInRegistry := false
-	if name == "" {
-		if selectedName != "" {
-			name = selectedName
-		} else {
-			name, err = fetch.registry(ctx, status.ChainID)
-		}
-		notInRegistry = errors.Is(err, errNotInRegistry)
-		if err != nil && !notInRegistry {
-			fmt.Fprintf(output, "Could not read registry name: %v; using chain id\n", stripControl(err.Error()))
-		}
-		if name == "" {
-			name = status.ChainID
-		}
-		// file names without spaces or punctuation: "Mocha Testnet" is Mocha-Testnet
-		name = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-			if isControl(r) || strings.ContainsRune(`.<>:"/\|?*`, r) {
-				return ' '
-			}
-			return r
-		}, name)), "-")
-	}
-	name = strings.TrimSpace(name)
-	if badChainFileName(name) {
-		return errBadChainName
-	}
 	if options.Directory == "" {
 		options.Directory = "chains.d"
 	}
 	if err := makeChainDirectory(options.Directory); err != nil {
 		return err
+	}
+	matches, err := matchingChainNames(options.Directory, name)
+	if err != nil {
+		return err
+	}
+	for _, existing := range matches {
+		if existing != name {
+			if !options.Force || len(matches) > 1 {
+				return fmt.Errorf("%s already exists as %s", existing, filepath.Join(options.Directory, existing+".yml"))
+			}
+			name = existing
+		}
 	}
 	// Marshal only what this command owns; alert_defaults supplies the rest.
 	fileConfig := struct {

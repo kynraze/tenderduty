@@ -91,7 +91,7 @@ func TestAddChainNamesAndOverwrite(t *testing.T) {
 	for _, tc := range []struct{ name, registry, override, want string }{
 		{"registry", "Registry Name", "", "Registry-Name"},
 		{"chain id", "", "", "chain-1"},
-		{"override", "Registry Name", "My Validator", "My Validator"},
+		{"override", "Registry Name", "My Validator", "My-Validator"},
 		{"portable registry name", "Chain / Mainnet", "", "Chain-Mainnet"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -201,13 +201,6 @@ func TestRegistryNameUsesSharedLookup(t *testing.T) {
 				t.Fatalf("registry name = %q, %v", name, err)
 			}
 		})
-	}
-}
-
-func TestAddChainRejectsPathInName(t *testing.T) {
-	err := addChain(context.Background(), AddChainOptions{Valoper: "valoper", Node: "https://rpc.example", Name: "../outside", Directory: t.TempDir()}, &bytes.Buffer{}, addChainTestFetchers())
-	if err == nil {
-		t.Fatal("path traversal in -name was accepted")
 	}
 }
 

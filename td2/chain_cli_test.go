@@ -71,9 +71,33 @@ func TestChainSettingsKeepTheTopComment(t *testing.T) {
 	}
 }
 
+func TestSettingsEditInPlace(t *testing.T) {
+	keys := map[string]reflect.Type{"listen_port": reflect.TypeOf(""), "reports.daily": reflect.TypeOf(""), "telegram.enabled": reflect.TypeOf(true), "telegram.channel": reflect.TypeOf(""), "telegram.mentions": reflect.TypeOf([]string{})}
+	input := "listen_port: 8888   # dashboard\n\ntelegram:\n  enabled: no        # bot\n  channel: 'it''s'\n  mentions: []   # names\n\nreports:\n  daily: \"\"         # HH:MM\n"
+	got, _, err := applySettingsDiff([]byte(input), []string{"listen_port=8899", "telegram.enabled=yes", "telegram.channel=-100", "reports.daily=09:30", "telegram.mentions=alice,bob"}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "listen_port: 8899   # dashboard\n\ntelegram:\n  enabled: yes        # bot\n  channel: \"-100\"\n  mentions: [alice, bob]   # names\n\nreports:\n  daily: \"09:30\"         # HH:MM\n"
+	if string(got) != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	// a new key in an existing section is one inserted line
+	got, _, err = applySettingsDiff([]byte("telegram:\n  enabled: no   # bot\n\nreports:\n  daily: \"\"\n"), []string{"telegram.channel=-100", "telegram.mentions=a,b"}, keys)
+	if want := "telegram:\n  enabled: no   # bot\n  channel: \"-100\"\n  mentions: [a, b]\n\nreports:\n  daily: \"\"\n"; err != nil || string(got) != want {
+		t.Fatalf("%v\ngot\n%s\nwant\n%s", err, got, want)
+	}
+	// a new section rewrites the file and still says yes/no
+	got, _, err = applySettingsDiff([]byte("reports:\n  daily: \"\"\n"), []string{"telegram.enabled=yes"}, keys)
+	if err != nil || !strings.Contains(string(got), "enabled: yes") {
+		t.Fatalf("%v / %s", err, got)
+	}
+}
+
 func TestChainSettingsRefusals(t *testing.T) {
 	for _, tc := range []struct{ setting, want string }{
 		{"alerts.fibre_enabld=yes", "did you mean alerts.fibre_enabled"},
+		{"alerts.stalled=3", "did you mean alerts.stalled_enabled or alerts.stalled_minutes?"},
 		{"alerts.consecutive_missed=lots", `alerts.consecutive_missed must be a whole number, got "lots"`},
 		{"alerts.fibre_enabled=maybe", `alerts.fibre_enabled must be yes or no, got "maybe"`},
 		{"alerts.telegram.admins=1,x", `alerts.telegram.admins must be a comma-separated list of whole numbers, got "1,x"`},
@@ -193,7 +217,7 @@ func TestChainRemoveSharedConfigRefused(t *testing.T) {
 }
 
 func TestChainList(t *testing.T) {
-	options, filename, _ := chainCommandFixture(t)
+	options, _, _ := chainCommandFixture(t)
 	var output bytes.Buffer
 	// the loader prints to stdout, which is what the operator sees next to the table
 	stdout := os.Stdout
@@ -216,7 +240,7 @@ func TestChainList(t *testing.T) {
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "NAME ") || !strings.HasPrefix(lines[1], "Celestia ") || strings.Contains(output.String(), "Reading Chain Config File") {
 		t.Fatalf("output is not only the table: %q", output.String())
 	}
-	for _, want := range []string{"chain-1", "celestiavaloper1test", "missed_blocks,stalled,no_servers,gov,upgrade", filename} {
+	for _, want := range []string{"chain-1", "celestiavaloper1test", "all except missed_proposal,fibre,bridge"} {
 		if !strings.Contains(lines[1], want) {
 			t.Fatalf("missing %q: %s", want, output.String())
 		}
@@ -242,7 +266,7 @@ func TestCommandFlagsAfterPositionals(t *testing.T) {
 func TestChainAddNodeRequiredAndSettings(t *testing.T) {
 	fetch := addChainTestFetchers()
 	options, _, _ := chainCommandFixture(t)
-	add := AddChainOptions{Valoper: "celestiavaloper1test", Name: "New", Directory: options.Directory, ConfigFile: options.ConfigFile, Password: options.Password}
+	add := AddChainOptions{Valoper: "newvaloper1test", Name: "New", Directory: options.Directory, ConfigFile: options.ConfigFile, Password: options.Password}
 	err := addChain(context.Background(), add, &bytes.Buffer{}, fetch)
 	if err == nil || !strings.Contains(err.Error(), "--node is required") {
 		t.Fatalf("missing node accepted: %v", err)
@@ -266,9 +290,9 @@ func TestChainAddNodeRequiredAndSettings(t *testing.T) {
 }
 
 func TestChainHelpTexts(t *testing.T) {
-	for _, command := range []string{"add", "set", "remove", "list"} {
+	for command := range chainSubHelpText {
 		text, ok := ChainHelp([]string{command})
-		if !ok || !strings.Contains(text, "\nUsage:\n  tenderduty chain "+command) || !strings.Contains(text, "-home, -f, -cc, -state    as for tenderduty") {
+		if !ok || !strings.Contains(text, "\nUsage:\n  tenderduty chain "+command) || !strings.Contains(text, "-h, -help                  help for "+command+"\n\nGlobal Flags:\n  -home string") {
 			t.Fatalf("help for %s: %q", command, text)
 		}
 		if strings.Contains(text, "public-fallback") {
@@ -301,9 +325,10 @@ func TestChainUsageErrors(t *testing.T) {
 	}{
 		{[]string{"add"}, "chain add takes one validator address, got none", "tenderduty chain add <valoper|valcons> --node <url> [flags]"},
 		{[]string{"add", "celestiavaloper1test"}, "--node is required", "tenderduty chain add <valoper|valcons>"},
+		{[]string{"add", "celestiavaloper1test", "--public-fallback"}, "--node is required", "tenderduty chain add <valoper|valcons>"},
 		{[]string{"add", "chain", "celestiavaloper1test", "--node", "http://localhost:26657"}, "chain add takes one validator address, got 2: \"chain\" \"celestiavaloper1test\"", "tenderduty chain add <valoper|valcons>"},
 		{[]string{"add", "celestiavaloper1test", "--bogus"}, "unknown flag --bogus", "tenderduty chain add <valoper|valcons>"},
-		{[]string{"set", "Celestia"}, "chain set takes a chain name and at least one key=value, got 1: \"Celestia\"", "tenderduty chain set <Name> key=value"},
+		{[]string{"set", "Celestia"}, "chain set takes a chain name and at least one key=value, got 1: \"Celestia\"", "tenderduty chain set <Name> [<Name> ...] key=value"},
 		{[]string{"remove"}, "chain remove takes one chain name, got none", "tenderduty chain remove <Name> [--yes]"},
 		{[]string{"list", "extra"}, "chain list takes no arguments, got 1: \"extra\"", "tenderduty chain list"},
 		{[]string{"remove", "Celestia", "--yes=maybe"}, "invalid boolean value", "tenderduty chain remove"},
@@ -321,24 +346,14 @@ func TestChainUsageErrors(t *testing.T) {
 	}
 }
 
-func TestDeprecatedPublicFallbackFlagStillParses(t *testing.T) {
-	options, _, _ := chainCommandFixture(t)
-	err := ChainCommand(context.Background(), options, []string{"add", "celestiavaloper1test", "--public-fallback"}, strings.NewReader(""), &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "--node is required") {
-		t.Fatalf("--public-fallback not parsed: %v", err)
-	}
-}
-
 func TestChainSetDisablesDefaultAlerts(t *testing.T) {
 	options, _, _ := chainCommandFixture(t)
 	var output bytes.Buffer
 	if err := ChainCommand(context.Background(), options, []string{"list"}, strings.NewReader(""), &output); err != nil {
 		t.Fatal(err)
 	}
-	for _, group := range []string{"gov", "upgrade"} {
-		if !strings.Contains(output.String(), group) {
-			t.Fatalf("default %s missing from list: %s", group, output.String())
-		}
+	if !strings.Contains(output.String(), "all except missed_proposal,fibre,bridge") {
+		t.Fatalf("default alerts missing from list: %s", output.String())
 	}
 	output.Reset()
 	if err := ChainCommand(context.Background(), options, []string{"set", "Celestia", "alerts.gov_enabled=no", "alerts.upgrade_enabled=no"}, strings.NewReader(""), &output); err != nil {

@@ -142,14 +142,15 @@ func loadValidatorTarget(options AddChainOptions) (*chainValidatorEdit, error) {
 		empty := ""
 		password = &empty
 	}
-	filename, err := standaloneChain(ChainCommandOptions{ConfigFile: options.ConfigFile, Directory: directory, Password: password}, options.To)
+	name, filename, err := standaloneChain(ChainCommandOptions{ConfigFile: options.ConfigFile, Directory: directory, Password: password}, options.To)
 	if err != nil {
 		path := filepath.Join(directory, options.To+".yml")
-		if _, statErr := os.Stat(path); os.IsNotExist(statErr) && !strings.Contains(err.Error(), "is defined in") && !badChainFileName(options.To) {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) && !strings.Contains(err.Error(), "is defined in") && !strings.Contains(err.Error(), "matches") && !badChainFileName(options.To) {
 			return nil, fmt.Errorf("%s does not exist; add the chain first without --to", path)
 		}
 		return nil, err
 	}
+	options.To = name
 	info, err := os.Stat(filename)
 	if err != nil {
 		return nil, err

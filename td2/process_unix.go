@@ -29,7 +29,10 @@ func acquirePID(stateFile string) (func(), error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fail(fmt.Errorf("tenderduty is already running on state file %s: %w", stateFile, err))
+		if err == syscall.EWOULDBLOCK {
+			return fail(alreadyRunning(stateFile))
+		}
+		return fail(fmt.Errorf("lock %s: %w", filename, err))
 	}
 	info, err := file.Stat()
 	if err != nil {

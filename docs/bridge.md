@@ -115,3 +115,5 @@ Prometheus adds the following metrics with `name`, `chain_id` and `moniker` labe
 - Gauges: `tenderduty_bridge_sampling_lag_blocks`, `tenderduty_bridge_retained_hours`, `tenderduty_bridge_memory_bytes`, `tenderduty_bridge_goroutines`.
 
 `fibre_metrics.export_raw` also forwards bridge OTLP metrics to Prometheus with the same limits and expiry as Fibre.
+
+Check and save a bridge, then print its metrics setup: `tenderduty chain bridge <Name> <url> [--token-file path] [--alert yes|no]`.

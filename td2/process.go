@@ -33,6 +33,15 @@ func readPID(stateFile string) (int, error) {
 	return pid, nil
 }
 
+// alreadyRunning names the tenderduty that holds the state file lock.
+func alreadyRunning(stateFile string) error {
+	who := "tenderduty is already running"
+	if pid, err := readPID(stateFile); err == nil {
+		who += fmt.Sprintf(" (pid %d)", pid)
+	}
+	return fmt.Errorf("%s with state file %s\nStop it first (e.g. systemctl stop tenderduty), or apply config changes with: tenderduty reload\nOther commands: tenderduty -h", who, stateFile)
+}
+
 // reloadProcess signals the running tenderduty and returns its pid.
 func reloadProcess(stateFile string) (int, error) {
 	if reloadSignal() == nil {

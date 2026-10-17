@@ -27,11 +27,13 @@ All use the chain's `fibre_severity`. Each alert shows its numbers on the second
 
 Fibre v10.4 reports its storage backend (`local` or an object store such as `s3`) and the time of its last successful upload. Tenderduty shows the backend as reported (`object` when Fibre sends no name, as v10.2 did) and uses that time for the last upload and `fibre_idle_minutes`, so it survives a tenderduty restart. With an older Fibre, or before its first upload, it uses the last upload it saw itself.
 
-Rates use the last 10 minutes, extending up to 24 hours to reach 20 samples on a quiet network. A failure can keep an alert active until 20 newer samples arrive. After a tenderduty restart, active alerts wait for an export that shows recovery. Metrics from a hostname no chain claims are ignored, see `fibre_instance` in [chains.md](chains.md).
+Rates use the last 10 minutes, extending up to 24 hours to reach 20 samples on a quiet network. A failure can keep an alert active until 20 newer samples arrive. After a tenderduty restart, active alerts wait for an export that shows recovery. Metrics route by `service.namespace` = `chain_id` when set, else by hostname via `fibre_instance`. Unclaimed metrics are ignored; see [chains.md](chains.md).
 
 ## Setup
 
 Fibre sends OTLP/HTTP metrics to `--otel-endpoint`. Tenderduty listens; Fibre opens no port. Set `--otel-endpoint` to the base URL. Tenderduty accepts any path ending in `/v1/metrics`.
+
+Set `OTEL_RESOURCE_ATTRIBUTES="service.namespace=<chain_id>"` in Fibre's environment (recommended). With two Fibres on one host, label at least one. With several validators on the same chain, set `fibre_instance` to each hostname. Without a namespace, routing uses the hostname via `fibre_instance`, or the sole enabled chain that leaves it empty and no labeled Fibre feeds.
 
 The token is any long random string you choose, set in tenderduty and in Fibre's environment as `OTEL_EXPORTER_OTLP_HEADERS` (the standard OpenTelemetry variable, Fibre has no flag for it). For example `openssl rand -hex 32`.
 
@@ -44,7 +46,8 @@ fibre_metrics:
 ```
 
 ```
-fibre start --otel-endpoint http://127.0.0.1:4318
+OTEL_RESOURCE_ATTRIBUTES="service.namespace=mocha-5" \
+  fibre start --otel-endpoint http://127.0.0.1:4318
 ```
 
 Different server on a private network (WireGuard, VPN, a provider's private LAN): listen on the private address with a token, and allow only Fibre's IP to port 4318.
@@ -57,6 +60,7 @@ fibre_metrics:
 
 ```
 OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>" \
+OTEL_RESOURCE_ATTRIBUTES="service.namespace=mocha-5" \
   fibre start --otel-endpoint http://10.0.0.5:4318
 ```
 
@@ -105,6 +109,7 @@ fibre_metrics:
 
 ```
 OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>" \
+OTEL_RESOURCE_ATTRIBUTES="service.namespace=mocha-5" \
   fibre start --otel-endpoint https://otel.example.com
 ```
 
@@ -185,3 +190,5 @@ Grafana: **Dashboards > New > Import**, upload [`examples/grafana/fibre.json`](.
 ### Raw export
 
 `fibre_metrics.export_raw: yes` (default `no`, needs `prometheus_enabled`) serves every metric Fibre and the bridge export on `/metrics`, named as an OpenTelemetry Collector's Prometheus exporter would (for example `fibre_server_upload_shard_duration_seconds_bucket`). The official Celestia Fibre dashboard works unchanged. Labels are the metric's attributes, the resource's (`service_name`, `service_instance_id`, `service_version`), and `name` and `chain_id`. Exponential histograms and summaries are skipped (logged). A series not exported for 10 minutes is dropped, and each chain keeps at most 20,000 series. Applies on reload. It is separate from the `tenderduty_fibre_*` metrics, so both can stay on.
+
+Enable Fibre and print its metrics setup: `tenderduty chain fibre <Name> [--instance name]` (`--off` disables alerts).

@@ -37,7 +37,7 @@ func TestErrorsPrintWithoutTimestamp(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 	missing := filepath.Join(t.TempDir(), "missing.yml")
 	code, stdout, stderr := runCLI("-f", missing, "-cc", t.TempDir(), "chain", "list")
-	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "Error: open "+missing) || strings.Count(stderr, "\n") != 1 {
+	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "Error: no missing.yml in ") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	if regexp.MustCompile(`\d{4}/\d{2}/\d{2}|\d{2}:\d{2}:\d{2}`).MatchString(stderr) || logged.Len() != 0 {

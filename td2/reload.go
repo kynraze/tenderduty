@@ -63,6 +63,7 @@ func (cc *ChainConfig) context() context.Context {
 type chainDiff struct {
 	Added, Removed, Updated, Unchanged []string
 	Restarted                          map[string]string
+	Renamed                            map[string]string
 }
 
 // Compare node settings, not health state or mutexes.
@@ -120,30 +121,13 @@ func diffChains(old, next map[string]*ChainConfig) chainDiff {
 
 func keepListeners(old, next *Config) []string {
 	var changed []string
-	for _, setting := range []struct {
-		name string
-		old  interface{}
-		next interface{}
-	}{
-		{"enable_dashboard", old.EnableDash, next.EnableDash},
-		{"listen_port", old.Listen, next.Listen},
-		{"prometheus_enabled", old.Prom, next.Prom},
-		{"prometheus_listen_port", old.PrometheusListenPort, next.PrometheusListenPort},
-		{"fibre_metrics.listen", old.FibreMetrics.Listen, next.FibreMetrics.Listen},
-		{"fibre_metrics.tls_cert", old.FibreMetrics.TLSCert, next.FibreMetrics.TLSCert},
-		{"fibre_metrics.tls_key", old.FibreMetrics.TLSKey, next.FibreMetrics.TLSKey},
-		{"hide_logs", old.HideLogs, next.HideLogs},
-		{"healthcheck", old.Healthcheck, next.Healthcheck},
-	} {
-		if !reflect.DeepEqual(setting.old, setting.next) {
-			changed = append(changed, setting.name)
+	for _, key := range restartSettings {
+		before, after := configField(reflect.ValueOf(old).Elem(), key), configField(reflect.ValueOf(next).Elem(), key)
+		if !reflect.DeepEqual(before.Interface(), after.Interface()) {
+			changed = append(changed, key)
 		}
+		after.Set(before)
 	}
-	next.EnableDash, next.Listen = old.EnableDash, old.Listen
-	next.Prom, next.PrometheusListenPort = old.Prom, old.PrometheusListenPort
-	next.FibreMetrics.Listen = old.FibreMetrics.Listen
-	next.FibreMetrics.TLSCert, next.FibreMetrics.TLSKey = old.FibreMetrics.TLSCert, old.FibreMetrics.TLSKey
-	next.HideLogs, next.Healthcheck = old.HideLogs, old.Healthcheck
 	return changed
 }
 
@@ -156,6 +140,8 @@ func (c *Config) startChain(name string, cc *ChainConfig) {
 		c.startWorker(func() { defer cc.workers.Done(); work() })
 	}
 	start(cc.watch)
+	start(func() { cc.lookupDashboardNetwork(cc.context()) })
+	start(func() { cc.lookupDashboardLogo(cc.context()) })
 	if cc.Bridge.URL != "" {
 		start(func() { cc.watchBridge(cc.context()) })
 	}
@@ -245,6 +231,7 @@ func carryChainHistory(old, next *ChainConfig) {
 	next.signalStoppedHeight, next.signalLast = old.signalStoppedHeight, old.signalLast
 	next.blockTime = old.blockTime
 	next.jailedSince = old.jailedSince
+	next.bondToken, next.bondTokenAt = old.bondToken, old.bondTokenAt
 	next.slash = old.slash
 	next.slashSearchDone = old.slashSearchDone
 }
@@ -369,6 +356,13 @@ func (c *Config) applyReload(next *Config) chainDiff {
 	}
 	c.chainsMux.RUnlock()
 	diff := diffChains(old, next.Chains)
+	diff.pairRenames(old, next.Chains)
+	for name, renamed := range diff.Renamed {
+		stopChain(old[name])
+		c.rememberChainAlarmIDs(name)
+		carryChainHistory(old[name], next.Chains[renamed])
+		c.renameChainState(name, renamed)
+	}
 	for _, name := range diff.Removed {
 		stopChain(old[name])
 		c.removeChainAlarms(name)
@@ -380,6 +374,10 @@ func (c *Config) applyReload(next *Config) chainDiff {
 	}
 	// No worker reads a replaced chain after this point.
 	c.chainsMux.Lock()
+	for name, renamed := range diff.Renamed {
+		delete(c.Chains, name)
+		c.Chains[renamed] = next.Chains[renamed]
+	}
 	for _, name := range diff.Removed {
 		delete(c.Chains, name)
 	}
@@ -410,10 +408,22 @@ func (c *Config) applyReload(next *Config) chainDiff {
 	}
 	c.settingsMux.Unlock()
 	c.chainsMux.Unlock()
+	for _, name := range diff.Updated {
+		cc := next.Chains[name]
+		c.startWorker(func() { cc.lookupDashboardNetwork(c.context()) })
+		c.startWorker(func() { cc.lookupDashboardLogo(c.context()) })
+	}
 	for _, name := range diff.Removed {
 		c.sendUpdate(&dash.ChainStatus{MsgType: "remove", Name: name})
 		c.sendStat(&promUpdate{name: name, remove: true})
 		l("reloaded config: removed", name)
+	}
+	for name, renamed := range diff.Renamed {
+		c.sendUpdate(&dash.ChainStatus{MsgType: "remove", Name: name})
+		c.sendStat(&promUpdate{name: name, remove: true})
+		c.sendUpdate(next.Chains[renamed].dashboardStatus())
+		c.startChain(renamed, next.Chains[renamed])
+		l(fmt.Sprintf("reloaded config: renamed %s to %s", name, renamed))
 	}
 	for name, reason := range diff.Restarted {
 		info, _ := old[name].validatorState()
@@ -543,12 +553,15 @@ func changedSharedSettings(old, next *Config) []string {
 }
 
 func reloadSummary(diff chainDiff, applied, restarts []string) string {
-	if len(applied)+len(restarts)+len(diff.Added)+len(diff.Removed)+len(diff.Restarted)+len(diff.Updated) == 0 {
+	if len(diff.Renamed)+len(applied)+len(restarts)+len(diff.Added)+len(diff.Removed)+len(diff.Restarted)+len(diff.Updated) == 0 {
 		return "reloaded config: no changes"
 	}
 	prefix := "reloaded config: "
 	if len(applied) > 0 {
 		prefix += "settings applied: " + strings.Join(applied, ", ") + "; "
+	}
+	if len(diff.Renamed) > 0 {
+		prefix += fmt.Sprintf("%d renamed, ", len(diff.Renamed))
 	}
 	return prefix + fmt.Sprintf("%d added, %d removed, %d restarted, %d updated, %d settings need a restart", len(diff.Added), len(diff.Removed), len(diff.Restarted), len(diff.Updated), len(restarts))
 }

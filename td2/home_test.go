@@ -64,9 +64,9 @@ func TestChainCommandHonoursHome(t *testing.T) {
 	options, _, _ := chainCommandFixture(t)
 	home := filepath.Dir(options.ConfigFile)
 	var output strings.Builder
-	for _, args := range [][]string{{"list"}, {"list", "-home", home}} {
+	for _, args := range [][]string{{"show", "Celestia"}, {"show", "Celestia", "-home", home}} {
 		given := ChainCommandOptions{Password: options.Password}
-		if len(args) == 1 {
+		if len(args) == 2 {
 			given.Home = home
 		}
 		output.Reset()
@@ -175,7 +175,7 @@ func TestChainCommandSystemLayout(t *testing.T) {
 	options, filename, _ := chainCommandFixture(t)
 	setSystemPaths(t, options.ConfigFile, options.Directory, options.StateFile)
 	var output strings.Builder
-	if err := ChainCommand(t.Context(), ChainCommandOptions{}, []string{"list"}, strings.NewReader(""), &output); err != nil {
+	if err := ChainCommand(t.Context(), ChainCommandOptions{}, []string{"show", "Celestia"}, strings.NewReader(""), &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), filename) {

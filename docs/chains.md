@@ -76,7 +76,7 @@ These go under `alerts`. Anything left out comes from `alert_defaults`. Set any 
 | `bridge_lag_blocks` | Header and sampling lag threshold, default 20 blocks. |
 | `bridge_lag_minutes` | Continuous lag window, default 5 minutes. |
 | `fibre_enabled` | Celestia Fibre: alert while the validator is not registered, its Fibre host is unreachable (TLS handshake fails for `node_down_alert_minutes`), or the host's certificate isn't this validator's. With [`fibre_metrics`](config.md#fibre-metrics) it also alerts on what Fibre reports. Off by default. See [fibre.md](fibre.md). |
-| `fibre_instance` | The hostname Fibre reports as `service.instance.id`. Needed when more than one chain has `fibre_enabled`. |
+| `fibre_instance` | The hostname Fibre reports as `service.instance.id`. Recommended routing: set `service.namespace` to `chain_id` (two Fibres on one host: label at least one). Without a namespace, routing uses this hostname; with several validators on one chain, it selects the validator within the namespace. |
 | `fibre_storage_percent` | Alert when Fibre's storage is at this percent of its budget or more, or an upload was turned away. 1 to 100, 0 or empty is off. |
 | `fibre_idle_minutes` | Alert when Fibre stored no upload for this many minutes. 0 or empty is off. Only for steady uploads. |
 | `fibre_severity` | Warning when empty. Use `critical` to receive Fibre alerts during quiet hours. |
@@ -150,10 +150,16 @@ tenderduty chain remove Celestia --yes
 - `tenderduty -example-celestia` prints a Celestia chain file with the Fibre settings commented. `add` does the same for Celestia chains (celestia, mocha, arabica) and prints the `chain set` command that turns Fibre on.
 - `add` needs `--node`, your own synced node. It checks the node and validator, then prints the moniker, status and voting power (`LinkPool on mocha-5: active, not jailed, voting power 1,100,105`). A consensus (`valcons`) address is accepted if it is in the active set.
 - `--chain osmosis` takes a registry path, mainnet ([cosmos.directory](https://cosmos.directory)) or testnet ([testcosmos.directory](https://testcosmos.directory)); its chain id and prefix must match your node and validator. `--name Celestia` sets the file name, otherwise the registry name or chain id. Names can't contain periods or path separators. An existing file needs `--force`. Your input is checked before anything is fetched.
-- `--set key=value` (repeatable on `add`, positional on `set`) uses chain YAML paths. Booleans take yes/no/true/false, lists are comma separated: `alerts.telegram.mentions=alice,bob`. Unknown keys suggest the closest one. Edit `nodes` in the file; `add --to` and `remove --validator` manage `validators`.
+- `--set key=value` (repeatable on `add`, positional on `set`) uses chain YAML paths. Booleans take yes/no/true/false/on/off, lists are comma separated: `alerts.telegram.mentions=alice,bob`. Unknown keys suggest the closest one. `node add/remove` manages `nodes`; `add --to` and `remove --validator` manage `validators`.
 - `add --to` on a single-validator file turns it into a `validators` list, so its alerts get the validator name (`Realio / RST`) and the old ones resolve as no longer watched.
 - `set` keeps comments and key order, prints `key: old -> new` per change (`already X` for a key that has that value, in which case the file is left alone), and validates before writing.
 - `set` and `remove` only edit `chains.d/<Name>.yml`, not chains in `config.yml`.
 - `list` prints a table: NAME, CHAIN ID, VALIDATOR, NODES, FALLBACK, ALERTS, FILE. ALERTS lists enabled families: `missed_blocks,stalled,no_servers,gov,upgrade,missed_proposal,fibre`.
 - `-f`, `-cc` and `-state` work before the command or after the subcommand.
 - After a change tenderduty reloads the running process found through the state file's PID, and says `Applied: reloaded tenderduty (pid N)`, `Not applied yet: tenderduty is not running; ...` or `Saved, but reload failed: ...`. New files inherit the directory's group and use mode 0640 when the directory is group-readable. Replaced files keep their owner and mode.
+
+Names are case-insensitive; use the exact name if two existing files differ only in case.
+`chain set Celestia Akash public_fallback=yes` edits several files; `chain set --all public_fallback=yes` edits every chain file.
+`chain show Akash` lists every setting, its current value and source.
+`chain rename akash Akash` moves history when tenderduty is running and reloads; a hand `mv` followed by `tenderduty reload` works too.
+`chain node add Akash http://localhost:26657` and `chain node remove Akash http://old-node:26657` edit its nodes; an added node alerts when down only with `--alert yes`.

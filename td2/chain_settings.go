@@ -70,9 +70,9 @@ func settingValue(t reflect.Type, text string) (interface{}, bool) {
 		return text, true
 	case reflect.Bool:
 		switch strings.ToLower(text) {
-		case "yes", "true":
+		case "yes", "true", "on":
 			return true, true
-		case "no", "false":
+		case "no", "false", "off":
 			return false, true
 		}
 	case reflect.Int, reflect.Int64, reflect.Int32:
@@ -134,9 +134,13 @@ func parseSetting(keys map[string]reflect.Type, assignment string) (parsedSettin
 	if !ok {
 		return parsedSetting{}, fmt.Errorf("expected key=value, got %q", assignment)
 	}
+	key = strings.ToLower(key)
 	t, ok := keys[key]
 	if !ok {
-		if key == "nodes" || strings.HasPrefix(key, "nodes.") || key == "validators" || strings.HasPrefix(key, "validators.") {
+		if key == "nodes" || strings.HasPrefix(key, "nodes.") {
+			return parsedSetting{}, fmt.Errorf("%s is not settable; use chain node add or edit the file", key)
+		}
+		if key == "validators" || strings.HasPrefix(key, "validators.") {
 			return parsedSetting{}, fmt.Errorf("%s is not settable; use chain add or edit the file", key)
 		}
 		names := make([]string, 0, len(keys))
@@ -144,6 +148,16 @@ func parseSetting(keys map[string]reflect.Type, assignment string) (parsedSettin
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		// a cut-off key ("alerts.stalled") means one of the keys it starts
+		var started []string
+		for _, name := range names {
+			if strings.HasPrefix(name, key) {
+				started = append(started, name)
+			}
+		}
+		if len(started) > 0 && len(started) <= 5 {
+			return parsedSetting{}, fmt.Errorf("unknown setting %q; did you mean %s?", key, strings.Join(started, " or "))
+		}
 		closest, distance := "", int(^uint(0)>>1)
 		for _, name := range names {
 			if d := editDistance(key, name); d < distance {
@@ -151,6 +165,11 @@ func parseSetting(keys map[string]reflect.Type, assignment string) (parsedSettin
 			}
 		}
 		return parsedSetting{}, fmt.Errorf("unknown setting %q; did you mean %s?", key, closest)
+	}
+	if strings.HasSuffix(key, ".min_severity") {
+		if text != "info" && text != "warning" && text != "error" && text != "critical" {
+			return parsedSetting{}, fmt.Errorf("%s must be info, warning, error or critical, got %q", key, text)
+		}
 	}
 	value, ok := settingValue(t, text)
 	if !ok {
@@ -234,16 +253,29 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 	if err := decodeConfig(data, &config); err != nil {
 		return nil, nil, err
 	}
+	return applySettingsDiff(data, assignments, chainSettingTypes())
+}
+
+func applySettingsDiff(data []byte, assignments []string, keys map[string]reflect.Type) ([]byte, []settingChange, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, nil, err
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, nil, fmt.Errorf("chain file must be a YAML mapping")
+		return nil, nil, fmt.Errorf("settings file must be a YAML mapping")
 	}
-	keys := chainSettingTypes()
 	var changes []settingChange
 	anyChanged := false
+	// a changed one-line value is replaced in its line, keeping blank lines and comment alignment
+	lines := strings.Split(string(data), "\n")
+	inPlace := true
+	// a new key in an existing section goes in as one line after the section's last value
+	type insertion struct {
+		at   int
+		text string
+	}
+	var inserts []insertion
+	added := map[*yaml.Node]int{}
 	for _, assignment := range assignments {
 		setting, err := parseSetting(keys, assignment)
 		if err != nil {
@@ -256,6 +288,9 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 			if node.Kind != yaml.MappingNode {
 				return nil, nil, fmt.Errorf("%s is not a mapping", part)
 			}
+			if lookupMapping(node, part) == nil {
+				inPlace = false
+			}
 			node = mappingValue(node, part)
 		}
 		if node.Kind != yaml.MappingNode {
@@ -265,6 +300,10 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 		if err := replacement.Encode(setting.value); err != nil {
 			return nil, nil, err
 		}
+		// config files say yes/no
+		if setting.t.Kind() == reflect.Bool {
+			replacement = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: map[bool]string{true: "yes", false: "no"}[setting.value.(bool)]}
+		}
 		change := settingChange{Key: key, Old: settingText(setting.t, lookupMapping(node, parts[len(parts)-1])), New: settingText(setting.t, &replacement)}
 		change.Changed = change.Old != change.New
 		changes = append(changes, change)
@@ -272,12 +311,52 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 			continue
 		}
 		anyChanged = true
-		target := mappingValue(node, parts[len(parts)-1])
+		leaf := parts[len(parts)-1]
+		existed := lookupMapping(node, leaf) != nil
+		var at int
+		var line string
+		if !existed && inPlace {
+			at, line, inPlace = keyLine(lines, node, leaf, &replacement, added)
+			added[node] = at
+		}
+		target := mappingValue(node, leaf)
+		// a text field written as a number (listen_port: 8891) stays unquoted
+		if replacement.Kind == yaml.ScalarNode && replacement.Tag == "!!str" && target.Kind == yaml.ScalarNode && target.Style == 0 && target.Tag != "!!str" {
+			var plain yaml.Node
+			if yaml.Unmarshal([]byte(replacement.Value), &plain) == nil && len(plain.Content) == 1 && plain.Content[0].Tag == target.Tag {
+				replacement.Tag, replacement.Style = target.Tag, 0
+			}
+		}
+		// a file written with true/false keeps it
+		if setting.t.Kind() == reflect.Bool && target.Kind == yaml.ScalarNode && (strings.EqualFold(target.Value, "true") || strings.EqualFold(target.Value, "false")) {
+			replacement.Tag, replacement.Value = "!!bool", map[bool]string{true: "true", false: "false"}[setting.value.(bool)]
+		}
+		if inPlace && existed {
+			inPlace = replaceInLine(lines, target, &replacement)
+		} else if inPlace {
+			inserts = append(inserts, insertion{at, line})
+		}
 		replacement.HeadComment, replacement.LineComment, replacement.FootComment = target.HeadComment, target.LineComment, target.FootComment
 		*target = replacement
 	}
 	if !anyChanged {
 		return data, changes, nil
+	}
+	if inPlace {
+		eol := ""
+		if bytes.Contains(data, []byte("\r\n")) {
+			eol = "\r"
+		}
+		out := make([]string, 0, len(lines)+len(inserts))
+		for i, line := range lines {
+			out = append(out, line)
+			for _, insert := range inserts {
+				if insert.at == i+1 {
+					out = append(out, insert.text+eol)
+				}
+			}
+		}
+		return []byte(strings.Join(out, "\n")), changes, nil
 	}
 	// keep the first key's comment from becoming a document comment
 	if doc.HeadComment != "" && len(doc.Content[0].Content) > 0 && !headCommentStandsAlone(data) {
@@ -295,10 +374,97 @@ func applyChainSettingsDiff(data []byte, assignments []string) ([]byte, []settin
 		return nil, nil, err
 	}
 	result := output.Bytes()
+	if bytes.HasPrefix(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), []byte("---")) {
+		result = append([]byte("---\n"), result...)
+	}
 	if bytes.Contains(data, []byte("\r\n")) {
 		result = bytes.ReplaceAll(result, []byte("\n"), []byte("\r\n"))
 	}
 	return result, changes, nil
+}
+
+// keyLine renders key: value at the indent of parent's keys, and the line it goes after; false when that needs more than one line.
+func keyLine(lines []string, parent *yaml.Node, key string, value *yaml.Node, added map[*yaml.Node]int) (int, string, bool) {
+	n := len(parent.Content)
+	if n < 2 || parent.Style&yaml.FlowStyle != 0 {
+		return 0, "", false
+	}
+	at := added[parent]
+	if last := parent.Content[n-1]; at == 0 && last.Line > 0 && last.Line <= len(lines) {
+		oneLine := last.Kind == yaml.ScalarNode && last.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0
+		flowList := last.Kind == yaml.SequenceNode && last.Style&yaml.FlowStyle != 0 && strings.Contains(lines[last.Line-1], "]")
+		if oneLine || flowList {
+			at = last.Line
+		}
+	}
+	v := *value
+	if v.Kind == yaml.SequenceNode {
+		v.Style = yaml.FlowStyle
+	}
+	rendered, err := yaml.Marshal(&v)
+	text := strings.TrimSuffix(string(rendered), "\n")
+	if at == 0 || err != nil || strings.Contains(text, "\n") {
+		return 0, "", false
+	}
+	return at, strings.Repeat(" ", parent.Content[0].Column-1) + key + ": " + text, true
+}
+
+// replaceInLine swaps a one-line scalar for another in lines; false when the value spans lines or can't be located.
+func replaceInLine(lines []string, old, next *yaml.Node) bool {
+	// a one-line flow list like mentions: [] stays a flow list
+	flow := old.Kind == yaml.SequenceNode && old.Style&yaml.FlowStyle != 0 && next.Kind == yaml.SequenceNode
+	if !flow && (old.Kind != yaml.ScalarNode || next.Kind != yaml.ScalarNode) || old.Line < 1 || old.Line > len(lines) || old.Kind == yaml.ScalarNode && old.Value == "" && old.Style == 0 {
+		return false
+	}
+	if flow {
+		list := *next
+		list.Style = yaml.FlowStyle
+		next = &list
+	}
+	rendered, err := yaml.Marshal(next)
+	text := strings.TrimSuffix(string(rendered), "\n")
+	if err != nil || strings.Contains(text, "\n") {
+		return false
+	}
+	line := lines[old.Line-1]
+	start := old.Column - 1
+	if start < 0 || start >= len(line) || strings.IndexFunc(line[:start], func(r rune) bool { return r > 127 }) >= 0 {
+		return false
+	}
+	rest := strings.TrimRight(line[start:], "\r")
+	end := len(rest)
+	switch {
+	case flow:
+		end = strings.IndexByte(rest, ']') + 1
+		if !strings.HasPrefix(rest, "[") || end == 0 {
+			return false
+		}
+	case old.Style == 0:
+		if i := strings.Index(rest, " #"); i >= 0 {
+			end = i
+		}
+		end = len(strings.TrimRight(rest[:end], " \t"))
+	case old.Style == yaml.DoubleQuotedStyle || old.Style == yaml.SingleQuotedStyle:
+		quote := rest[0]
+		end = -1
+		for i := 1; i < len(rest) && end < 0; i++ {
+			switch {
+			case quote == '"' && rest[i] == '\\':
+				i++
+			case quote == '\'' && rest[i] == '\'' && i+1 < len(rest) && rest[i+1] == '\'':
+				i++
+			case rest[i] == quote:
+				end = i + 1
+			}
+		}
+		if end < 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	lines[old.Line-1] = line[:start] + text + line[start+end:]
+	return true
 }
 
 func headCommentStandsAlone(data []byte) bool {
@@ -314,6 +480,10 @@ func headCommentStandsAlone(data []byte) bool {
 
 // Stage the directory so the loader can validate it without changing live files.
 func validateChainEdit(configFile, directory, filename string, data []byte, password *string) error {
+	return validateChainEdits(configFile, directory, map[string][]byte{filename: data}, password)
+}
+
+func validateChainEdits(configFile, directory string, replacements map[string][]byte, password *string) error {
 	stage, err := os.MkdirTemp("", "tenderduty-chain-*")
 	if err != nil {
 		return err
@@ -324,7 +494,10 @@ func validateChainEdit(configFile, directory, filename string, data []byte, pass
 		return err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yml") || entry.Name() == filepath.Base(filename) {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yml") {
+			continue
+		}
+		if _, replaced := replacements[filepath.Join(directory, entry.Name())]; replaced {
 			continue
 		}
 		contents, err := os.ReadFile(filepath.Join(directory, entry.Name()))
@@ -335,8 +508,10 @@ func validateChainEdit(configFile, directory, filename string, data []byte, pass
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(stage, filepath.Base(filename)), data, 0600); err != nil {
-		return err
+	for filename, data := range replacements {
+		if err := os.WriteFile(filepath.Join(stage, filepath.Base(filename)), data, 0600); err != nil {
+			return err
+		}
 	}
 	c, err := loadConfigQuiet(configFile, stage, password)
 	if err != nil {
@@ -344,8 +519,35 @@ func validateChainEdit(configFile, directory, filename string, data []byte, pass
 	}
 	defer c.cancel()
 	defer c.deliveryCancel()
-	if fatal, problems := validateConfig(c); fatal {
-		return fmt.Errorf("configuration is invalid: %s", strings.Join(problems, "; "))
+	_, problems := validateConfig(c)
+	return addedErrors(liveProblems(configFile, directory, password), problems)
+}
+
+func liveProblems(configFile, directory string, password *string) []string {
+	c, err := loadConfigQuiet(configFile, directory, password)
+	if err != nil {
+		return nil
 	}
-	return nil
+	defer c.cancel()
+	defer c.deliveryCancel()
+	_, problems := validateConfig(c)
+	return problems
+}
+
+// addedErrors blocks only errors an edit adds; an error already in the live config must not block the edit that fixes it.
+func addedErrors(before, after []string) error {
+	known := make(map[string]bool, len(before))
+	for _, problem := range before {
+		known[problem] = true
+	}
+	var added []string
+	for _, problem := range after {
+		if strings.HasPrefix(problem, "error") && !known[problem] {
+			added = append(added, problem)
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	return fmt.Errorf("configuration is invalid: %s", strings.Join(added, "; "))
 }
