@@ -301,6 +301,7 @@ func bridgeLabel(msg *alertMsg) (string, string) {
 		}
 		return "✅", "Bridge OK"
 	}
+	// #nosec G101 -- display label, not a credential
 	return "🌉", map[string]string{"down": "Bridge down", "token": "Bridge token rejected", "behind": "Bridge behind", "sampling": "Bridge sampling stuck", "metrics_stopped": "Bridge metrics stopped", "no_peers": "Bridge too few peers", "serving": "Bridge serving errors", "prune_stalled": "Bridge pruning stalled", "prune_failing": "Bridge failing to prune"}[bridgeKind(msg.message)]
 }
 

@@ -19,6 +19,7 @@ func (e *notRunningError) Error() string {
 var errReloadUnsupported = errors.New("reload needs Linux/macOS/Docker")
 
 func readPID(stateFile string) (int, error) {
+	// #nosec G304 G703 -- path from the operator's -state
 	data, err := os.ReadFile(stateFile + ".pid")
 	if os.IsNotExist(err) {
 		return 0, &notRunningError{stateFile}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,6 +84,22 @@ func TestFibreEndorsementTxDecoding(t *testing.T) {
 	tx = append(tx, 0xff)
 	if len(fibrePayments(tx)) != 0 {
 		t.Fatal("malformed outer transaction counted")
+	}
+}
+
+func TestFibrePaymentHeightBounds(t *testing.T) {
+	for _, height := range []uint64{math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
+		promise := endorsementVarint(nil, 2, height)
+		promise = endorsementVarint(promise, 4, 2048)
+		promise = endorsementBytes(promise, 6, bytes.Repeat([]byte{1}, 32))
+		payment, err := decodeFibrePayment(endorsementBytes(nil, 2, promise))
+		if height == math.MaxInt64 {
+			if err != nil || payment.height != math.MaxInt64 {
+				t.Fatalf("maximum height: %+v, %v", payment, err)
+			}
+		} else if err == nil {
+			t.Fatalf("accepted overflowing height %d", height)
+		}
 	}
 }
 

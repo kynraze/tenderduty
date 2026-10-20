@@ -98,7 +98,8 @@ func fibreRows(power, total int64) (rows int, minimum bool) {
 	if rem != 0 {
 		quo++
 	}
-	rows = int(quo)
+	// #nosec G115 -- quotient clamped to fibreOriginalRows
+	rows = int(min(quo, fibreOriginalRows))
 	if rows < fibreMinRows {
 		rows, minimum = fibreMinRows, true
 	}
@@ -110,8 +111,10 @@ func fibreBudget(fullStake int64, rows int) int64 {
 	if fullStake <= 0 || rows <= 0 {
 		return 0
 	}
+	rows = min(rows, fibreOriginalRows)
 	hi, lo := bits.Mul64(uint64(fullStake), uint64(rows))
 	quo, _ := bits.Div64(hi, lo, fibreOriginalRows)
+	// #nosec G115 -- rows bounded, quotient at most fullStake
 	return int64(quo)
 }
 

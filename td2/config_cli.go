@@ -209,6 +209,7 @@ func showConfig(options ChainCommandOptions, section string, output io.Writer) e
 	}
 	originals := make(map[string]*yaml.Node)
 	for name, file := range sources {
+		// #nosec G304 G703 -- path from the operator's chains.d
 		data, err := os.ReadFile(file)
 		if err != nil {
 			return err
@@ -459,6 +460,7 @@ func setConfig(options ChainCommandOptions, args []string, input io.Reader, outp
 		}
 		defer os.RemoveAll(stage)
 		file := filepath.Join(stage, "config.yml")
+		// #nosec G304 G703 -- fixed name in our staging directory
 		if err := os.WriteFile(file, candidate, 0600); err != nil {
 			return err
 		}

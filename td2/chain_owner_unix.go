@@ -50,6 +50,7 @@ func makeChainDirectory(directory string) error {
 	if err := os.MkdirAll(directory, 0750); err != nil || statErr == nil {
 		return err
 	}
+	// #nosec G302 -- directory needs group traversal
 	if err := os.Chmod(directory, 0750); err != nil {
 		return err
 	}

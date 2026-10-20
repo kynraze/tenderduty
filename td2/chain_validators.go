@@ -117,10 +117,13 @@ func firstStringField(data []byte) (string, error) {
 			data = data[n:]
 		case 2:
 			size, n := binary.Uvarint(data)
+			// #nosec G115 -- Uvarint consumed n bytes within data
 			if n <= 0 || size > uint64(len(data)-n) {
 				return "", fmt.Errorf("bad protobuf")
 			}
+			// #nosec G115 -- size is bounded by len(data)-n
 			value := data[n : n+int(size)]
+			// #nosec G115 -- size is bounded by len(data)-n
 			data = data[n+int(size):]
 			if tag>>3 == 1 {
 				return string(value), nil
@@ -155,6 +158,7 @@ func loadValidatorTarget(options AddChainOptions) (*chainValidatorEdit, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 G703 -- path from the operator's chains.d
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -356,6 +360,7 @@ func removeChainValidator(options ChainCommandOptions, chain, filename, label st
 	if err != nil {
 		return false, err
 	}
+	// #nosec G304 G703 -- path from the operator's chains.d
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return false, err

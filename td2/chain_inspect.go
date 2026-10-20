@@ -203,6 +203,7 @@ func showChain(options ChainCommandOptions, requested string, output io.Writer) 
 		chainRaw = lookupMapping(chainRaw, name)
 	}
 	if filename != "" {
+		// #nosec G304 G703 -- path from the operator's chains.d
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return err

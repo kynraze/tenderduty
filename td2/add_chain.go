@@ -501,6 +501,7 @@ func fetchFibreProvider(ctx context.Context, fetch addChainFetchers, node, valco
 // existingChainError suggests --to for another validator on the same chain.
 func existingChainError(ctx context.Context, options AddChainOptions, name, filename, chainID, node string, fetch addChainFetchers) error {
 	plain := fmt.Errorf("%s already exists; add --force to replace it", filename)
+	// #nosec G304 G703 -- path from the operator's chains.d
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return plain

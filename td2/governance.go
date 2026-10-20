@@ -739,7 +739,8 @@ func (cc *ChainConfig) cachedProposalTally(ctx context.Context, id uint64) (*das
 			}
 		}
 		go func() {
-			query, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// shared by every waiter; one closing its page must not cancel it
+			query, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			tally, err := proposalTally(query, cc.clientSnapshot(), id)
 			cache.Lock()

@@ -261,6 +261,7 @@ func missingConfig(configFile string, searched bool) error {
 	if strings.HasPrefix(configFile, "http://") || strings.HasPrefix(configFile, "https://") {
 		return nil
 	}
+	// #nosec G304 G703 -- path from the operator's -home or -f
 	if _, err := os.Stat(configFile); !os.IsNotExist(err) {
 		return nil
 	}

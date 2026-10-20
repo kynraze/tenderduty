@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ func decodeFibrePayment(b []byte) (fibrePayment, error) {
 			return eachField(v, func(n protowire.Number, t protowire.Type, v []byte, u uint64) error {
 				switch {
 				case n == 2 && t == protowire.VarintType:
+					if u > math.MaxInt64 {
+						return errors.New("invalid Fibre payment height")
+					}
 					p.height = int64(u)
 				case n == 3 && t == protowire.BytesType:
 					p.blob.Namespace = hex.EncodeToString(v)

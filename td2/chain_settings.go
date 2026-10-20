@@ -516,10 +516,12 @@ func validateChainEdits(configFile, directory string, replacements map[string][]
 		if _, replaced := replacements[filepath.Join(directory, entry.Name())]; replaced {
 			continue
 		}
+		// #nosec G304 G703 -- entry from the operator's chains.d
 		contents, err := os.ReadFile(filepath.Join(directory, entry.Name()))
 		if err != nil {
 			return err
 		}
+		// #nosec G304 G703 -- chains.d entry in our staging directory
 		if err := os.WriteFile(filepath.Join(stage, entry.Name()), contents, 0600); err != nil {
 			return err
 		}

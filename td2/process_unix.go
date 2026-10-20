@@ -20,6 +20,7 @@ func reloadSignal() os.Signal {
 func acquirePID(stateFile string) (func(), error) {
 	filename := stateFile + ".pid"
 	// O_NOFOLLOW refuses a planted symlink
+	// #nosec G304 G703 -- path from the operator's -state
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, err
@@ -76,6 +77,7 @@ func processIdentity(pid int) (bool, error) {
 		process = strings.TrimSuffix(process, " (deleted)")
 	} else {
 		var data []byte
+		// #nosec G204 -- fixed command, numeric PID from our state file
 		data, err = exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 		process = strings.TrimSpace(string(data))
 	}

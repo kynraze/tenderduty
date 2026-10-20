@@ -38,7 +38,7 @@ func metricsEndpoint(m FibreMetricsConfig, remote, override string) (string, err
 			conn, err := net.DialTimeout("udp", net.JoinHostPort(remote, port), time.Second)
 			if err == nil {
 				host = conn.LocalAddr().(*net.UDPAddr).IP.String()
-				conn.Close()
+				_ = conn.Close()
 			}
 		}
 	}
@@ -88,6 +88,7 @@ func setupBridge(ctx context.Context, options ChainCommandOptions, name, address
 	if err != nil || !validHTTPURL(address) || u.User != nil {
 		return fmt.Errorf("bridge URL must be http:// or https://")
 	}
+	// #nosec G304 G703 -- path from the operator's chains.d
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return err

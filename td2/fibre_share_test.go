@@ -92,6 +92,9 @@ func TestFibreBudget(t *testing.T) {
 	if got := fibreBudget(math.MaxInt64, 4096); got != math.MaxInt64 {
 		t.Fatalf("the largest stake at every row is %d", got)
 	}
+	if got := fibreBudget(math.MaxInt64, math.MaxInt); got != math.MaxInt64 {
+		t.Fatalf("excess rows should clamp to every row: %d", got)
+	}
 	if got := fibreBudget(math.MaxInt64, 2048); got != math.MaxInt64/2 {
 		t.Fatalf("half of the largest stake is %d", got)
 	}

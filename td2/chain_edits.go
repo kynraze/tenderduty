@@ -67,6 +67,7 @@ func setChains(options ChainCommandOptions, args []string, all bool, output io.W
 			continue
 		}
 		seen[name] = true
+		// #nosec G304 G703 -- path from the operator's chains.d
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return false, err
@@ -160,12 +161,12 @@ func renameChainFile(options ChainCommandOptions, old, next string, output io.Wr
 	}
 	temporary := temp.Name()
 	if err := temp.Close(); err != nil {
-		os.Remove(temporary)
+		_ = os.Remove(temporary)
 		return err
 	}
 	defer func() {
 		if temporary != "" {
-			os.Remove(temporary)
+			_ = os.Remove(temporary)
 		}
 	}()
 	if err := os.Rename(filename, temporary); err != nil {
@@ -207,6 +208,7 @@ func editChainNode(ctx context.Context, options ChainCommandOptions, action, nam
 		return fmt.Errorf("node must be an http:// or https:// URL, got %q", url)
 	}
 	url = normalChainNode(url)
+	// #nosec G304 G703 -- path from the operator's chains.d
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return err
