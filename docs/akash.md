@@ -1,10 +1,10 @@
 # Example Akash Deployment
 
-[Akash](https://akash.network/) is an affordable and easy way to get tenderduty up and running for about $2 USD per month.
+[Akash](https://akash.network/) can run tenderduty in a small container.
 
 Steps:
 
-* First, you will need to create, configure, and encrypt your configuration file. See the [Remote](remote.md) documentation for how to encrypt the file. *It's a good idea to test the configuration with a local Docker container before deploying.*
+* First, you will need to create, configure, and encrypt your configuration file. Akash has no `chains.d`, so put the chains under `chains:` in `config.yml`. See the [Remote](remote.md) documentation for both. *It's a good idea to test the configuration with a local Docker container before deploying.*
 * You will need to create a key and acquire some [$AKT](https://docs.akash.network/tokens-and-wallets) tokens.
 * The easiest way to deploy is using the [Akash desktop app](https://docs.akash.network/guides/deploy)
 
@@ -66,18 +66,18 @@ deployment:
 
 ```
 
+The `expose` block makes the dashboard public without auth. Set `hide_logs: yes` in `config.yml`, or remove `expose` if you don't need the dashboard.
+
 If the transaction is successful, you will get a few bids. Select one and press 'Accept Bid'.
 
 ![accept bid](img/akt-bids.png)
 
-Once the bid has been accepted the application will change to the deployments screen showing the event log for the pod. Once it shows it as deployed the tenderduty application should be up and running.
+After the bid is accepted, the deployments screen shows the event log. Once it shows deployed, tenderduty is running.
 
 ![deployed](img/akt-deployed.png)
 
 You can get the hostname for the deployment on the deployments screen by selecting your deployment.
 
 ![deployments](img/akt-deployments.png)
-
-If you made it this far, congrats!
 
 ![td dash on akash](img/akt-running.png)

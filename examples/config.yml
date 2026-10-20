@@ -1,54 +1,98 @@
 ---
-# Shared settings, each chain goes in its own file in chains.d.
+# Shared settings. Each chain goes in its own file in chains.d.
+# After edits: tenderduty reload. See docs/config.md.
 
 # controls whether the dashboard is enabled.
 enable_dashboard: yes
-# What TCP port the dashboard will listen on. Only the port is controllable for now.
+# What TCP port the dashboard will listen on. host:port, such as 127.0.0.1:8888, listens only there.
 listen_port: 8888
-# hide_logs is useful if the dashboard will be posted publicly. It disables the log feed,
-# and obscures most node-related details.
+# Disables the log feed and hides most node details. Use it if the dashboard is public.
 hide_logs: yes
+# no: alerts name nodes by server instead of IP.
+alert_node_address: yes
 # How long to wait before alerting that a node is down.
 node_down_alert_minutes: 3
-# Node Down alert Pagerduty Severity
+# Severity of node down alerts.
 node_down_alert_severity: critical
+# One chat message for nodes of one server that go down together. Name a node's server with nodes[].server.
+group_node_alerts: no
+group_wait_seconds: 60 # minimum 10
+# Names for node hosts in alerts, so chain files don't need nodes[].server.
+servers: {}
 
 # Should the prometheus exporter be enabled?
 prometheus_enabled: yes
-# What port should it listen on? For now only port is configurable.
+# What TCP port it listens on, no auth. host:port, such as 127.0.0.1:28686, listens only there.
 prometheus_listen_port: 28686
+
+# Alert destinations. Enabling one here is enough, every chain uses it unless the chain's
+# file sets 'enabled: no' for it.
 
 # Global setting for pagerduty
 pagerduty:
-  # Should we use PD? Be aware that if this is set to no it overrides individual chain alerting settings.
+  # Should we use PD? If no, it overrides individual chain alerting settings.
   enabled: no
-  # This is an API key, not oauth token, more details to follow, but check the v1 docs for more info
+  # An Events API v2 integration key, not an oauth token. See docs/pagerduty.md.
   api_key: ""
-  # Not currently used, but will be soon. This allows setting escalation priorities etc.
-  default_severity: alert
+  # Only send alerts of this severity and up: info, warning, error or critical. Empty sends everything.
+  # Every destination has it.
+  min_severity: warning
 
 # Discord settings
 discord:
   # Alert to discord?
   enabled: no
-  # The webhook is set by right-clicking on a channel, editing the settings, and configuring a webhook in the intergrations section.
+  # See docs/discord.md.
   webhook: ""
+  # Who to ping. Only discord's own forms work: <@user-id>, <@&role-id>, @here, @everyone.
+  mentions: []
+  # embed is a block with a colour down the side, plain is one ordinary message.
+  style: embed
 
 # Telegram settings
 telegram:
-  # Alert via telegram? Note: also supersedes chain-specific settings
+  # Alert via telegram?
   enabled: yes
-  # API key ... talk to @BotFather
+  # API key from @BotFather.
   api_key: "YOUR_BOT_TOKEN"
-  # The group ID for the chat where messages will be sent. Google how to find this, will include better info later.
+  # The id of the chat where messages will be sent. See docs/telegram.md.
   channel: "YOUR_CHAT_ID"
+  # Who to ping. Needs @username, a plain name does not notify.
+  mentions: []
+  # Answer /status, /report and /mentionme in the channel above. Read-only. Use a bot dedicated to tenderduty.
+  commands: no
+  # Telegram user ids allowed to send commands in a group.
+  admins: []
 
 # Slack settings
 slack:
   # Send alerts to Slack?
   enabled: no
-  # The webhook can be added in the Slack app directory.
+  # Incoming webhook URL.
   webhook: ""
+
+# Gotify settings, a self-hosted push server. See docs/gotify.md.
+gotify:
+  enabled: no
+  url: ""          # the server address, with https://
+  token: ""        # an application token
+
+# Send alerts that need action and stay unresolved to one more destination. See docs/config.md.
+escalation:
+  enabled: no
+  after_minutes: 30        # 1 to 1440
+  to: ""                   # pagerduty, telegram, discord, slack or gotify
+  min_severity: critical   # info, warning, error or critical
+
+# Alerts below min_severity wait until quiet hours end, and are sent then if still active.
+quiet_hours:
+  enabled: no
+  start: "23:00"
+  end: "07:00"
+  # An IANA name (Europe/Berlin) follows daylight saving, a fixed offset (UTC+7, UTC-05:30) does not. Empty is UTC.
+  timezone: UTC
+  # Alerts at this severity and up are sent anyway.
+  min_severity: critical
 
 # Healthcheck settings (dead man's switch)
 healthcheck:
@@ -59,40 +103,51 @@ healthcheck:
   # Rate in which pings are sent in seconds.
   ping_rate: 60
 
-# These settings apply to every chain unless a chain overrides them.
+# Receive the OTLP/HTTP metrics a Celestia Fibre server exports. See docs/fibre.md.
+otel_metrics:
+  # host:port to listen on, empty is off, e.g. 127.0.0.1:4318. 4318 is the standard OTLP port.
+  listen: ""
+  # Fibre must send "Authorization: Bearer <token>". Required unless listen is a loopback address.
+  token: ""
+  allow_without_token: no # only with a firewall that lets just Fibre's IP in
+  # HTTPS, set both or neither.
+  tls_cert: ""
+  tls_key: ""
+  # Serve every metric Fibre exports on the Prometheus endpoint (needs prometheus_enabled).
+  export_raw: no
+
+# Daily and weekly reports to the alert destinations of every chain. Empty is off. See docs/config.md.
+reports:
+  daily: ""                 # e.g. "09:00", local time in timezone
+  weekly: ""                # e.g. "monday 09:00"
+  timezone: ""              # Asia/Jakarta or UTC+7, default the quiet hours timezone, else UTC
+  include_testnets: yes
+
+# Which alerts to send. They apply to every chain unless the chain's file overrides them.
 alert_defaults:
-  # If the chain stops seeing new blocks, should an alert be sent?
-  stalled_enabled: yes
-  # How long a halted chain takes in minutes to generate an alarm
-  stalled_minutes: 10
-
-  # Most basic alarm, you just missed x blocks ... would you like to know?
-  consecutive_enabled: yes
-  # How many missed blocks should trigger a notification?
-  consecutive_missed: 5
-  # Consecutive Missed alert Pagerduty Severity
-  consecutive_priority: critical
-
-  # For each chain there is a specific window of blocks and a percentage of missed blocks that will result in
-  # a downtime jail infraction. Should an alert be sent if a certain percentage of this window is exceeded?
-  percentage_enabled: no
-  # What percentage should trigger the alert
-  percentage_missed: 10
-  # Percentage Missed alert Pagerduty Severity
-  percentage_priority: warning
-
-  # Should an alert be sent if the validator is not in the active set ie, jailed,
-  # tombstoned, unbonding?
-  alert_if_inactive: yes
-  # Should an alert be sent if no RPC servers are responding? (Uses the node_down_alert_minutes setting)
-  alert_if_no_servers: yes
-
-  # Turn on the same destinations you enabled above.
-  pagerduty:
-    enabled: no
-  discord:
-    enabled: no
-  telegram:
-    enabled: yes
-  slack:
-    enabled: no
+  # On by default: missed blocks (5 in a row, then close to jail, then jailed), stalled chain, no RPC nodes,
+  # governance, upgrades (and Celestia version signalling). Set any *_enabled to no to turn it off.
+  consecutive_missed: 5 # Blocks missed in a row before the warning.
+  jail_risk_percent: 90 # Percent of allowed misses used before the critical alert.
+  jail_risk_minutes: 90 # Also alert when jailing is within this many minutes while missing.
+  stalled_minutes: 10 # Minutes without a new block before alerting.
+  changes_enabled: yes # One message when stake moves more than the percents below, or commission, self-bond or description change.
+  changes_drop_percent: 10 # 0 disables drops.
+  changes_rise_percent: 10 # 0 disables rises.
+  changes_severity: info
+  gov_enabled: yes # Message when a proposal opens for voting, cleared once the validator votes.
+  gov_remind_minutes: 60 # Final reminder before voting ends without a vote.
+  gov_early_remind_percent: 25 # Warning at this percent of voting time left; 0 is off.
+  upgrade_remind_minutes: 60 # Reminder before the scheduled upgrade.
+  # Celestia version signalling: warn when this share of voting power signalled and this validator has not,
+  # remind critically at the second share, and when an own node is not ready this long before the upgrade.
+  signal_percent: 5
+  signal_remind_percent: 66
+  signal_remind_minutes: 60
+  # Severity of proposal notices: info, warning, error or critical. Early reminders are warning, final reminders critical.
+  gov_severity: info
+  missed_proposal_enabled: no # Missed block proposals are optional.
+  missed_proposal_count: 3 # Misses within missed_proposal_minutes that alert.
+  missed_proposal_minutes: 60
+  missed_proposal_severity: warning
+  # Celestia bridge and Fibre settings go in the chain's file, see tenderduty -example-celestia.

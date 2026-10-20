@@ -4,22 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sync"
 	"time"
 
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
+var rpcEndpointTimeout = 10 * time.Second
+
 // newRpc sets up the rpc client used for monitoring. It will try nodes in order until a working node is found.
 // it will also get some initial info on the validator's status.
 func (cc *ChainConfig) newRpc() error {
 	// grab the first working endpoint
 	tryUrl := func(u string) (msg string, down, syncing bool) {
-		ctx, cancel := context.WithTimeout(td.context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(cc.context(), rpcEndpointTimeout)
 		defer cancel()
 		_, err := url.Parse(u)
 		if err != nil {
@@ -55,6 +55,12 @@ func (cc *ChainConfig) newRpc() error {
 			l(msg)
 			return
 		}
+		if !websocketWorks(cc.context(), u) {
+			msg = fmt.Sprintf("❌ %s refuses websocket connections, tenderduty needs /websocket", u)
+			down = true
+			l(msg)
+			return
+		}
 		cc.setNoNodes(false)
 		cc.setClient(client)
 		return
@@ -78,27 +84,22 @@ func (cc *ChainConfig) newRpc() error {
 	}
 	ordered = append(append(ordered, down...), last...)
 	for _, endpoint := range ordered {
-		if td.context().Err() != nil {
-			return td.context().Err()
+		if cc.context().Err() != nil {
+			return cc.context().Err()
 		}
 		if msg, failed, syncing := tryUrl(endpoint.Url); failed {
-			endpoint.markDown(msg, syncing)
+			cc.markNodeDown(endpoint, msg, syncing)
 			continue
 		}
 		endpoint.markHealthy()
 		return nil
 	}
-	if cc.PublicFallback {
-		if u, ok := getRegistryUrl(cc.ChainId); ok {
-			node := guessPublicEndpoint(td.context(), u)
-			l(cc.ChainId, "⛑ attemtping to use public fallback node", node)
-			if _, kk, _ := tryUrl(node); !kk {
-				l(cc.ChainId, "⛑ connected to public endpoint", node)
-				return nil
-			}
-		} else {
-			l("could not find a public endpoint for", cc.ChainId)
+	if cc.publicFallbackEnabled() {
+		if node, ok := cc.publicFallback(tryUrl); ok {
+			l(cc.ChainId, "⛑ connected to public endpoint", node)
+			return nil
 		}
+		l(cc.ChainId, "⛑ no public endpoint with a working websocket")
 	}
 	cc.setNoNodes(true)
 	if td.EnableDash {
@@ -136,7 +137,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 				go func(node *NodeConfig) {
 					defer checks.Done()
 					alert := func(msg string) {
-						status := node.markDown(fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
+						status := cc.markNodeDown(node, fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
 						if !node.AlertIfDown {
 							// even if we aren't alerting, we want to display the status in the dashboard.
 							return
@@ -154,6 +155,7 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 					cwt, cancel := context.WithTimeout(ctx, 10*time.Second)
 					status, e := c.Status(cwt)
 					cancel()
+					cc.refreshNodeBinary(ctx, node, c, time.Now())
 					if e != nil {
 						alert("down")
 						return
@@ -164,6 +166,11 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 					}
 					if status.SyncInfo.CatchingUp {
 						alert("not synced")
+						return
+					}
+
+					if !websocketWorks(ctx, node.Url) {
+						alert("refusing websocket connections")
 						return
 					}
 
@@ -180,6 +187,20 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 			err = cc.GetValInfo(false)
 			if err != nil {
 				l("❓ refreshing signing info for", cc.ValAddress, err)
+			}
+			if client := cc.clientSnapshot(); client != nil && (cc.alertSettings().GovAlerts || cc.alertSettings().UpgradeAlerts || cc.alertSettings().FibreAlerts || td.reportsEnabled()) {
+				ctx, cancel := context.WithTimeout(cc.context(), 30*time.Second)
+				cc.refreshProposals(ctx, client)
+				if cc.alertSettings().UpgradeAlerts || td.reportsEnabled() {
+					cc.refreshUpgrade(ctx, client)
+				}
+				if cc.alertSettings().UpgradeAlerts || td.reportsEnabled() {
+					cc.refreshSignal(ctx, client)
+				}
+				if cc.alertSettings().FibreAlerts {
+					cc.refreshFibre(ctx, client)
+				}
+				cancel()
 			}
 		}
 	}
@@ -226,40 +247,4 @@ func pingURL(ctx context.Context, client *http.Client, endpoint string) error {
 		return fmt.Errorf("healthcheck returned status %d", response.StatusCode)
 	}
 	return nil
-}
-
-// endpointRex matches the first a tag's hostname and port if present.
-var endpointRex = regexp.MustCompile(`//([^/:]+)(:\d+)?`)
-
-// guessPublicEndpoint attempts to deal with a shortcoming in the tendermint RPC client that doesn't allow path prefixes.
-// The cosmos.directory requires them. This is a workaround to get the actual URL for the server behind their proxy.
-// The RPC base URL will return links endpoints, and we can parse this to guess the original URL.
-func guessPublicEndpoint(ctx context.Context, u string) string {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u+"/", nil)
-	if err != nil {
-		return u
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return u
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return u
-	}
-	matches := endpointRex.FindStringSubmatch(string(b))
-	if len(matches) < 2 {
-		// didn't work
-		return u
-	}
-	proto := "https://"
-	port := ":443"
-	// will be 3 elements if there is a port no port means listening on https
-	if len(matches) == 3 && matches[2] != "" && matches[2] != ":443" {
-		proto = "http://"
-		port = matches[2]
-	}
-	return proto + matches[1] + port
 }

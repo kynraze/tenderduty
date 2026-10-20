@@ -47,6 +47,7 @@ func (c *Config) sendUpdate(update *dash.ChainStatus) {
 func (cc *ChainConfig) setMonitoring(active bool) {
 	cc.stateMux.Lock()
 	defer cc.stateMux.Unlock()
+	cc.reportWatchingLocked(time.Now())
 	cc.monitoring = active
 	if active {
 		cc.monitoringSince = time.Now()
@@ -60,6 +61,8 @@ func (cc *ChainConfig) isMonitoring() bool {
 }
 
 func (c *Config) healthStatus() dash.HealthStatus {
+	c.chainsMux.RLock()
+	defer c.chainsMux.RUnlock()
 	status := dash.HealthStatus{Alive: c.context().Err() == nil, Validators: len(c.Chains)}
 	networks := make(map[string]bool)
 	for _, chain := range c.Chains {

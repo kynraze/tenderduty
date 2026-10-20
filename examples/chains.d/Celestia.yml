@@ -1,0 +1,42 @@
+---
+# The file name is the label: Celestia.yml is "Celestia".
+
+# Checked against the RPC node when connecting.
+chain_id: celestia
+valoper_address: celestiavaloper1xxxxxxx...
+# Public RPC is only a backup.
+public_fallback: no
+
+# Upgrades and version signalling are on by default. Nodes with alert_if_down are checked for the new version.
+alerts:
+  # Fibre: alert when the validator is not a registered Fibre provider, its Fibre host is unreachable,
+  # or the host's certificate is not this validator's. With otel_metrics in config.yml, also alerts on
+  # what Fibre reports. Run tenderduty on a different machine from Fibre. See docs/fibre.md.
+  fibre_enabled: no
+  # Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.
+  fibre_severity: warning
+  # Hostname of this chain's Fibre server, as Fibre reports it. Only needed when Fibre doesn't send
+  # service.namespace=<chain_id>, or one tenderduty watches several validators on this chain.
+  fibre_instance: ""
+  # Alert when Fibre's storage is at this percent of its budget or more, 1 to 100, 0 is off.
+  fibre_storage_percent: 0
+  # Alert when Fibre has stored no upload for this many minutes, 0 is off. Only for steady uploads.
+  fibre_idle_minutes: 0
+  fibre_endorsement_alert: no
+  fibre_endorsement_blobs: 50
+  fibre_endorsement_minutes: 120
+
+  # Bridge alerts, need bridge.url below. See docs/bridge.md.
+  bridge_enabled: no
+  bridge_severity: warning
+  bridge_lag_blocks: 20
+  bridge_lag_minutes: 5
+
+bridge:
+  url: ""          # e.g. http://<bridge-ip>:26658, empty is off
+  token_file: ""   # file with the read token
+
+# RPC nodes, tried in order.
+nodes:
+  - url: http://YOUR_CELESTIA_NODE:26657
+    alert_if_down: yes

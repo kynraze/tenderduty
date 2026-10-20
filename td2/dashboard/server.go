@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gorilla/websocket"
-	"github.com/textileio/go-threads/broadcast"
 	"io/fs"
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,18 +21,39 @@ var (
 	rex     = regexp.MustCompile(`(?:https?|tcp|wss?)://[^\s]+`)
 )
 
-const logLength = 256
+const (
+	logLength = 256
+	// websocket clients at once, the rest get a 503
+	maxWebsocketClients = 256
+)
+
+// limitClients returns 503 when long-lived requests reach the limit.
+func limitClients(limit int, next http.HandlerFunc) http.HandlerFunc {
+	slots := make(chan struct{}, limit)
+	return func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+			next(writer, request)
+		default:
+			http.Error(writer, "too many clients", http.StatusServiceUnavailable)
+		}
+	}
+}
 
 func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	copy := *status
 	copy.Blocks = append([]int(nil), status.Blocks...)
+	copy.RPCNodes = append([]RPCNodeStatus(nil), status.RPCNodes...)
 	if hideLogs {
+		copy.RPCNodes = nil
 		copy.LastError = rex.ReplaceAllString(copy.LastError, "-redacted-")
+		copy.Fibre = copy.Fibre.withoutDetails()
 	}
 	return &copy
 }
 
-func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus) error {
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre func(string, string) (FibreHistory, error), bridge func(string, string) (BridgeHistory, error), logo func(string) []byte, proposal func(context.Context, string, uint64) (ProposalDetail, error)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var err error
@@ -40,7 +61,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	if err != nil {
 		return err
 	}
-	var cast broadcast.Broadcaster
+	var cast broadcaster
 
 	// cache the json .... don't serialize on-demand
 	logCache, statusCache := []byte("[]"), []byte(`{"msgType":"update","Status":[]}`)
@@ -56,7 +77,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	}
 
 	finished := make(chan struct{})
-	defer func() { cancel(); cast.Discard(); <-finished }()
+	defer func() { cancel(); cast.close(); <-finished }()
 	go func() {
 		defer close(finished)
 		tick := time.NewTicker(time.Second)
@@ -69,16 +90,24 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 			case <-tick.C:
 				if update {
 					cacheMux.RLock()
-					_ = cast.Send(statusCache)
+					cast.send(statusCache)
 					cacheMux.RUnlock()
 					update = false
 				}
 
 			case u := <-updates:
+				if message := fibreNotification(u); message != nil {
+					cast.send(message)
+					continue
+				}
 				// try to catch any accidental rpc endpoint leaks
 				u = statusSnapshot(u, hideLogs)
 				statusMux.Lock() // probably unnecessary
-				status[u.Name] = u
+				if u.MsgType == "remove" {
+					delete(status, u.Name)
+				} else {
+					status[u.Name] = u
+				}
 				result := make([]*ChainStatus, 0)
 				for k := range status {
 					result = append(result, status[k])
@@ -119,7 +148,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 				if e != nil {
 					continue
 				}
-				_ = cast.Send(j)
+				cast.send(j)
 			}
 		}
 	}()
@@ -128,25 +157,38 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	upgrader.EnableCompression = true
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/logo", LogoHandler(logo))
+	if proposal != nil {
+		mux.HandleFunc("/proposal", ProposalHandler(proposal))
+	}
+	if fibre != nil {
+		if hideLogs {
+			fibre = hideFibreDetails(fibre)
+		}
+		mux.HandleFunc("/fibre", FibreHandler(fibre))
+	}
+	if bridge != nil {
+		mux.HandleFunc("/bridge", BridgeHandler(bridge))
+	}
 	for _, path := range []string{"/health", "/ready"} {
 		mux.HandleFunc(path, healthHandler(health, path == "/ready"))
 	}
-	mux.HandleFunc("/ws", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/ws", limitClients(maxWebsocketClients, func(writer http.ResponseWriter, request *http.Request) {
 		c, err := upgrader.Upgrade(writer, request, nil)
 		if err != nil {
 			return
 		}
 		defer c.Close()
-		sub := cast.Listen()
-		defer sub.Discard()
-		for message := range sub.Channel() {
+		sub, stop := cast.listen()
+		defer stop()
+		for message := range sub {
 			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			e := c.WriteMessage(websocket.TextMessage, message.([]byte))
+			e := c.WriteMessage(websocket.TextMessage, message)
 			if e != nil {
 				return
 			}
 		}
-	})
+	}))
 
 	mux.HandleFunc("/logsenabled", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -172,11 +214,7 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	})
 
 	mux.Handle("/", &CacheHandler{})
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
-		ReadHeaderTimeout: 3 * time.Second,
-	}
+	server := newServer(port, mux)
 	serverDone := make(chan struct{})
 	defer close(serverDone)
 	go func() {
@@ -187,11 +225,25 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 		}
 	}()
 	err = server.ListenAndServe()
-	cast.Discard()
+	cast.close()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
+}
+
+func newServer(listen string, handler http.Handler) *http.Server {
+	if !strings.Contains(listen, ":") {
+		listen = ":" + listen
+	}
+	return &http.Server{
+		Addr:              listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 3 * time.Second,
+		// a hijacked websocket is not bound by these
+		ReadTimeout: 15 * time.Second,
+		IdleTimeout: 60 * time.Second,
+	}
 }
 
 func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc {
@@ -210,7 +262,8 @@ func healthHandler(health func() HealthStatus, readiness bool) http.HandlerFunc 
 type CacheHandler struct{}
 
 func (ch CacheHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "public, max-age=3600")
+	// revalidate scripts and markup on each request
+	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Powered-By", "https://github.com/kynraze/tenderduty")
 	http.FileServer(http.FS(rootDir)).ServeHTTP(writer, request)
 }

@@ -8,6 +8,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +17,13 @@ import (
 var (
 	promMux sync.RWMutex
 )
+
+func prometheusListenAddress(listen string) string {
+	if !strings.Contains(listen, ":") {
+		return ":" + listen
+	}
+	return listen
+}
 
 type metricType uint8
 
@@ -29,6 +38,10 @@ const (
 	metricWindowSize
 	metricLastBlockSeconds
 	metricLastBlockSecondsNotFinal
+	metricMissedProposals
+	metricVotingPower
+	metricVotingPowerRank
+	metricMissesBeforeJail
 
 	metricTotalNodes
 	metricUnealthyNodes
@@ -37,6 +50,7 @@ const (
 )
 
 type promUpdate struct {
+	remove   bool
 	metric   metricType
 	counter  float64
 	name     string
@@ -47,7 +61,31 @@ type promUpdate struct {
 
 type metrics map[metricType]*prometheus.GaugeVec
 
+// endpointLabel drops the userinfo and query of a node URL, they can hold credentials.
+func endpointLabel(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		raw, _, _ = strings.Cut(raw, "?")
+		raw, _, _ = strings.Cut(raw, "#")
+		if i := strings.LastIndex(raw, "@"); i >= 0 {
+			raw = raw[i+1:]
+		}
+		return raw
+	}
+	if u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" {
+		return raw
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
+}
+
 func (m metrics) setStat(update *promUpdate) {
+	if update.remove {
+		for _, gauge := range m {
+			gauge.DeletePartialMatch(prometheus.Labels{"name": update.name})
+		}
+		return
+	}
 	lbls := map[string]string{
 		"name":     update.name,
 		"chain_id": update.chainId,
@@ -56,7 +94,7 @@ func (m metrics) setStat(update *promUpdate) {
 	promMux.RLock()
 	defer promMux.RUnlock()
 	if update.metric == metricNodeLagSeconds || update.metric == metricNodeDownSeconds {
-		lbls["endpoint"] = update.endpoint
+		lbls["endpoint"] = endpointLabel(update.endpoint)
 	}
 	m[update.metric].With(lbls).Set(update.counter)
 }
@@ -64,6 +102,21 @@ func (m metrics) setStat(update *promUpdate) {
 func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	bridge := &bridgeCollector{config: td}
+	if err := prometheus.Register(bridge); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(bridge)
+	fibre := &fibreCollector{config: td}
+	if err := prometheus.Register(fibre); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(fibre)
+	raw := &fibreRawCollector{config: td}
+	if err := prometheus.Register(raw); err != nil {
+		return err
+	}
+	defer prometheus.Unregister(raw)
 	// attributes used to uniquely identify each chain
 	var chainLabels = []string{"name", "chain_id", "moniker"}
 	var hostLabels = []string{"name", "chain_id", "moniker", "endpoint"}
@@ -88,6 +141,22 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 	missedPrecommit := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_missed_blocks_precommit_present",
 		Help: "count of blocks missed where a precommit was seen since tenderduty was started",
+	}, chainLabels)
+	missedProposals := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_missed_proposals",
+		Help: "count of blocks the validator was due to propose but another validator did, since tenderduty was started",
+	}, chainLabels)
+	votingPower := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_voting_power",
+		Help: "the validator's consensus voting power, 0 when not in the active set",
+	}, chainLabels)
+	votingPowerRank := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_voting_power_rank",
+		Help: "the validator's position in the active set by voting power, 0 when not in it",
+	}, chainLabels)
+	missesBeforeJail := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_misses_before_jail",
+		Help: "how many more blocks can be missed in the slashing window before the validator is jailed",
 	}, chainLabels)
 	missedConsecutive := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_consecutive_missed_blocks",
@@ -141,6 +210,10 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		metricWindowSize:               windowSize,
 		metricLastBlockSeconds:         lastBlockSec,
 		metricLastBlockSecondsNotFinal: lastBlockSecUnfinalized,
+		metricMissedProposals:          missedProposals,
+		metricVotingPower:              votingPower,
+		metricVotingPowerRank:          votingPowerRank,
+		metricMissesBeforeJail:         missesBeforeJail,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
 		metricNodeLagSeconds:           nodeLagSec,  // todo
@@ -163,10 +236,15 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 
 	promMux := http.NewServeMux()
 
-	l(fmt.Sprintf("serving prometheus metrics at 0.0.0.0:%d/metrics", td.PrometheusListenPort))
+	addr := prometheusListenAddress(td.PrometheusListenPort)
+	logAddr := addr
+	if strings.HasPrefix(logAddr, ":") {
+		logAddr = "0.0.0.0" + logAddr
+	}
+	l(fmt.Sprintf("serving prometheus metrics at %s/metrics", logAddr))
 	promMux.Handle("/metrics", promhttp.Handler())
 	promSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", td.PrometheusListenPort),
+		Addr:              addr,
 		Handler:           promMux,
 		ReadTimeout:       20 * time.Second,
 		WriteTimeout:      20 * time.Second,

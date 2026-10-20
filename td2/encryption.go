@@ -30,8 +30,8 @@ const (
 func getKey(pass string, knownSalt []byte) (key, macKey, salt []byte, err error) {
 	// reject really-bad passwords.
 	passwordValidator := validator.New(validator.MinLength(8, nil), validator.CommonPassword(nil))
-	err = passwordValidator.Validate(pass)
-	if err != nil {
+	if passwordValidator.Validate(pass) != nil {
+		err = errors.New("the password must be at least 8 characters and not a common one")
 		return
 	}
 
@@ -129,7 +129,7 @@ func decrypt(encodedFile []byte, password string) (plainText []byte, err error) 
 	cipherText := make([]byte, base64.StdEncoding.DecodedLen(len(encodedFile)))
 	size, err := base64.StdEncoding.Decode(cipherText, encodedFile)
 	if err != nil {
-		return
+		return nil, errors.New("not an encrypted tenderduty config; encrypt it with tenderduty -encrypt")
 	}
 	// Decode returns the exact length; trailing zero bytes may belong to the MAC.
 	cipherText = cipherText[:size]
@@ -154,7 +154,7 @@ func decrypt(encodedFile []byte, password string) (plainText []byte, err error) 
 	}
 	authSum := auth.Sum(nil)
 	if !hmac.Equal(cipherText[len(cipherText)-macSize:], authSum) {
-		err = errors.New("HMAC authentication failed")
+		err = errors.New("wrong password, or the encrypted config was changed")
 		return
 	}
 

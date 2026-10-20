@@ -12,7 +12,7 @@ services:
     command: ""
     ports:
       - "8888:8888"   # Dashboard
-      - "28686:28686" # Prometheus exporter
+      - "127.0.0.1:28686:28686" # Prometheus exporter, no auth
     volumes:
       - home:/var/lib/tenderduty
       - ./config.yml:/var/lib/tenderduty/config.yml

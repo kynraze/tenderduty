@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -13,20 +14,32 @@ type queuedNotification struct {
 	Sequence    uint64     `json:"sequence"`
 	Destination notifyDest `json:"destination"`
 	pendingRecovery
-	Resolved bool `json:"resolved"`
+	Resolved  bool `json:"resolved"`
+	Transient bool `json:"transient,omitempty"`
+	Escalated bool `json:"escalated,omitempty"`
+	// Queued starts the node-down grouping wait
+	Queued   time.Time `json:"queued,omitempty"`
+	snapshot *alertMsg // credentials kept only in memory, for removed chains
 }
 
 func (item queuedNotification) workerKey() string {
+	if item.Transient {
+		return fmt.Sprintf("%d\x00%s\x00%s", item.Destination, item.Chain, item.ID)
+	}
+	if item.Escalated && !item.Resolved {
+		return fmt.Sprintf("%d\x00%s\x00%s\x00escalated", item.Destination, item.Chain, item.Message)
+	}
 	return fmt.Sprintf("%d\x00%s\x00%s", item.Destination, item.Chain, item.Message)
 }
 
 // enqueue is called while notifyMux is held. Preserve incident transitions in order.
 func (a *alarmCache) enqueue(msg *alertMsg) {
-	for destination, enabled := range map[notifyDest]bool{pd: msg.pd, tg: msg.tg, di: msg.disc, slk: msg.slk} {
+	for destination, enabled := range map[notifyDest]bool{pd: msg.pd, tg: msg.tg, di: msg.disc, slk: msg.slk, gt: msg.gotify} {
 		if !enabled {
 			continue
 		}
-		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId}, Resolved: msg.resolved}
+		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, Escalated: msg.escalated, Queued: time.Now(), snapshot: msg}
+		item.Transient = msg.transient
 		var last *queuedNotification
 		for i := range a.Outbox {
 			if a.Outbox[i].workerKey() == item.workerKey() {
@@ -36,7 +49,7 @@ func (a *alarmCache) enqueue(msg *alertMsg) {
 		if last != nil && last.Resolved == item.Resolved {
 			continue
 		}
-		if last == nil && a.sentTo(destination, msg.chain+"\x00"+msg.message, msg.message) != msg.resolved {
+		if !msg.transient && !msg.escalated && last == nil && a.sentTo(destination, msg.chain+"\x00"+msg.message, msg.message) != msg.resolved {
 			continue
 		}
 		a.NextNotification++
@@ -57,6 +70,8 @@ func (a *alarmCache) sentTo(destination notifyDest, key, legacy string) bool {
 		sent = a.SentDiAlarms
 	case slk:
 		sent = a.SentSlkAlarms
+	case gt:
+		sent = a.SentGtAlarms
 	}
 	return !sent[key].IsZero() || !sent[legacy].IsZero()
 }
@@ -82,6 +97,7 @@ func (c *Config) restoreRecoveries() {
 		if msg == nil {
 			continue
 		}
+		msg.lasted, msg.quiet = recovery.Lasted, recovery.Quiet
 		alarms.notifyMux.Lock()
 		for _, item := range alarms.Outbox {
 			if item.Chain != recovery.Chain || item.Message != recovery.Message {
@@ -96,6 +112,8 @@ func (c *Config) restoreRecoveries() {
 				msg.disc = false
 			case slk:
 				msg.slk = false
+			case gt:
+				msg.gotify = false
 			}
 		}
 		alarms.enqueue(msg)
@@ -105,7 +123,9 @@ func (c *Config) restoreRecoveries() {
 
 func (c *Config) runNotifications() {
 	active := make(map[string]bool)
+	c.chainsMux.RLock()
 	done := make(chan string, len(c.Chains)*4+1)
+	c.chainsMux.RUnlock()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -146,9 +166,14 @@ func (c *Config) runNotifications() {
 func (c *Config) queuedHead(key string) (queuedNotification, bool, bool) {
 	alarms.notifyMux.RLock()
 	defer alarms.notifyMux.RUnlock()
+	return alarms.headOf(key)
+}
+
+// headOf skips unsent recoveries and returns the next notification. notifyMux held.
+func (a *alarmCache) headOf(key string) (queuedNotification, bool, bool) {
 	var head *queuedNotification
-	for i := range alarms.Outbox {
-		item := &alarms.Outbox[i]
+	for i := range a.Outbox {
+		item := &a.Outbox[i]
 		if item.workerKey() != key {
 			continue
 		}
@@ -156,7 +181,7 @@ func (c *Config) queuedHead(key string) (queuedNotification, bool, bool) {
 			head = item
 			continue
 		}
-		if !head.Resolved && item.Resolved && !alarms.sentTo(head.Destination, head.Chain+"\x00"+head.Message, head.Message) {
+		if !head.Resolved && item.Resolved && !a.sentTo(head.Destination, head.Chain+"\x00"+head.Message, head.Message) {
 			return *head, true, true
 		}
 		break
@@ -179,12 +204,20 @@ func (c *Config) acknowledge(sequence uint64) error {
 	return c.persistState()
 }
 
+var notificationRetryDelay = 5 * time.Second
+
 func (c *Config) deliverQueue(key string) {
-	delay := 5 * time.Second
+	delay := notificationRetryDelay
 	for c.context().Err() == nil {
 		item, exists, skip := c.queuedHead(key)
 		if !exists {
 			return
+		}
+		if item.Transient && c.holdsAlert(item.Chain, item.Severity, false, time.Now()) {
+			if !waitContext(c.context(), time.Second) {
+				return
+			}
+			continue
 		}
 		// try to save the queue first, but a broken state file should never hold back an alert
 		if !c.queueSaved(item.Sequence) {
@@ -192,30 +225,56 @@ func (c *Config) deliverQueue(key string) {
 				l("⚠️ could not save notification queue, sending anyway", err)
 			}
 		}
-		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
+		// wait for the group, then read the head again
+		if d := c.groupDelay(item); d > 0 && !skip {
+			if !waitContext(c.context(), d) {
+				return
+			}
+			continue
+		}
+		msg := c.queuedAlert(item)
+		orphan := false
+		if r, ok := storedResolution(item.Chain, item.Message); ok {
+			orphan = item.Resolved && (r.label == "Alert stopped" || r.label == "No longer watched")
+		}
+		if (msg == nil || orphan) && item.snapshot != nil {
+			copy := *item.snapshot
+			msg = &copy
+		}
 		if msg == nil {
 			skip = true
+		} else {
+			msg.transient = item.Transient
+			msg.lasted, msg.quiet = item.Lasted, item.Quiet && item.Resolved
 		}
 		var err error
 		if !skip {
 			msg.ordered = true
 			msg.ctx = c.deliveryCtx
-			switch item.Destination {
-			case pd:
-				if msg.pd {
-					err = notifyPagerduty(msg)
-				}
-			case tg:
-				if msg.tg {
-					err = notifyTg(msg)
-				}
-			case di:
-				if msg.disc {
-					err = notifyDiscord(msg)
-				}
-			case slk:
-				if msg.slk {
-					err = notifySlack(msg)
+			grouped := false
+			if !orphan {
+				grouped, err = c.deliverGrouped(item, msg)
+			}
+			if !grouped {
+				switch item.Destination {
+				case pd:
+					if msg.pd {
+						err = notifyPagerduty(msg)
+					}
+				case tg:
+					if msg.tg {
+						err = notifyTg(msg)
+					}
+				case di:
+					if msg.disc {
+						err = notifyDiscord(msg)
+					}
+				case slk:
+					if msg.slk {
+						err = notifySlack(msg)
+					}
+				case gt:
+					err = notifyGotify(msg)
 				}
 			}
 		}
@@ -223,7 +282,7 @@ func (c *Config) deliverQueue(key string) {
 			if err := c.acknowledge(item.Sequence); err != nil {
 				l("could not save notification acknowledgement:", err)
 			}
-			delay = 5 * time.Second
+			delay = notificationRetryDelay
 			continue
 		}
 		if !errors.Is(err, errNotificationBusy) {
@@ -253,7 +312,34 @@ type notificationClient struct {
 	client *http.Client
 }
 
+func newNotificationClient(ctx context.Context, timeout time.Duration) notificationClient {
+	return notificationClient{ctx: ctx, client: &http.Client{Timeout: timeout}}
+}
+
 func (client notificationClient) Do(request *http.Request) (*http.Response, error) {
 	//#nosec G704 -- webhook URLs come from the operator's config
-	return client.client.Do(request.WithContext(client.ctx))
+	resp, err := client.client.Do(request.WithContext(client.ctx))
+	return resp, scrubURLError(err)
+}
+
+// scrubbedError removes URL paths and queries that may contain credentials.
+type scrubbedError struct {
+	text string
+	err  error
+}
+
+func (e *scrubbedError) Error() string { return e.text }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// scrubURLError formats logs as "Post scheme://host: cause".
+func scrubURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	text := urlErr.Op
+	if u, perr := url.Parse(urlErr.URL); perr == nil && u.Host != "" {
+		text += " " + u.Scheme + "://" + u.Host
+	}
+	return &scrubbedError{text: text + ": " + urlErr.Err.Error(), err: urlErr.Err}
 }

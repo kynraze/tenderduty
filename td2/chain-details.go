@@ -17,9 +17,6 @@ var altValopers = &valoperOverrides{
 	Prefixes: map[string]string{
 		"ival":    "ica",         // Iris hub
 		"crocncl": "crocnclcons", // Crypto.org
-
-		// TODO: was told tgrade also has a custom prefix, but not sure what the pair is
-		// "tval": "tvalcons",
 	},
 }
 
@@ -41,7 +38,7 @@ func (vo *valoperOverrides) getAltPrefix(oper string) (prefix string, ok bool) {
 
 // cosmosPaths holds a mapping useful for finding public nodes from the cosmos directory from eco_stake
 // it will be refreshed periodically.
-var cosmosPaths = map[string]string{
+var cosmosPaths = mainnetPaths(map[string]string{
 	"Antora":                     "idep",
 	"Oraichain":                  "oraichain",
 	"agoric-3":                   "agoric",
@@ -109,11 +106,30 @@ var cosmosPaths = map[string]string{
 	"titan-1":                    "rizon",
 	"umee-1":                     "umee",
 	"vidulum-1":                  "vidulum",
+})
+
+type registryPath struct {
+	path    string
+	testnet bool
 }
+
+func mainnetPaths(paths map[string]string) map[string]registryPath {
+	entries := make(map[string]registryPath, len(paths))
+	for id, path := range paths {
+		entries[id] = registryPath{path: path}
+	}
+	return entries
+}
+
 var pathMux sync.Mutex
 
-const registryJson = "https://chains.cosmos.directory/"
-const publicRpcUrl = "https://rpc.cosmos.directory:443/"
+// registryPartial: a registry list failed on the last refresh, so a missing chain may still be listed; under pathMux.
+var registryPartial bool
+
+var (
+	registryJson        = "https://chains.cosmos.directory/"
+	testnetRegistryJson = "https://chains.testcosmos.directory/"
+)
 
 // a trimmed down version only holding the info we need to create a lookup map
 type registryResults struct {
@@ -123,46 +139,60 @@ type registryResults struct {
 	} `json:"chains"`
 }
 
-// refreshRegistry updates the path map for public RPC endpoints for @eco_stake's public RPC proxy
-func refreshRegistry(ctx context.Context) error {
+func fetchRegistryList(ctx context.Context, url string) (*registryResults, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryJson, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("registry returned status %d", res.StatusCode)
+		return nil, fmt.Errorf("registry returned status %d", res.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	chains := &registryResults{}
 	err = json.Unmarshal(body, chains)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(chains.Chains) == 0 {
-		return errors.New("response had no chains")
+		return nil, errors.New("response had no chains")
 	}
-	pathMux.Lock()
-	defer pathMux.Unlock()
-	if cosmosPaths == nil {
-		cosmosPaths = make(map[string]string)
-	}
-	for _, c := range chains.Chains {
-		cosmosPaths[c.ChainId] = c.Path
-	}
-	return nil
+	return chains, nil
 }
 
-func getRegistryUrl(chainid string) (url string, ok bool) {
+// refreshRegistry maps chain IDs to mainnet and testnet paths for public node lookup.
+// Mainnet wins duplicate IDs; a failed registry refresh keeps its entries.
+func refreshRegistry(ctx context.Context) error {
+	mainnet, mainErr := fetchRegistryList(ctx, registryJson)
+	testnet, testErr := fetchRegistryList(ctx, testnetRegistryJson)
+	if mainErr != nil && testErr != nil {
+		return fmt.Errorf("mainnet registry: %w; testnet registry: %w", mainErr, testErr)
+	}
 	pathMux.Lock()
 	defer pathMux.Unlock()
-	return publicRpcUrl + cosmosPaths[chainid], cosmosPaths[chainid] != ""
+	registryPartial = mainErr != nil || testErr != nil
+	if cosmosPaths == nil {
+		cosmosPaths = make(map[string]registryPath)
+	}
+	if testnet != nil {
+		for _, c := range testnet.Chains {
+			if known, ok := cosmosPaths[c.ChainId]; !ok || known.testnet {
+				cosmosPaths[c.ChainId] = registryPath{path: c.Path, testnet: true}
+			}
+		}
+	}
+	if mainnet != nil {
+		for _, c := range mainnet.Chains {
+			cosmosPaths[c.ChainId] = registryPath{path: c.Path}
+		}
+	}
+	return nil
 }

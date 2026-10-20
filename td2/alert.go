@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"io"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,19 +21,32 @@ import (
 )
 
 type alertMsg struct {
-	ctx     context.Context
-	ordered bool
-	pd      bool
-	disc    bool
-	tg      bool
-	slk     bool
+	ctx       context.Context
+	source    *ChainConfig
+	ordered   bool
+	transient bool // an informational notice, not an alarm
+	pd        bool
+	disc      bool
+	tg        bool
+	slk       bool
+	gotify    bool
 
 	severity string
 	resolved bool
 	chain    string
 	message  string
+	extra    string
 	uniqueId string
 	key      string
+	// how long a resolved alarm was active, zero if unknown
+	lasted time.Duration
+	// chat recovery announced by another alarm; PagerDuty still resolves
+	quiet bool
+	// several nodes of one server, see group_alerts.go
+	group *groupCard
+	// unresolved alarm sent to the escalation destination, escalatedAt is when it started, see escalation.go
+	escalated   bool
+	escalatedAt time.Time
 
 	tgChannel  string
 	tgKey      string
@@ -38,9 +54,229 @@ type alertMsg struct {
 
 	discHook     string
 	discMentions string
+	discStyle    string
 
 	slkHook     string
 	slkMentions string
+
+	gotifyURL   string
+	gotifyToken string
+}
+
+// heading is the chain, or the server for a group.
+func (msg *alertMsg) heading() string {
+	if msg.group != nil {
+		return msg.group.heading()
+	}
+	return msg.chain
+}
+
+// summary removes the severity line already shown in the header.
+func (msg *alertMsg) summary() string {
+	body := msg.rawSummary()
+	if nodeURL, _, ok := nodeDownParts(msg.message); ok {
+		return strings.ReplaceAll(body, nodeURL, td.nodeDisplay(msg.chain, nodeURL))
+	}
+	return body
+}
+
+// rawSummary keeps node URLs parseable until card fields are built.
+func (msg *alertMsg) rawSummary() string {
+	return localAlertTimes(msg.summaryText())
+}
+
+func (msg *alertMsg) summaryText() string {
+	if msg.group != nil {
+		return msg.group.summary(msg)
+	}
+	if msg.resolved {
+		if r, ok := storedResolution(msg.chain, msg.message); ok {
+			return r.text
+		}
+		if text := resolvedText(msg.chain, msg.message); text != "" {
+			return text
+		}
+	}
+	if strings.HasPrefix(msg.message, "Severity: ") {
+		if _, rest, ok := strings.Cut(msg.message, "\n"); ok {
+			if !msg.resolved {
+				if detail := nodeDownDetail(msg.chain, msg.message); detail != "" {
+					return rest + "\n" + detail
+				}
+			}
+			return rest
+		}
+	}
+	if (strings.HasPrefix(msg.message, "Proposal #") || strings.Contains(msg.message, "\nCan unjail after ")) && !msg.resolved {
+		return govTimeLeft(msg.message)
+	}
+	if !msg.resolved && isSignalUpgrade(msg.message) {
+		body := msg.message
+		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
+			body += "\n" + line
+		}
+		if line := signalUpgradeDetail(msg.chain, msg.message); line != "" {
+			body += "\n" + line
+		}
+		return body
+	}
+	if !msg.resolved && strings.HasPrefix(msg.message, "Node stopped at the version ") {
+		return msg.message + fmt.Sprintf("\nupgrade celestia-appd to v%d or later", signalMessageVersion(msg.message))
+	}
+	if !msg.resolved && strings.Contains(msg.message, " is tombstoned on ") {
+		first, rest, _ := strings.Cut(msg.message, "\n")
+		if detail := jailDetail(msg.chain, first); detail != "" {
+			first += "\n" + detail
+		}
+		if rest == "" {
+			rest = "Permanent, the validator can't be unjailed"
+		}
+		return first + "\n" + rest
+	}
+	if !msg.resolved && isJailAlarm(msg.message) && !strings.Contains(msg.message, "\n") {
+		if line := jailDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if (strings.HasPrefix(msg.message, "Upgrade ") || isSignalUpgrade(msg.message)) && !msg.resolved {
+		if line := upgradeTimeLeft(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if isSignalMessage(msg.message) && !msg.resolved {
+		if line := signalDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if strings.HasPrefix(msg.message, "stalled: have not seen a new block") && !msg.resolved {
+		if line := stalledUpgradeDetail(msg.chain); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if strings.HasPrefix(msg.message, fibreEndorsementPrefix) && !msg.resolved {
+		if cc := td.Chains[msg.chain]; cc != nil {
+			return msg.message + "\n" + cc.endorsementAlertDetail()
+		}
+	}
+	if isFibreMessage(msg.message) && !msg.resolved {
+		if line := fibreDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	if isFibreMetricsMessage(msg.message) && !msg.resolved {
+		if line := fibreMetricsDetail(msg.chain, msg.message); line != "" {
+			return msg.message + "\n" + line
+		}
+	}
+	return msg.message
+}
+
+func (msg *alertMsg) text() string {
+	if msg.extra == "" {
+		return msg.summary()
+	}
+	return msg.summary() + "\n" + msg.extra
+}
+
+// header is the icon and severity (or Resolved) of the first line.
+func (msg *alertMsg) header() (icon, state string) {
+	if msg.resolved {
+		if r, ok := storedResolution(msg.chain, msg.message); ok {
+			return r.icon, r.label
+		}
+	}
+	if title := validatorChangeTitle(msg.message); msg.transient && title != "" {
+		return "ℹ️", title
+	}
+	if msg.transient && strings.HasPrefix(msg.message, "Proposals already in voting\n") {
+		return "🗳", "Proposals already in voting"
+	}
+	if strings.HasPrefix(msg.message, "Config reload failed\n") {
+		return "ℹ️", "Config reload failed"
+	}
+	if strings.HasPrefix(msg.message, "Proposal #") {
+		if msg.resolved {
+			return govResolvedLabel(msg.chain, msg.message)
+		}
+		if strings.Contains(msg.message, " has not voted") {
+			return "⏰", "Vote reminder"
+		}
+		return "🗳", "New proposal"
+	}
+	switch first, _, _ := strings.Cut(msg.message, "\n"); {
+	case strings.Contains(first, " is missing blocks on "):
+		if msg.resolved {
+			return "✅", "Recovered"
+		}
+		return "⚠️", "Missing blocks"
+	case strings.Contains(first, " is close to jail on "):
+		if msg.resolved {
+			return "✅", "Recovered"
+		}
+		return "🚨", "Close to jail"
+	case strings.Contains(first, " is tombstoned on "):
+		if msg.resolved {
+			return "✅", "Resolved"
+		}
+		return "☠️", "Tombstoned"
+	case strings.Contains(first, " is jailed on "):
+		if msg.resolved {
+			return "✅", "Active again"
+		}
+		return "🚨", "Jailed"
+	case strings.Contains(first, " is no longer in the active set on "):
+		if msg.resolved {
+			return "✅", "Active again"
+		}
+		return "🚨", "Not in the active set"
+	case strings.Contains(first, " can unjail on "):
+		if msg.resolved {
+			return "✅", "Unjailed"
+		}
+		return "🔓", "Can unjail now"
+	}
+	if isSignalMessage(msg.message) {
+		return signalLabel(msg)
+	}
+	if strings.HasPrefix(msg.message, fibreEndorsementPrefix) {
+		if msg.resolved {
+			return "✅", "Fibre endorsing"
+		}
+		return "✍️", "Fibre stopped"
+	}
+	if isBridgeMessage(msg.message) {
+		return bridgeLabel(msg)
+	}
+	if isFibreMessage(msg.message) {
+		return fibreLabel(msg)
+	}
+	if isFibreMetricsMessage(msg.message) {
+		return fibreMetricsLabel(msg)
+	}
+	if strings.HasPrefix(msg.message, "Upgrade ") && strings.Contains(msg.message, " at height ") {
+		if msg.resolved {
+			return upgradeResolvedLabel(msg.chain, msg.message)
+		}
+		if strings.HasSuffix(msg.message, " is close") {
+			return "⏰", "Upgrade soon"
+		}
+		return "⬆️", "Upgrade scheduled"
+	}
+	if msg.resolved {
+		return "✅", "Resolved"
+	}
+	state = msg.severity
+	if state != "" {
+		state = strings.ToUpper(state[:1]) + state[1:]
+	}
+	switch msg.severity {
+	case "critical", "error", "alert":
+		return "🚨", state
+	case "warning":
+		return "⚠️", state
+	default:
+		return "ℹ️", state
+	}
 }
 
 type notifyDest uint8
@@ -50,17 +286,26 @@ const (
 	tg
 	di
 	slk
+	gt
 )
 
 type alarmCache struct {
+	GovSeen           map[string]bool                 `json:"gov_seen,omitempty"`
+	SilentAlarms      map[string]bool                 `json:"silent_alarms,omitempty"`
+	AlarmSeverities   map[string]string               `json:"alarm_severities,omitempty"`
+	AlarmIDs          map[string]string               `json:"alarm_ids,omitempty"`
 	SentPdAlarms      map[string]time.Time            `json:"sent_pd_alarms"`
 	SentTgAlarms      map[string]time.Time            `json:"sent_tg_alarms"`
 	SentDiAlarms      map[string]time.Time            `json:"sent_di_alarms"`
 	SentSlkAlarms     map[string]time.Time            `json:"sent_slk_alarms"`
+	SentGtAlarms      map[string]time.Time            `json:"sent_gt_alarms"`
+	Escalated         map[string]time.Time            `json:"escalated,omitempty"`        // the start of the alarm that was escalated
+	EscalationsSent   map[string]time.Time            `json:"escalations_sent,omitempty"` // delivered, apart from the plain raise
 	AllAlarms         map[string]map[string]time.Time `json:"sent_all_alarms"`
 	PendingRecoveries map[string]*pendingRecovery     `json:"pending_recoveries,omitempty"`
 	Outbox            []queuedNotification            `json:"outbox,omitempty"`
 	NextNotification  uint64                          `json:"next_notification,omitempty"`
+	Groups            map[string]*notifyGroup         `json:"groups,omitempty"`
 	flappingAlarms    map[string]map[string]time.Time
 	inFlight          map[notifyDest]map[string]bool
 	notifyMux         sync.RWMutex
@@ -71,6 +316,9 @@ type pendingRecovery struct {
 	Message  string `json:"message"`
 	Severity string `json:"severity"`
 	ID       string `json:"id"`
+	// Keep the duration after the alarm is removed.
+	Lasted time.Duration `json:"lasted,omitempty"`
+	Quiet  bool          `json:"quiet,omitempty"`
 }
 
 var errNotificationBusy = errors.New("notification delivery is in progress")
@@ -90,6 +338,7 @@ func newAlarmCache() *alarmCache {
 		SentTgAlarms:      make(map[string]time.Time),
 		SentDiAlarms:      make(map[string]time.Time),
 		SentSlkAlarms:     make(map[string]time.Time),
+		SentGtAlarms:      make(map[string]time.Time),
 		AllAlarms:         make(map[string]map[string]time.Time),
 		PendingRecoveries: make(map[string]*pendingRecovery),
 		flappingAlarms:    make(map[string]map[string]time.Time),
@@ -101,6 +350,9 @@ func newAlarmCache() *alarmCache {
 var alarms = newAlarmCache()
 
 func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
+	if msg.transient {
+		return true, nil
+	}
 	alarms.notifyMux.Lock()
 	defer alarms.notifyMux.Unlock()
 	var whichMap map[string]time.Time
@@ -113,6 +365,8 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 		whichMap = alarms.SentDiAlarms
 	case slk:
 		whichMap = alarms.SentSlkAlarms
+	case gt:
+		whichMap = alarms.SentGtAlarms
 	}
 	key := msg.chain + "\x00" + msg.message
 	if alarms.inFlight == nil {
@@ -124,8 +378,11 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 	if alarms.inFlight[dest][key] {
 		return false, errNotificationBusy
 	}
-	// Old state files used the message alone as the key.
+	// Old state files used the message alone as the key. An escalation repeats a raise that may have been sent.
 	sent := !whichMap[key].IsZero() || !whichMap[msg.message].IsZero()
+	if msg.escalated && !msg.resolved {
+		sent = !alarms.EscalationsSent[key].IsZero()
+	}
 	if !msg.ordered && !msg.resolved && sent && alarms.PendingRecoveries[key] != nil {
 		return false, errNotificationBusy
 	}
@@ -145,6 +402,9 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 }
 
 func completeNotify(msg *alertMsg, dest notifyDest, err error) {
+	if msg.transient {
+		return
+	}
 	alarms.notifyMux.Lock()
 	defer func() {
 		alarms.notifyMux.Unlock()
@@ -153,7 +413,7 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 			if msg.resolved {
 				state = "💜 Resolved delivered"
 			}
-			l(state, msg.chain, "to", []string{"pagerduty", "telegram", "discord", "slack"}[dest])
+			l(state, msg.chain, "to", []string{"pagerduty", "telegram", "discord", "slack", "gotify"}[dest])
 		}
 	}()
 	key := msg.chain + "\x00" + msg.message
@@ -171,16 +431,27 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 		whichMap = alarms.SentDiAlarms
 	case slk:
 		whichMap = alarms.SentSlkAlarms
+	case gt:
+		whichMap = alarms.SentGtAlarms
 	}
 	if msg.resolved {
 		delete(whichMap, key)
 		delete(whichMap, msg.message)
+		delete(alarms.EscalationsSent, key)
 		if !alarms.sentAnywhere(key, msg.message) {
 			delete(alarms.PendingRecoveries, key)
 		}
 		return
 	}
 	whichMap[key] = time.Now()
+	if msg.escalated {
+		if alarms.EscalationsSent == nil {
+			alarms.EscalationsSent = make(map[string]time.Time)
+		}
+		alarms.EscalationsSent[key] = time.Now()
+	}
+	// re-sent alarm leaves its old group
+	alarms.forgetMember(dest, key)
 	if dest == pd {
 		if alarms.flappingAlarms[msg.chain] == nil {
 			alarms.flappingAlarms[msg.chain] = make(map[string]time.Time)
@@ -191,7 +462,7 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 
 // sentAnywhere is called while notifyMux is held.
 func (a *alarmCache) sentAnywhere(key, legacy string) bool {
-	for _, sent := range []map[string]time.Time{a.SentPdAlarms, a.SentTgAlarms, a.SentDiAlarms, a.SentSlkAlarms} {
+	for _, sent := range []map[string]time.Time{a.SentPdAlarms, a.SentTgAlarms, a.SentDiAlarms, a.SentSlkAlarms, a.SentGtAlarms} {
 		if !sent[key].IsZero() || !sent[legacy].IsZero() {
 			return true
 		}
@@ -208,27 +479,10 @@ func (a *alarmCache) inFlightAnywhere(key string) bool {
 	return false
 }
 
-func alarmActive(msg *alertMsg) bool {
-	alarms.notifyMux.RLock()
-	defer alarms.notifyMux.RUnlock()
-	return !alarms.AllAlarms[msg.chain][msg.message].IsZero()
-}
-
 func alarmIsActive(chain, message string) bool {
 	alarms.notifyMux.RLock()
 	defer alarms.notifyMux.RUnlock()
 	return !alarms.AllAlarms[chain][message].IsZero()
-}
-
-func activeMessage(chain, contains string) string {
-	alarms.notifyMux.RLock()
-	defer alarms.notifyMux.RUnlock()
-	for message := range alarms.AllAlarms[chain] {
-		if strings.Contains(message, contains) {
-			return message
-		}
-	}
-	return ""
 }
 
 func hasPendingRecovery(key string) bool {
@@ -253,6 +507,102 @@ func notifySlack(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, slk, err) }()
+	// another alarm announces this recovery
+	if msg.quiet {
+		return nil
+	}
+	return postSlack(msg)
+}
+
+func notifyGotify(msg *alertMsg) (err error) {
+	if !msg.gotify {
+		return
+	}
+	if send, e := shouldNotify(msg, gt); !send {
+		return e
+	}
+	defer func() { completeNotify(msg, gt, err) }()
+	// another alarm announces this recovery
+	if msg.quiet {
+		return nil
+	}
+	return postGotify(msg)
+}
+
+// postGotify skips sent tracking for grouped messages.
+func postGotify(msg *alertMsg) (err error) {
+	data, err := json.Marshal(buildGotifyMessage(msg))
+	if err != nil {
+		return
+	}
+
+	// the token goes in a header, never the URL, so it stays out of logs
+	// a url copied with Gotify's /message endpoint still works
+	base := strings.TrimSuffix(strings.TrimRight(msg.gotifyURL, "/"), "/message")
+	req, err := http.NewRequestWithContext(msg.context(), "POST", base+"/message", bytes.NewBuffer(data))
+	if err != nil {
+		return scrubURLError(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gotify-Key", msg.gotifyToken)
+
+	resp, err := newNotificationClient(msg.context(), 10*time.Second).Do(req)
+	if err != nil {
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		detail := strings.TrimSpace(string(body))
+		if msg.gotifyToken != "" {
+			detail = strings.ReplaceAll(detail, msg.gotifyToken, "***")
+		}
+		return fmt.Errorf("could not notify gotify for %s got %d response: %s", msg.chain, resp.StatusCode, clipRunes(detail, 200))
+	}
+
+	return
+}
+
+// GotifyMessage is the body of Gotify's POST /message.
+type GotifyMessage struct {
+	Title    string `json:"title"`
+	Message  string `json:"message"`
+	Priority int    `json:"priority"`
+}
+
+// gotifyPriority maps severity to Gotify's 0-10 scale, resolved alerts are quiet.
+func gotifyPriority(msg *alertMsg) int {
+	switch {
+	case msg.resolved:
+		return 2
+	case msg.escalated:
+		return 10
+	case msg.severity == "warning":
+		return 5
+	case msg.severity == "error":
+		return 7
+	case msg.severity == "info" || msg.severity == "":
+		return 2
+	}
+	return 8
+}
+
+func buildGotifyMessage(msg *alertMsg) *GotifyMessage {
+	card := msg.card()
+	title := strings.TrimSpace(fmt.Sprintf("%s %s · %s", card.Icon, msg.heading(), card.State))
+	if msg.heading() == "" {
+		title = card.Icon + " " + card.State
+	}
+	lines := card.plainLines()
+	if card.Extra != "" {
+		lines = append(lines, card.Extra)
+	}
+	return &GotifyMessage{Title: title, Message: strings.Join(lines, "\n"), Priority: gotifyPriority(msg)}
+}
+
+// postSlack skips sent tracking for grouped messages.
+func postSlack(msg *alertMsg) (err error) {
 	data, err := json.Marshal(buildSlackMessage(msg))
 	if err != nil {
 		return
@@ -260,12 +610,11 @@ func notifySlack(msg *alertMsg) (err error) {
 
 	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.slkHook, bytes.NewBuffer(data))
 	if err != nil {
-		return
+		return scrubURLError(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := newNotificationClient(msg.context(), 10*time.Second).Do(req)
 	if err != nil {
 		return
 	}
@@ -284,27 +633,54 @@ type SlackMessage struct {
 }
 
 type Attachment struct {
-	Text      string `json:"text"`
-	Color     string `json:"color"`
-	Title     string `json:"title"`
-	TitleLink string `json:"title_link"`
+	Text      string       `json:"text"`
+	Color     string       `json:"color"`
+	Title     string       `json:"title"`
+	TitleLink string       `json:"title_link"`
+	Fields    []SlackField `json:"fields,omitempty"`
+	MrkdwnIn  []string     `json:"mrkdwn_in,omitempty"`
+}
+
+// tone picks the discord and slack colour, "plain" has none.
+func (msg *alertMsg) tone() string {
+	switch {
+	case msg.resolved:
+		return "good"
+	case msg.severity == "info":
+		return "plain"
+	case msg.severity == "warning":
+		return "warning"
+	default:
+		return "danger"
+	}
 }
 
 func buildSlackMessage(msg *alertMsg) *SlackMessage {
-	prefix := "🚨 ALERT: "
-	color := "danger"
-	message := msg.message
+	card := msg.card()
+	icon, state := card.Icon, card.State
+	message, _, _ := strings.Cut(msg.summary(), "\n")
+	if card.Note != "" {
+		message = msg.text()
+	} else if msg.extra != "" {
+		message += "\n" + msg.extra
+	}
 	if msg.resolved {
 		message = "OK: " + message
-		prefix = "💜 Resolved: "
-		color = "good"
+	}
+	color := map[string]string{"good": "good", "warning": "warning", "danger": "danger"}[msg.tone()]
+	title := strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.heading(), state, msg.slkMentions))
+	if msg.heading() == "" {
+		title = strings.TrimSpace(icon + " " + state + " " + msg.slkMentions)
 	}
 	return &SlackMessage{
-		Text: message,
+		Text: slackText(message),
 		Attachments: []Attachment{
 			{
-				Title: fmt.Sprintf("TenderDuty %s %s %s", prefix, msg.chain, msg.slkMentions),
-				Color: color,
+				Title:    title,
+				Color:    color,
+				Text:     slackTitle(card),
+				Fields:   card.slackFields(),
+				MrkdwnIn: []string{"text", "fields"},
 			},
 		},
 	}
@@ -318,60 +694,114 @@ func notifyDiscord(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, di, err) }()
+	// another alarm announces this recovery
+	if msg.quiet {
+		return nil
+	}
+	return postDiscord(msg)
+}
+
+func postDiscord(msg *alertMsg) (err error) {
 	discPost := buildDiscordMessage(msg)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newNotificationClient(msg.context(), 10*time.Second)
 	data, err := json.MarshalIndent(discPost, "", "  ")
 	if err != nil {
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, err)
 	}
 
 	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.discHook, bytes.NewBuffer(data))
 	if err != nil {
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, scrubURLError(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, err)
 	}
 	_ = resp.Body.Close()
 
 	if resp.StatusCode != 204 {
-		l("⚠️ Could not notify discord! Returned", resp.StatusCode)
 		return fmt.Errorf("could not notify discord for %s: status %d", msg.chain, resp.StatusCode)
 	}
 	return nil
 }
 
 type DiscordMessage struct {
-	Username  string         `json:"username,omitempty"`
-	AvatarUrl string         `json:"avatar_url,omitempty"`
-	Content   string         `json:"content"`
-	Embeds    []DiscordEmbed `json:"embeds,omitempty"`
+	Username        string                  `json:"username,omitempty"`
+	AvatarUrl       string                  `json:"avatar_url,omitempty"`
+	Content         string                  `json:"content"`
+	Embeds          []DiscordEmbed          `json:"embeds,omitempty"`
+	AllowedMentions *DiscordAllowedMentions `json:"allowed_mentions,omitempty"`
+}
+
+// DiscordAllowedMentions lists the users and roles a message may ping.
+type DiscordAllowedMentions struct {
+	Parse []string `json:"parse"`
+	Users []string `json:"users,omitempty"`
+	Roles []string `json:"roles,omitempty"`
+}
+
+var (
+	discordUserMention = regexp.MustCompile(`<@!?(\d+)>`)
+	discordRoleMention = regexp.MustCompile(`<@&(\d+)>`)
+)
+
+// discordMentionLimit is how many users or roles discord accepts in allowed_mentions.
+const discordMentionLimit = 100
+
+// discordAllowedMentions permits configured mentions only.
+func discordAllowedMentions(configured string) *DiscordAllowedMentions {
+	allowed := &DiscordAllowedMentions{Parse: []string{}}
+	// "everyone" covers @here as well
+	if strings.Contains(configured, "@everyone") || strings.Contains(configured, "@here") {
+		allowed.Parse = append(allowed.Parse, "everyone")
+	}
+	ids := func(pattern *regexp.Regexp) []string {
+		var found []string
+		seen := make(map[string]bool)
+		for _, m := range pattern.FindAllStringSubmatch(configured, -1) {
+			if !seen[m[1]] && len(found) < discordMentionLimit {
+				seen[m[1]] = true
+				found = append(found, m[1])
+			}
+		}
+		return found
+	}
+	allowed.Users, allowed.Roles = ids(discordUserMention), ids(discordRoleMention)
+	return allowed
 }
 
 type DiscordEmbed struct {
-	Title       string `json:"title,omitempty"`
-	Url         string `json:"url,omitempty"`
-	Description string `json:"description"`
-	Color       uint   `json:"color"`
+	Title       string         `json:"title,omitempty"`
+	Url         string         `json:"url,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Color       uint           `json:"color"`
+	Fields      []DiscordField `json:"fields,omitempty"`
+	Footer      *DiscordFooter `json:"footer,omitempty"`
 }
 
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
-	prefix := "🚨 ALERT: "
-	if msg.resolved {
-		prefix = "💜 Resolved: "
+	card := msg.card()
+	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", card.Icon, msg.heading(), card.State, msg.discMentions))
+	if msg.heading() == "" {
+		header = strings.TrimSpace(card.Icon + " **" + card.State + "** " + msg.discMentions)
 	}
+	// plain is one message with no embed, the blank line separates header and alert
+	if msg.discStyle == "plain" {
+		lines := card.markdownLines()
+		if card.Extra != "" {
+			lines = append(lines, card.Extra)
+		}
+		return &DiscordMessage{Username: "Tenderduty", Content: clipRunes(header+"\n\n"+strings.Join(lines, "\n"), discordContentLimit), AllowedMentions: discordAllowedMentions(msg.discMentions)}
+	}
+	// dashboard colours, plain gets no bar
+	color := map[string]uint{"good": 0x63d6c4, "warning": 0xf1b663, "danger": 0xf27c76}[msg.tone()]
 	return &DiscordMessage{
-		Username: "Tenderduty",
-		Content:  prefix + msg.chain,
-		Embeds: []DiscordEmbed{{
-			Description: msg.message,
-		}},
+		Username:        "Tenderduty",
+		Content:         header,
+		Embeds:          []DiscordEmbed{card.discordEmbed(color)},
+		AllowedMentions: discordAllowedMentions(msg.discMentions),
 	}
 }
 
@@ -383,23 +813,45 @@ func notifyTg(msg *alertMsg) (err error) {
 		return e
 	}
 	defer func() { completeNotify(msg, tg, err) }()
-	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, notificationClient{ctx: msg.context(), client: &http.Client{Timeout: 10 * time.Second}})
+	// another alarm announces this recovery
+	if msg.quiet {
+		return nil
+	}
+	return postTg(msg)
+}
+
+func postTg(msg *alertMsg) (err error) {
+	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, newNotificationClient(msg.context(), 10*time.Second))
 	if err != nil {
-		l("notify telegram:", err)
-		return
+		return fmt.Errorf("could not notify telegram for %s: %w", msg.chain, err)
 	}
 
-	prefix := "🚨 ALERT: "
-	if msg.resolved {
-		prefix = "💜 Resolved: "
+	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, buildTelegramMessage(msg))
+	mc.ParseMode = tgbotapi.ModeHTML
+	mc.DisableWebPagePreview = true
+	if _, err = bot.Send(mc); err != nil {
+		return fmt.Errorf("could not notify telegram for %s: %w", msg.chain, err)
 	}
+	return nil
+}
 
-	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, fmt.Sprintf("%s: %s - %s", msg.chain, prefix, msg.message))
-	_, err = bot.Send(mc)
-	if err != nil {
-		l("telegram send:", err)
+// timeLeft matches the time left shown in governance and upgrade messages.
+var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
+
+// buildTelegramMessage escapes text for Telegram HTML.
+func buildTelegramMessage(msg *alertMsg) string {
+	card := msg.card()
+	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.heading()), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
+	if msg.heading() == "" {
+		text = fmt.Sprintf("%s <b>%s</b>\n\n%s", card.Icon, html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
 	}
-	return err
+	if msg.extra != "" {
+		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
+	}
+	if msg.tgMentions != "" {
+		text += "\n" + msg.tgMentions
+	}
+	return text
 }
 
 func notifyPagerduty(msg *alertMsg) (err error) {
@@ -419,17 +871,25 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 	if msg.resolved {
 		action = "resolve"
 	}
+	source := msg.uniqueId
+	if nodeURL, _, ok := nodeDownParts(msg.message); ok {
+		source = td.nodeDisplay(msg.chain, nodeURL)
+	}
+	payload := &pagerduty.V2Payload{
+		Summary:  strings.ReplaceAll(msg.summary(), "\n", " · "), // pagerduty shows one line
+		Source:   source,
+		Severity: msg.severity,
+	}
+	if msg.extra != "" {
+		payload.Details = map[string]string{"extra_info": msg.extra}
+	}
 	ctx, cancel := context.WithTimeout(msg.context(), 10*time.Second)
 	defer cancel()
 	_, err = pagerduty.ManageEventWithContext(ctx, pagerduty.V2Event{
 		RoutingKey: msg.key,
 		Action:     action,
 		DedupKey:   msg.uniqueId,
-		Payload: &pagerduty.V2Payload{
-			Summary:  msg.message,
-			Source:   msg.uniqueId,
-			Severity: msg.severity,
-		},
+		Payload:    payload,
 	})
 	return
 }
@@ -443,6 +903,10 @@ func getAlarms(chain string) string {
 	}
 	result := ""
 	for k := range alarms.AllAlarms[chain] {
+		// the "is close" reminder repeats the scheduled upgrade, show it once
+		if _, ok := alarms.AllAlarms[chain][k+" is close"]; ok {
+			continue
+		}
 		result += "🚨 " + k + "\n"
 	}
 	return result
@@ -459,61 +923,176 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 	if id != nil && *id != "" {
 		uniq = *id
 	}
+	alerts := c.Chains[chainName].alertSettings()
+	routed := func(min string) bool { return resolved || severityRank(severity) >= severityRank(min) }
 	a := &alertMsg{
-		pd:           c.Pagerduty.Enabled && c.Chains[chainName].Alerts.Pagerduty.Enabled,
-		disc:         c.Discord.Enabled && c.Chains[chainName].Alerts.Discord.Enabled,
-		tg:           c.Telegram.Enabled && c.Chains[chainName].Alerts.Telegram.Enabled,
-		slk:          c.Slack.Enabled && c.Chains[chainName].Alerts.Slack.Enabled,
+		source:       c.Chains[chainName],
+		pd:           enabledFor(c.settings().Pagerduty.Enabled, alerts.Pagerduty.Enabled) && routed(alerts.Pagerduty.MinSeverity),
+		disc:         enabledFor(c.settings().Discord.Enabled, alerts.Discord.Enabled) && routed(alerts.Discord.MinSeverity),
+		tg:           enabledFor(c.settings().Telegram.Enabled, alerts.Telegram.Enabled) && routed(alerts.Telegram.MinSeverity),
+		slk:          enabledFor(c.settings().Slack.Enabled, alerts.Slack.Enabled) && routed(alerts.Slack.MinSeverity),
 		severity:     severity,
 		resolved:     resolved,
 		chain:        chainName,
 		message:      message,
+		extra:        c.Chains[chainName].extraInfo(),
 		uniqueId:     uniq,
-		key:          c.Chains[chainName].Alerts.Pagerduty.ApiKey,
-		tgChannel:    c.Chains[chainName].Alerts.Telegram.Channel,
-		tgKey:        c.Chains[chainName].Alerts.Telegram.ApiKey,
-		tgMentions:   strings.Join(c.Chains[chainName].Alerts.Telegram.Mentions, " "),
-		discHook:     c.Chains[chainName].Alerts.Discord.Webhook,
-		discMentions: strings.Join(c.Chains[chainName].Alerts.Discord.Mentions, " "),
-		slkHook:      c.Chains[chainName].Alerts.Slack.Webhook,
+		key:          alerts.Pagerduty.ApiKey,
+		tgChannel:    alerts.Telegram.Channel,
+		tgKey:        alerts.Telegram.ApiKey,
+		tgMentions:   telegramMentions(alerts.Telegram.Mentions),
+		discHook:     alerts.Discord.Webhook,
+		discMentions: strings.Join(alerts.Discord.Mentions, " "),
+		discStyle:    alerts.Discord.Style,
+		slkHook:      alerts.Slack.Webhook,
+		slkMentions:  strings.Join(alerts.Slack.Mentions, " "),
+		gotify:       enabledFor(c.settings().Gotify.Enabled, alerts.Gotify.Enabled) && routed(alerts.Gotify.MinSeverity),
+		gotifyURL:    alerts.Gotify.URL,
+		gotifyToken:  alerts.Gotify.Token,
 	}
 	return a
 }
 
+// severityRank ranks unknown severities as critical to retain their alerts; "Warning" in a config is warning.
+func severityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "":
+		return 0
+	case "info":
+		return 1
+	case "warning":
+		return 2
+	case "error":
+		return 3
+	case "escalation":
+		return 5 // a destination's min_severity: only escalations reach it
+	default:
+		return 4
+	}
+}
+
 // alert records the incident and its ordered notification queue before waking delivery workers.
 func (c *Config) alert(chainName, message, severity string, resolved bool, id *string) {
+	c.record(chainName, message, severity, resolved, false, id)
+}
+
+// resolveQuietly skips chat recovery but resolves PagerDuty.
+func (c *Config) resolveQuietly(chainName, message string, id *string) {
+	c.record(chainName, message, "info", true, true, id)
+}
+
+func (c *Config) record(chainName, message, severity string, resolved, quiet bool, id *string, silent ...bool) {
+	c.recordSince(chainName, message, severity, resolved, quiet, id, time.Time{}, silent...)
+}
+
+// recordSince carries the incident start across stage changes, including saved state.
+func (c *Config) recordSince(chainName, message, severity string, resolved, quiet bool, id *string, started time.Time, silent ...bool) {
 	a := c.makeAlert(chainName, message, severity, resolved, id)
 	if a == nil {
 		return
 	}
+	c.chainsMux.RLock()
+	cc := c.Chains[chainName]
+	if cc == nil || cc != a.source {
+		c.chainsMux.RUnlock()
+		return
+	}
+	cc.stateMux.RLock()
+	if cc.retiring && !resolved {
+		cc.stateMux.RUnlock()
+		c.chainsMux.RUnlock()
+		return
+	}
+	// Keep retirement from passing an alert that is still being recorded.
+	if !resolved {
+		resolutions.Delete(chainName + "\x00" + message)
+	}
 	uniq := a.uniqueId
 	alarms.notifyMux.Lock()
+	if original := alarms.AlarmIDs[chainName+"\x00"+message]; original != "" && !alarms.AllAlarms[chainName][message].IsZero() {
+		uniq, a.uniqueId = original, original
+	}
+	if alarms.AlarmIDs == nil {
+		alarms.AlarmIDs = make(map[string]string)
+	}
+	if !resolved {
+		alarms.AlarmIDs[chainName+"\x00"+message] = uniq
+	} else {
+		delete(alarms.AlarmIDs, chainName+"\x00"+message)
+	}
 	key := chainName + "\x00" + message
+	silenced := !resolved && (alarms.SilentAlarms[key] || len(silent) > 0 && silent[0])
+	if silenced {
+		if alarms.SilentAlarms == nil {
+			alarms.SilentAlarms = make(map[string]bool)
+		}
+		alarms.SilentAlarms[key] = true
+	} else if resolved {
+		delete(alarms.SilentAlarms, key)
+	}
+	if resolved {
+		delete(alarms.AlarmSeverities, key)
+	} else if alarms.AllAlarms[chainName][message].IsZero() {
+		if alarms.AlarmSeverities == nil {
+			alarms.AlarmSeverities = make(map[string]string)
+		}
+		alarms.AlarmSeverities[key] = severity
+	}
 	if alarms.AllAlarms[chainName] == nil {
 		alarms.AllAlarms[chainName] = make(map[string]time.Time)
 	}
+	var lasted time.Duration
 	if resolved && !alarms.AllAlarms[chainName][message].IsZero() {
+		c.recordReportAlarm(chainName, message, alarms.AllAlarms[chainName][message], time.Now())
+		lasted = time.Since(alarms.AllAlarms[chainName][message])
 		delete(alarms.AllAlarms[chainName], message)
 	} else if !resolved && alarms.AllAlarms[chainName][message].IsZero() {
-		alarms.AllAlarms[chainName][message] = time.Now()
+		if started.IsZero() {
+			started = time.Now()
+		}
+		alarms.AllAlarms[chainName][message] = started
+		c.recordReportAlarm(chainName, message, alarms.AllAlarms[chainName][message], time.Time{})
 	}
 	if resolved && (alarms.sentAnywhere(key, message) || alarms.inFlightAnywhere(key)) {
-		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq}
+		alarms.PendingRecoveries[key] = &pendingRecovery{Chain: chainName, Message: message, Severity: severity, ID: uniq, Lasted: lasted, Quiet: quiet}
 	} else if !resolved {
 		// the alarm fired again, recoveries already in the outbox still go out from there. Keeping this around
 		// would send a resolve for the new alarm after a restart.
 		delete(alarms.PendingRecoveries, key)
 	}
-	alarms.enqueue(a)
+	heldMux.Lock()
+	_, wasHeld := held[key]
+	if resolved {
+		// never sent, nothing to recover
+		delete(held, key)
+	} else if !silenced && c.holdsAlert(chainName, severity, resolved, time.Now()) {
+		held[key] = heldAlert{chain: chainName, message: message, severity: severity, id: uniq}
+		wasHeld = true
+	}
+	heldMux.Unlock()
+	a.lasted, a.quiet = lasted, quiet && resolved
+	if !silenced && (!wasHeld || resolved) {
+		alarms.enqueue(a)
+	}
 	alarms.notifyMux.Unlock()
+	cc.stateMux.RUnlock()
+	c.chainsMux.RUnlock()
 	if err := c.persistState(); err != nil {
 		l("could not persist alert:", err)
+	}
+	if silenced {
+		return
 	}
 	select {
 	case c.alertChan <- a:
 	default:
 	}
 }
+
+var (
+	watchStartupInterval = time.Second
+	watchInterval        = 2 * time.Second
+)
 
 // watch handles monitoring for missed blocks, stalled chain, node downtime
 // and also updates a few prometheus stats
@@ -523,7 +1102,7 @@ func (cc *ChainConfig) watch() {
 	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
 	noRpcId := cc.ValAddress + "norpc"
 	valInfo, _ := cc.validatorState()
-	var missedAlarm, pctAlarm, noNodes, wasActive bool
+	var proposalAlarm, noNodes bool
 	var lastStatus *dash.ChainStatus
 	nodeAlarms := make(map[string]bool)
 
@@ -531,16 +1110,19 @@ func (cc *ChainConfig) watch() {
 	noNodesSec := 0 // delay a no-nodes alarm for 30 seconds, too noisy.
 	for {
 		select {
-		case <-td.ctx.Done():
+		case <-cc.context().Done():
 			return
 		default:
 		}
 		valInfo, _ = cc.validatorState()
 		if valInfo == nil || valInfo.Moniker == "not connected" {
-			if !waitContext(td.context(), time.Second) {
+			if cc.alertSettings().BridgeAlerts {
+				cc.bridgeAlarms(false)
+			}
+			if !waitContext(cc.context(), watchStartupInterval) {
 				return
 			}
-			if cc.Alerts.AlertIfNoServers && !noNodes && cc.hasNoNodes() && noNodesSec >= 60*td.NodeDownMin {
+			if cc.alertSettings().AlertIfNoServers && !noNodes && cc.hasNoNodes() && noNodesSec >= 60*td.settings().NodeDownMin {
 				noNodes = true
 				td.alert(
 					cc.name,
@@ -556,17 +1138,16 @@ func (cc *ChainConfig) watch() {
 		noNodesSec = 0
 		break
 	}
-	missedAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId))
-	pctAlarm = alarmIsActive(cc.name, fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId))
-	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled))
+	proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(valInfo.Moniker))
+	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled))
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
-	inactiveMessage := activeMessage(cc.name, " is no longer active: validator is ")
 	for _, node := range cc.Nodes {
-		message := fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)
+		message := nodeDownMessage(node.Url, cc.ChainId)
 		nodeAlarms[node.Url] = alarmIsActive(cc.name, message)
 	}
 	cc.clearOrphanedAlarms(valInfo, noRpcId)
 	reconcile := true
+	version := cc.settingsRevision()
 	// initial stat creation for nodes, we only update again if the node is positive
 	if td.Prom {
 		for _, node := range cc.Nodes {
@@ -575,16 +1156,28 @@ func (cc *ChainConfig) watch() {
 	}
 
 	for {
-		if !waitContext(td.context(), 2*time.Second) {
+		if !waitContext(cc.context(), watchInterval) {
 			return
 		}
 		select {
-		case <-td.ctx.Done():
+		case <-cc.context().Done():
 			return
 		default:
 		}
+		if revision := cc.settingsRevision(); revision != version {
+			version, reconcile = revision, true
+			info, _ := cc.validatorState()
+			cc.clearOrphanedAlarms(info, noRpcId)
+			alerts := cc.alertSettings()
+			proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(info.Moniker))
+			cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, alerts.Stalled))
+			noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
+			for _, node := range cc.Nodes {
+				nodeAlarms[node.Url] = alarmIsActive(cc.name, nodeDownMessage(node.Url, cc.ChainId))
+			}
+		}
 		valInfo, _ = cc.validatorState()
-		lastBlockTime, observedBlock, consecutiveMiss := cc.blockState()
+		lastBlockTime, _, consecutiveMiss := cc.blockState()
 		unavailable := cc.hasNoNodes()
 
 		// alert if we can't monitor
@@ -592,9 +1185,9 @@ func (cc *ChainConfig) watch() {
 			td.alert(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId), "critical", false, &noRpcId)
 		}
 		switch {
-		case cc.Alerts.AlertIfNoServers && !noNodes && unavailable:
+		case cc.alertSettings().AlertIfNoServers && !noNodes && unavailable:
 			noNodesSec += 2
-			if noNodesSec < 60*td.NodeDownMin {
+			if noNodesSec < 60*td.settings().NodeDownMin {
 				if noNodesSec%20 == 0 {
 					l(fmt.Sprintf("no nodes available on %s for %d seconds, deferring alarm", cc.ChainId, noNodesSec))
 				}
@@ -610,7 +1203,7 @@ func (cc *ChainConfig) watch() {
 					&noRpcId,
 				)
 			}
-		case cc.Alerts.AlertIfNoServers && noNodes && !unavailable:
+		case cc.alertSettings().AlertIfNoServers && noNodes && !unavailable:
 			noNodes = false
 			td.alert(
 				cc.name,
@@ -629,111 +1222,61 @@ func (cc *ChainConfig) watch() {
 		if stallSince.Before(started) {
 			stallSince = started
 		}
-		if cc.Alerts.StalledAlerts && (!cc.lastBlockAlarm || reconcile) && !lastBlockTime.IsZero() &&
-			stallSince.Before(time.Now().Add(time.Duration(-cc.Alerts.Stalled)*time.Minute)) {
+		if cc.alertSettings().StalledAlerts && (!cc.lastBlockAlarm || reconcile) && !lastBlockTime.IsZero() &&
+			stallSince.Before(time.Now().Add(time.Duration(-cc.alertSettings().Stalled)*time.Minute)) {
 
 			// chain is stalled send an alert!
 			cc.lastBlockAlarm = true
 			td.alert(
 				cc.name,
-				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled),
+				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled),
 				"critical",
 				false,
 				&valInfo.Valcons,
 			)
-		} else if cc.Alerts.StalledAlerts && cc.lastBlockAlarm && !lastBlockTime.IsZero() &&
-			lastBlockTime.After(time.Now().Add(time.Duration(-cc.Alerts.Stalled)*time.Minute)) {
+		} else if cc.alertSettings().StalledAlerts && cc.lastBlockAlarm && !lastBlockTime.IsZero() &&
+			lastBlockTime.After(time.Now().Add(time.Duration(-cc.alertSettings().Stalled)*time.Minute)) {
 			cc.lastBlockAlarm = false
 			td.alert(
 				cc.name,
-				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled),
+				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled),
 				"info",
 				true,
 				&valInfo.Valcons,
 			)
 		}
 
-		// inactive status must also be reconciled after a restart.
-		if cc.Alerts.AlertIfInactive && !valInfo.ValidatorStale {
-			id := valInfo.Valcons + "jailed"
-			if !valInfo.Bonded || valInfo.Jailed || valInfo.Tombstoned {
-				reason := "inactive"
-				if valInfo.Tombstoned {
-					reason = "☠️ tombstoned 🪦"
-				} else if valInfo.Jailed {
-					reason = "jailed"
-				}
-				// a validator that was already outside the active set when we started isn't news, only alert if it
-				// drops out while we are watching. Jailing and tombstoning always alert.
-				if reason != "inactive" || wasActive || inactiveMessage != "" {
-					message := fmt.Sprintf("%s is no longer active: validator is %s", valInfo.Moniker, reason)
-					if inactiveMessage != "" {
-						message = inactiveMessage
-					}
-					if inactiveMessage == "" || reconcile {
-						td.alert(cc.name, message, "critical", false, &id)
-					}
-					inactiveMessage = message
-				}
-			} else if inactiveMessage != "" && (!strings.Contains(inactiveMessage, "tombstoned") || !valInfo.SigningStale) {
-				td.alert(cc.name, inactiveMessage, "info", true, &id)
-				inactiveMessage = ""
+		cc.jailAlarms(valInfo, consecutiveMiss, reconcile)
+
+		if cc.alertSettings().ProposalAlerts {
+			misses := cc.recentProposalMisses(time.Duration(cc.alertSettings().ProposalMinutes) * time.Minute)
+			id := valInfo.Valcons + "proposal"
+			if (!proposalAlarm || reconcile) && misses >= cc.alertSettings().ProposalMissed {
+				proposalAlarm = true
+				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), cc.alertSettings().ProposalSeverity, false, &id)
+			} else if proposalAlarm && misses < cc.alertSettings().ProposalMissed {
+				proposalAlarm = false
+				td.alert(cc.name, cc.proposalMessage(valInfo.Moniker), "info", true, &id)
 			}
 		}
-		if valInfo.Bonded && !valInfo.Jailed && !valInfo.Tombstoned && !valInfo.ValidatorStale {
-			wasActive = true
-		}
 
-		// consecutive missed block alarms:
-		if (!missedAlarm || reconcile) && cc.Alerts.ConsecutiveAlerts && int(consecutiveMiss) >= cc.Alerts.ConsecutiveMissed {
-			// alert on missed block counter!
-			missedAlarm = true
-			id := valInfo.Valcons + "consecutive"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId),
-				cc.Alerts.ConsecutivePriority,
-				false,
-				&id,
-			)
-		} else if missedAlarm && observedBlock && int(consecutiveMiss) < cc.Alerts.ConsecutiveMissed {
-			// clear the alert
-			missedAlarm = false
-			id := valInfo.Valcons + "consecutive"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId),
-				"info",
-				true,
-				&id,
-			)
+		if cc.alertSettings().GovAlerts && valInfo.Valcons != "" {
+			cc.govAlarms(valInfo, reconcile)
 		}
-
-		// window percentage missed block alarms
-		if cc.Alerts.PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && (!pctAlarm || reconcile) &&
-			100*float64(valInfo.Missed)/float64(valInfo.Window) > float64(cc.Alerts.Window) {
-			// alert on missed block counter!
-			pctAlarm = true
-			id := valInfo.Valcons + "percent"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId),
-				cc.Alerts.PercentagePriority,
-				false,
-				&id,
-			)
-		} else if cc.Alerts.PercentageAlerts && !valInfo.SigningStale && valInfo.Window > 0 && pctAlarm &&
-			100*float64(valInfo.Missed)/float64(valInfo.Window) <= float64(cc.Alerts.Window) {
-			// clear the alert
-			pctAlarm = false
-			id := valInfo.Valcons + "percent"
-			td.alert(
-				cc.name,
-				fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId),
-				"info",
-				true,
-				&id,
-			)
+		if cc.alertSettings().UpgradeAlerts && valInfo.Valcons != "" {
+			cc.upgradeAlarms(valInfo, reconcile)
+		}
+		if cc.alertSettings().UpgradeAlerts && valInfo.Valcons != "" {
+			cc.signalAlarms(valInfo, reconcile)
+		}
+		if cc.alertSettings().BridgeAlerts {
+			cc.bridgeAlarms(reconcile)
+		}
+		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" {
+			cc.fibreAlarms(valInfo, reconcile)
+		}
+		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" && td.FibreMetrics.Listen != "" {
+			cc.fibreMetricsAlarms(valInfo, reconcile)
 		}
 
 		// node down alarms
@@ -742,7 +1285,7 @@ func (cc *ChainConfig) watch() {
 			// window percentage missed block alarms
 			// a node restored as down from the state file has to be checked again before it can raise an alarm
 			if node.AlertIfDown && status.down && status.checked && !status.downSince.IsZero() &&
-				time.Since(status.downSince) > time.Duration(td.NodeDownMin)*time.Minute {
+				time.Since(status.downSince) > time.Duration(td.settings().NodeDownMin)*time.Minute {
 				// alert on dead node
 				if nodeAlarms[node.Url] && !reconcile {
 					continue
@@ -750,8 +1293,8 @@ func (cc *ChainConfig) watch() {
 				nodeAlarms[node.Url] = true // used to keep active alert count correct
 				td.alert(
 					cc.name,
-					fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId),
-					td.NodeDownSeverity,
+					nodeDownMessage(node.Url, cc.ChainId),
+					td.settings().NodeDownSeverity,
 					false,
 					&node.Url,
 				)
@@ -761,7 +1304,7 @@ func (cc *ChainConfig) watch() {
 				node.clearRecovery()
 				td.alert(
 					cc.name,
-					fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId),
+					nodeDownMessage(node.Url, cc.ChainId),
 					"info",
 					true,
 					&node.Url,
@@ -790,6 +1333,9 @@ func (cc *ChainConfig) watch() {
 				}
 			}
 		}
+		if cc.alertSettings().FibreAlerts && valInfo.Valcons != "" {
+			cc.fibreEndorsementAlarms(valInfo, reconcile)
+		}
 		if td.EnableDash {
 			// blocks are pushed as they arrive, only send node and alarm changes here
 			status := cc.dashboardStatus()
@@ -797,34 +1343,81 @@ func (cc *ChainConfig) watch() {
 				lastStatus = status
 				select {
 				case td.updateChan <- status:
-				case <-td.ctx.Done():
+				case <-cc.context().Done():
 					return
 				}
 			}
 		}
+		if reconcile {
+			cc.stateMux.Lock()
+			cc.restoredChecked = true
+			cc.stateMux.Unlock()
+		}
 		reconcile = false
 	}
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// jailMessage says why the validator is out, the time left is added when sent.
+func jailMessage(valInfo *ValInfo, chainId string) string {
+	switch {
+	case valInfo.Tombstoned:
+		return fmt.Sprintf("%s is tombstoned on %s\nPermanent, the validator can't be unjailed", valInfo.Moniker, chainId)
+	case valInfo.Jailed && valInfo.JailedUntil.After(time.Unix(0, 0)):
+		return fmt.Sprintf("%s is jailed on %s\nCan unjail after %s", valInfo.Moniker, chainId, valInfo.JailedUntil.UTC().Format(govEndFormat))
+	case valInfo.Jailed:
+		return fmt.Sprintf("%s is jailed on %s", valInfo.Moniker, chainId)
+	default:
+		return fmt.Sprintf("%s is no longer in the active set on %s", valInfo.Moniker, chainId)
+	}
+}
+
+func nodeDownMessage(url, chainId string) string {
+	return fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %s on %s", td.settings().NodeDownSeverity, url, plural(td.settings().NodeDownMin, "minute"), chainId)
+}
+
+func (cc *ChainConfig) proposalMessage(moniker string) string {
+	return fmt.Sprintf("%s missed %s in %s on %s", moniker, plural(cc.alertSettings().ProposalMissed, "block proposal"), plural(cc.alertSettings().ProposalMinutes, "minute"), cc.ChainId)
+}
+
+func (cc *ChainConfig) jailRiskMessage(moniker string) string {
+	return fmt.Sprintf("%s has used %d%% of the misses allowed before jailing on %s", moniker, cc.alertSettings().JailRiskPercent, cc.ChainId)
+}
+
+func (cc *ChainConfig) jailSoonMessage(moniker string) string {
+	return fmt.Sprintf("%s will be jailed in under %s on %s if it keeps missing blocks", moniker, plural(cc.alertSettings().JailRiskMinutes, "minute"), cc.ChainId)
 }
 
 // clearOrphanedAlarms resolves alarms restored from the state file that would never clear on their own, because the
 // alert was disabled or a config change (thresholds, moniker etc.) changed the message.
 func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	expected := make(map[string]bool)
-	if cc.Alerts.ConsecutiveAlerts {
-		expected[fmt.Sprintf("%s has missed %d blocks on %s", valInfo.Moniker, cc.Alerts.ConsecutiveMissed, cc.ChainId)] = true
+	if cc.alertSettings().ProposalAlerts {
+		expected[cc.proposalMessage(valInfo.Moniker)] = true
 	}
-	if cc.Alerts.PercentageAlerts {
-		expected[fmt.Sprintf("%s has missed > %d%% of the slashing window's blocks on %s", valInfo.Moniker, cc.Alerts.Window, cc.ChainId)] = true
+	if cc.alertSettings().StalledAlerts {
+		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled)] = true
 	}
-	if cc.Alerts.StalledAlerts {
-		expected[fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.Alerts.Stalled)] = true
-	}
-	if cc.Alerts.AlertIfNoServers {
+	if cc.alertSettings().AlertIfNoServers {
 		expected[fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId)] = true
 	}
 	for _, node := range cc.Nodes {
 		if node.AlertIfDown {
-			expected[fmt.Sprintf("Severity: %s\nRPC node %s has been down for > %d minutes on %s", td.NodeDownSeverity, node.Url, td.NodeDownMin, cc.ChainId)] = true
+			expected[nodeDownMessage(node.Url, cc.ChainId)] = true
+		}
+	}
+	if cc.alertSettings().FibreAlerts && cc.alertSettings().FibreEndorsementAlert {
+		expected[fibreEndorsementPrefix+cc.ChainId] = true
+	}
+	if cc.alertSettings().FibreAlerts && td.FibreMetrics.Listen != "" {
+		for _, kind := range cc.fibreMetricsKindsOn() {
+			expected[cc.fibreMetricsMessage(kind)] = true
 		}
 	}
 
@@ -838,15 +1431,71 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 	for _, message := range restored {
 		var id string
 		switch {
-		case expected[message]:
+		case legacySigningAlarm(message):
+			id = td.alarmID(cc.name, message)
+			if id == "" {
+				id = jailAlarmID(valInfo, message)
+			}
+			td.resolveQuietly(cc.name, message, &id)
 			continue
-		case strings.Contains(message, " is no longer active: validator is "):
-			if cc.Alerts.AlertIfInactive {
-				continue // the inactive check picks these up, whatever the moniker was
+		case isJailAlarm(message):
+			continue // the staged alarm handles old and disabled alarms
+		case expected[fibreMetricsCurrentMessage(message)]:
+			continue
+		case strings.Contains(message, " is no longer active: validator is "), strings.Contains(message, " is no longer in the active set on "),
+			strings.Contains(message, " is jailed on "):
+			if cc.alertSettings().AlertIfInactive && strings.HasPrefix(message, valInfo.Moniker+" is ") && strings.Contains(message, " on "+cc.ChainId) {
+				continue // the inactive check picks these up
 			}
 			id = valInfo.Valcons + "jailed"
+		case strings.Contains(message, " is tombstoned on "):
+			if cc.alertSettings().AlertIfInactive && strings.Contains(message, valInfo.Moniker) && strings.Contains(message, " on "+cc.ChainId) {
+				continue
+			}
+			id = valInfo.Valcons + "tombstoned"
+		case strings.Contains(message, " can unjail on "):
+			if cc.alertSettings().AlertIfInactive && strings.Contains(message, valInfo.Moniker) && strings.Contains(message, " on "+cc.ChainId) {
+				continue
+			}
+			id = valInfo.Valcons + "unjail"
 		case strings.Contains(message, " of the slashing window's blocks on "):
 			id = valInfo.Valcons + "percent"
+		case strings.HasPrefix(message, "Proposal #"):
+			if cc.alertSettings().GovAlerts {
+				continue // the governance check works these out itself
+			}
+			id = govAlarmId(valInfo, message)
+		case strings.HasPrefix(message, "Upgrade ") && strings.Contains(message, " at height "):
+			if cc.alertSettings().UpgradeAlerts {
+				continue
+			}
+			id = upgradeAlarmId(valInfo, message)
+		case isSignalMessage(message):
+			if cc.alertSettings().UpgradeAlerts {
+				continue
+			}
+			id = signalAlarmId(valInfo, message)
+		case strings.HasPrefix(message, fibreEndorsementPrefix):
+			id = valInfo.Valcons + "fibreendorsement"
+		case isBridgeMessage(message):
+			if cc.alertSettings().BridgeAlerts {
+				continue
+			}
+			id = cc.bridgeAlarmID(message)
+		case isFibreMessage(message):
+			if cc.alertSettings().FibreAlerts {
+				continue
+			}
+			id = fibreAlarmId(valInfo, message)
+		case isFibreMetricsMessage(message):
+			// expected ones are skipped above, so this is off or its threshold changed
+			id = fibreMetricsAlarmId(valInfo, message)
+		case strings.Contains(message, " block proposal") && strings.Contains(message, " in "):
+			id = valInfo.Valcons + "proposal"
+		case strings.Contains(message, " of the misses allowed before jailing on "):
+			id = valInfo.Valcons + "jail"
+		case strings.Contains(message, " if it keeps missing blocks"):
+			id = valInfo.Valcons + "jailsoon"
 		case strings.Contains(message, " has missed ") && strings.Contains(message, " blocks on "):
 			id = valInfo.Valcons + "consecutive"
 		case strings.HasPrefix(message, "stalled: have not seen a new block"):
@@ -859,6 +1508,10 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			continue // no idea where this came from, it gets purged once it's stale
 		}
 		l("📂 clearing restored alarm that is no longer monitored -", message)
+		resolve(cc.name, message, orphanResolution(message))
+		if savedID := td.alarmID(cc.name, message); savedID != "" {
+			id = savedID
+		}
 		td.alert(cc.name, message, "info", true, &id)
 	}
 }

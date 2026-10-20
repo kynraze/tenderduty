@@ -7,7 +7,7 @@ test('every preset keeps text and status labels readable on all surfaces', () =>
         const theme = buildTheme(colors)
         assert.equal(theme.error, undefined, name)
         const backgrounds = ['base', 'panel', 'raised'].map(key => theme.tokens[key])
-        for (const key of ['text', 'muted', 'subtle', 'accent', 'good', 'warning', 'critical', 'precommit', 'prevote']) {
+        for (const key of ['text', 'muted', 'subtle', 'accent', 'good', 'proposed', 'warning', 'critical', 'precommit', 'prevote']) {
             for (const background of backgrounds) {
                 assert.ok(contrast(theme.tokens[key], background) >= 4.5, `${name}: ${key} on ${background}`)
             }

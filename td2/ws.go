@@ -18,7 +18,14 @@ import (
 const (
 	QueryNewBlock string = `tm.event='NewBlock'`
 	QueryVote     string = `tm.event='Vote'`
+	QueryNewRound string = `tm.event='NewRound'`
 )
+
+// subscription request IDs are indexes plus one.
+var subscriptions = []string{QueryNewBlock, QueryVote, QueryNewRound}
+
+// roundsId is optional; refusing NewRound does not stop monitoring.
+const roundsId = 3
 
 // StatusType represents the various possible end states. Prevote and Precommit are special cases, where the node
 // monitoring for misses did see them, but the proposer did not include in the block.
@@ -30,6 +37,8 @@ const (
 	StatusPrecommit
 	StatusSigned
 	StatusProposed
+	// signed, but another validator proposed in our place
+	StatusMissedProposal
 )
 
 // StatusUpdate is passed over a channel from the websocket client indicating the current state, it is immediate in the
@@ -73,7 +82,7 @@ func (wsr WsReply) Value() []byte {
 // WsRun is our main entrypoint for the websocket listener. In the Run loop it will block, and if it exits force a
 // renegotiation for a new client.
 func (cc *ChainConfig) WsRun() {
-	ctx, cancel := context.WithCancel(td.context())
+	ctx, cancel := context.WithCancel(cc.context())
 	client := cc.clientSnapshot()
 	info, _ := cc.validatorState()
 	if client == nil || len(info.Conspub) != 20 {
@@ -105,16 +114,56 @@ func (cc *ChainConfig) WsRun() {
 	conn.SetReadLimit(16 << 20)
 	_ = conn.SetCompressionLevel(3)
 	results := make(chan StatusUpdate)
-	votes, blocks := make(chan *WsReply), make(chan *WsReply)
+	votes, blocks, rounds := make(chan *WsReply), make(chan *WsReply), make(chan *WsReply)
 	address := strings.ToUpper(hex.EncodeToString(info.Conspub))
 	start := func(work func()) {
 		workers.Add(1)
 		go func() { defer workers.Done(); work() }()
 	}
+	slashBlocks := make(chan *WsReply, 64)
+	start(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case reply := <-slashBlocks:
+				val, _ := cc.validatorState()
+				cc.observeSlash(ctx, client.Remote(), reply.Value(), val)
+			}
+		}
+	})
+	var endorsementBlocks chan *WsReply
+	if cc.alertSettings().FibreAlerts {
+		endorsementBlocks = make(chan *WsReply, 64)
+		start(func() {
+			watcher := &cc.fibreEndorsements
+			lastHeight := startHeight
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case reply := <-endorsementBlocks:
+					var block rawBlock
+					if json.Unmarshal(reply.Value(), &block) != nil {
+						continue
+					}
+					height := block.Block.Header.Height.val()
+					if height <= 0 || (height <= lastHeight && height+heightReset >= lastHeight) {
+						continue
+					}
+					if height+heightReset < lastHeight {
+						watcher.slots = nil
+					}
+					lastHeight = height
+					watcher.observe(ctx, cc, &block)
+				}
+			}
+		})
+	}
 	start(func() { cc.processResults(ctx, results) })
 	start(func() { handleVotes(ctx, votes, results, address) })
 	start(func() {
-		if err := handleBlocks(ctx, blocks, results, address); err != nil {
+		if err := handleBlocks(ctx, blocks, rounds, results, address); err != nil {
 			l(cc.ChainId, err)
 		}
 		cancel()
@@ -131,6 +180,10 @@ func (cc *ChainConfig) WsRun() {
 				continue
 			}
 			if reply.Error != nil {
+				if reply.Id == roundsId {
+					l(cc.ChainId, "NewRound subscription rejected, missed proposals are not tracked:", reply.Error.Message)
+					continue
+				}
 				l(cc.ChainId, "websocket subscription rejected:", reply.Error.Message)
 				cancel()
 				return
@@ -138,9 +191,23 @@ func (cc *ChainConfig) WsRun() {
 			var target chan *WsReply
 			switch reply.Type() {
 			case "tendermint/event/NewBlock":
+				select {
+				case slashBlocks <- reply:
+				case <-ctx.Done():
+					return
+				}
+				if endorsementBlocks != nil {
+					select {
+					case endorsementBlocks <- reply:
+					case <-ctx.Done():
+						return
+					}
+				}
 				target = blocks
 			case "tendermint/event/Vote":
 				target = votes
+			case "tendermint/event/NewRound":
+				target = rounds
 			default:
 				continue
 			}
@@ -151,7 +218,7 @@ func (cc *ChainConfig) WsRun() {
 			}
 		}
 	})
-	for id, query := range []string{QueryNewBlock, QueryVote} {
+	for id, query := range subscriptions {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		request := fmt.Sprintf(`{"jsonrpc":"2.0","method":"subscribe","id":%d,"params":{"query":"%s"}}`, id+1, query)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
@@ -159,7 +226,7 @@ func (cc *ChainConfig) WsRun() {
 			return
 		}
 	}
-	l(cc.ChainId, "watching for NewBlock and Vote events via", client.Remote())
+	l(cc.ChainId, "watching for NewBlock, Vote and NewRound events via", client.Remote())
 	<-ctx.Done()
 }
 
@@ -167,21 +234,34 @@ func (cc *ChainConfig) WsRun() {
 // lower height (testnet reset, genesis restart) instead of an endpoint that is a few blocks behind.
 const heightReset = 1000
 
+const maxProposalMisses = 1000
+
 type signingTracker struct {
 	votes     map[int64]StatusType
+	proposals map[int64]bool // heights proposed by another validator on our round-0 turn
 	finalized int64
 }
 
-func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
+// consume returns block status, missed-proposal state and finality.
+func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool, bool) {
 	if update.Final && update.Height > 0 && update.Height+heightReset < tracker.finalized {
 		l("⚠️ block height went from", tracker.finalized, "to", update.Height, "- assuming the chain was reset")
-		tracker.finalized, tracker.votes = 0, nil
+		tracker.finalized, tracker.votes, tracker.proposals = 0, nil, nil
 	}
 	if update.Height <= tracker.finalized {
-		return -1, false
+		return -1, false, false
 	}
 	if tracker.votes == nil {
 		tracker.votes = make(map[int64]StatusType)
+	}
+	if tracker.proposals == nil {
+		tracker.proposals = make(map[int64]bool)
+	}
+	if !update.Final && update.Status == StatusMissedProposal {
+		if len(tracker.proposals) < 64 {
+			tracker.proposals[update.Height] = true
+		}
+		return -1, false, false
 	}
 	if !update.Final {
 		// Bound vote history when an endpoint sends votes without finalized blocks.
@@ -190,14 +270,18 @@ func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
 				tracker.votes[update.Height] = update.Status
 			}
 		}
-		return -1, false
+		return -1, false, false
 	}
-	status, vote := update.Status, tracker.votes[update.Height]
+	status, vote, missedProposal := update.Status, tracker.votes[update.Height], tracker.proposals[update.Height]
 	if status == StatusSigned && vote == StatusProposed {
 		status = StatusProposed
 	}
 	if status == Statusmissed && vote <= StatusPrecommit && vote > status {
 		status = vote
+	}
+	// a missed signature is worse, keep showing that
+	if status == StatusSigned && missedProposal {
+		status = StatusMissedProposal
 	}
 	tracker.finalized = update.Height
 	for height := range tracker.votes {
@@ -205,25 +289,31 @@ func (tracker *signingTracker) consume(update StatusUpdate) (StatusType, bool) {
 			delete(tracker.votes, height)
 		}
 	}
-	return status, true
+	for height := range tracker.proposals {
+		if height <= tracker.finalized {
+			delete(tracker.proposals, height)
+		}
+	}
+	return status, missedProposal, true
 }
 
 func (cc *ChainConfig) processResults(ctx context.Context, results <-chan StatusUpdate) {
 	cc.stateMux.RLock()
 	tracker := signingTracker{finalized: cc.lastBlockNum - 1}
 	cc.stateMux.RUnlock()
+	backfilled := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case update := <-results:
-			status, final := tracker.consume(update)
+			status, missedProposal, final := tracker.consume(update)
 			if !final {
 				continue
 			}
 			info, _ := cc.validatorState()
 			if !info.Bonded {
-				status = -1
+				status, missedProposal = -1, false
 			}
 			cc.stateMux.Lock()
 			previousTime, previousHeight := cc.lastBlockTime, cc.lastBlockNum
@@ -237,8 +327,17 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 					cc.blocksResults = append([]int{-1}, cc.blocksResults[:len(cc.blocksResults)-1]...)
 				}
 			}
+			// average consecutive blocks only to exclude gaps in monitoring
+			if update.HeadHeight == previousHeight+1 && !previousTime.IsZero() {
+				if elapsed := time.Since(previousTime); cc.blockTime == 0 {
+					cc.blockTime = elapsed
+				} else {
+					cc.blockTime = (cc.blockTime*9 + elapsed) / 10
+				}
+			}
 			cc.lastBlockNum, cc.lastBlockTime = update.HeadHeight, time.Now()
 			cc.observedBlock = true
+			cc.reportWatchingLocked(time.Now())
 			cc.monitoring, cc.monitoringSince = true, time.Now()
 			cc.blocksResults = append([]int{int(status)}, cc.blocksResults[:len(cc.blocksResults)-1]...)
 			switch status {
@@ -251,7 +350,7 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 				if status == StatusPrecommit {
 					cc.statPrecommitMiss++
 				}
-			case StatusSigned, StatusProposed:
+			case StatusSigned, StatusProposed, StatusMissedProposal:
 				cc.statTotalSigns++
 				cc.statConsecutiveMiss = 0
 				if status == StatusProposed {
@@ -260,10 +359,33 @@ func (cc *ChainConfig) processResults(ctx context.Context, results <-chan Status
 			default:
 				cc.statConsecutiveMiss = 0
 			}
-			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss}
+			if missedProposal {
+				cc.statProposalMiss++
+				cc.proposalMisses = append(cc.proposalMisses, time.Now())
+				if len(cc.proposalMisses) > maxProposalMisses {
+					cc.proposalMisses = cc.proposalMisses[len(cc.proposalMisses)-maxProposalMisses:]
+				}
+			}
+			td.recordReportBlock(cc.name, time.Now(), status, missedProposal)
+			counters := map[metricType]float64{metricSigned: cc.statTotalSigns, metricProposed: cc.statTotalProps, metricMissed: cc.statTotalMiss, metricPrevote: cc.statPrevoteMiss, metricPrecommit: cc.statPrecommitMiss, metricConsecutive: cc.statConsecutiveMiss, metricMissedProposals: cc.statProposalMiss}
 			cc.stateMux.Unlock()
-			if status >= 0 && status < StatusSigned {
+			switch status {
+			case StatusPrecommit:
+				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId+": late precommit")
+			case StatusPrevote:
+				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId+": prevote only")
+			case Statusmissed:
 				l(info.Moniker, "missed block", update.Height, "on", cc.ChainId)
+			}
+			if missedProposal {
+				l(info.Moniker, "missed proposing block", update.Height, "on", cc.ChainId)
+			}
+			// backfill missing heights on connect
+			if client := cc.clientSnapshot(); !backfilled && client != nil {
+				backfilled = true
+				heights := cc.emptyHeights()
+				cc.workers.Add(1)
+				td.startWorker(func() { defer cc.workers.Done(); cc.backfill(ctx, client.Remote(), heights) })
 			}
 			if td.EnableDash {
 				td.sendUpdate(cc.dashboardStatus())
@@ -296,6 +418,9 @@ type signature struct {
 // rawBlock is a trimmed down version of the block subscription result, it contains only what we need.
 type rawBlock struct {
 	Block struct {
+		Data *struct {
+			Txs json.RawMessage `json:"txs"`
+		} `json:"data"`
 		Header struct {
 			Height          stringInt64 `json:"height"`
 			ProposerAddress string      `json:"proposer_address"`
@@ -324,18 +449,40 @@ func (rb rawBlock) find(val string) bool {
 	return false
 }
 
+type rawRound struct {
+	Height   stringInt64     `json:"height"`
+	Round    json.RawMessage `json:"round"` // a number, but some versions send a string
+	Proposer struct {
+		Address string `json:"address"`
+	} `json:"proposer"`
+}
+
+func (r rawRound) first() bool {
+	return strings.Trim(string(r.Round), `"`) == "0"
+}
+
 // handleBlocks consumes the channel for new blocks and when it sees one sends a status update. It's also
 // responsible for stalled chain detection and will shutdown the client if there are no blocks for a minute.
-func handleBlocks(ctx context.Context, blocks chan *WsReply, results chan StatusUpdate, address string) error {
+// Count a missed proposal when the round-0 proposer did not make the block.
+func handleBlocks(ctx context.Context, blocks, rounds chan *WsReply, results chan StatusUpdate, address string) error {
 	live := time.NewTicker(time.Minute)
 	defer live.Stop()
 	lastBlock := time.Now()
+	ourTurn := make(map[int64]bool)
 	for {
 		select {
 		case <-live.C:
 			// no block for a full minute likely means we have either a dead chain, or a dead client.
 			if lastBlock.Before(time.Now().Add(-time.Minute)) {
 				return errors.New("websocket idle for 1 minute, exiting")
+			}
+		case reply := <-rounds:
+			r := &rawRound{}
+			if json.Unmarshal(reply.Value(), r) != nil {
+				continue
+			}
+			if r.first() && r.Proposer.Address == address && r.Height.val() > 0 && len(ourTurn) < 64 {
+				ourTurn[r.Height.val()] = true
 			}
 		case block := <-blocks:
 			b := &rawBlock{}
@@ -359,6 +506,17 @@ func handleBlocks(ctx context.Context, blocks chan *WsReply, results chan Status
 				case results <- StatusUpdate{Height: upd.HeadHeight, Status: StatusProposed}:
 				case <-ctx.Done():
 					return nil
+				}
+			} else if ourTurn[upd.HeadHeight] {
+				select {
+				case results <- StatusUpdate{Height: upd.HeadHeight, Status: StatusMissedProposal}:
+				case <-ctx.Done():
+					return nil
+				}
+			}
+			for height := range ourTurn {
+				if height <= upd.HeadHeight {
+					delete(ourTurn, height)
 				}
 			}
 			if b.find(address) {

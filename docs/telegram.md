@@ -1,31 +1,53 @@
-Setting up the alerts to be shown on Telegram consists of a couple of steps:
-1. Create a channel on Telegram
-2. Create a bot with @botfather
-3. Add the bot to the newly created channel and make it an admin
-4. Add the Telegram channel to the config.yml on your TenderDuty configuration
+# Telegram configuration
 
-Let's do it step by step:<br />
-#### 1. Create a channel on Telegram<br />
-Adding a channel goes best by following the following guide:<br />
-https://www.alphr.com/telegram-how-to-create-supergroup/<br />
-NOTE: you don't need to add people to the group at this point in time.
+1. Create a channel or group on Telegram, or use a private chat with the bot. You can add people later.
+2. Create a bot with [@BotFather](https://core.telegram.org/bots/features#botfather) (`/newbot`). Paste its token into `read -s BOT_TOKEN`, which keeps it out of shell history.
+3. Add the bot to the chat as an admin so it can post.
+4. Post any message in the chat, then get its id (before tenderduty runs with `commands: yes`, which reads the same updates):
 
-#### 2. Create a bot with @botfather<br />
-For the Telegram signals you need to create a bot. Use the following guide to do so:<br />
-https://riptutorial.com/telegram-bot/example/25075/create-a-bot-with-the-botfather<br />
-NOTE: save the API key from this bot, you need it later.<br />
+   ```shell
+   curl -s "https://api.telegram.org/bot$BOT_TOKEN/getUpdates" | grep -o '"chat":{"id":-\?[0-9]*'
+   ```
 
-#### 3. Add the bot to the newly created channel and make it an admin<br />
-To add the bot to the Telegram group you created in the first step follow this guide:<br />
-https://www.alphr.com/add-bot-telegram/
+   Channel and supergroup ids start with `-100`, like `-1001068773197`. A private chat's id is your user id.
 
-And to allow the bot to post messages you need to make it an admin, follow this guide to do so:<br />
-https://www.alphr.com/add-admin-telegram/
+Then:
 
-#### 4. Add the Telegram channel to the config.yml on your TenderDuty configuration<br />
-Last but not least, you need to link the bot and the channel to your TenderDuty configuration. To do so, you need to retrieve the channel ID from your newly created group:<br />
-https://stackoverflow.com/questions/45414021/get-telegram-channel-group-id<br />
-NOTE: Supergroup and Channel will looks like 1068773197, which is -1001068773197 for bots (with -100 prefix).
+```shell
+echo "$BOT_TOKEN" | tenderduty config set telegram.api_key=-
+tenderduty config set telegram.enabled=yes telegram.channel=-1001068773197 telegram.commands=yes
+```
 
-You can add the API key and channel ID in the generic part at the start of the config.yml file or set it up per chain.<br />
-https://imgur.com/1JHs581
+Or in `config.yml`:
+
+```yaml
+telegram:
+  enabled: yes
+  api_key: "your-bot-token"
+  channel: "-1001068773197"
+  commands: yes
+  # admins: [123456789]   # group only: user ids allowed to send commands
+```
+
+Set these in the shared part of `config.yml`, or per chain under `alerts.telegram`.
+
+## Commands
+
+With `commands: yes`, tenderduty answers these in the configured chat:
+
+* `/status` gives a line per chain, problems first.
+
+  ![/status in Telegram](img/telegram-status.png)
+
+* `/status <chain>` gives one chain in full: height, misses and how many are left before jailing, voting power and rank, RPC nodes and active alerts. Nodes with `alert_if_down` show their celestia-app version; `hide_logs` hides the node lines. The chain is its name or chain id. It also shows [Fibre](fibre.md#status-and-the-dashboard) and the [bridge](bridge.md#status-and-the-dashboard) when set.
+
+  ![/status for one chain with bridge and Fibre](img/telegram-status-chain.png)
+
+* `/report` and `/report weekly` show the current daily or weekly [report](config.md#reports).
+* `/mentionme` pings you in every alert sent to this chat. `/mentionme off` stops these pings. The preference is saved with the state.
+
+Who can use them:
+
+- Tenderduty listens only to the chat in `channel`: a channel, a group, or a private chat with the bot (your user id).
+- In a channel or private chat, anyone who can post. In a group, only the user ids in `admins`. To find yours, send `/status` once: the log shows `/status from user id <id> ignored, not in telegram.admins`.
+- Use a bot only for tenderduty: Telegram lets one program read a bot's messages, so a shared bot loses commands.

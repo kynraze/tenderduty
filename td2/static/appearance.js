@@ -57,6 +57,8 @@
                 base: background, panel, raised, accent, text, muted, subtle: muted,
                 line: blend(panel, text, dark ? 0.14 : 0.16), focus: accent,
                 good: signal('#63d6c4', '#0b766f', dark ? '#b4ffe2' : '#002d25'),
+                signed: blend(panel, signal('#63d6c4', '#0b766f', dark ? '#b4ffe2' : '#002d25'), dark ? 0.3 : 0.35),
+                proposed: signal('#a9e06b', '#3d7a12', dark ? '#dcffb5' : '#102800'),
                 warning: signal('#f1b663', '#955800', dark ? '#ffe1a1' : '#301700'),
                 critical: signal('#f27c76', '#b33b44', dark ? '#ffb6b6' : '#300009'),
                 precommit: signal('#83bee4', '#2c668b', dark ? '#c4e9ff' : '#001c30'),

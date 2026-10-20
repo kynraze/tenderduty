@@ -1,0 +1,24 @@
+{
+  "block": {
+    "header": {"height": "10584954"},
+    "evidence": {"evidence": [{
+      "type": "tendermint/DuplicateVoteEvidence",
+      "value": {
+        "vote_a": {"height": "10584953", "round": 0, "type": 1, "validator_address": "11F825671446CDF9BDD0BA88DD512FF050759D4D", "block_id": {"hash": "CC1931BA"}},
+        "vote_b": {"height": "10584953", "round": 0, "type": 1, "validator_address": "11F825671446CDF9BDD0BA88DD512FF050759D4D", "block_id": {"hash": "FB2522A2B1D81E1863118F7BA8D46F46BF6795D08509DD0CEA4E7E7F19FEEF27"}},
+        "ValidatorPower": "1797366",
+        "TotalVotingPower": "62554648",
+        "Timestamp": "2026-09-30T00:53:19.082857529Z"
+      }
+    }]}
+  },
+  "finalize_block_events": [
+    {"type": "slash", "attributes": [
+      {"key": "address", "value": "atonevalcons1z8uz2ec5gmxln0wsh2yd65f07pg8t82dx4uumc"},
+      {"key": "power", "value": "1797366"},
+      {"key": "reason", "value": "double_sign"},
+      {"key": "burned_coins", "value": "89868300000"}
+    ]},
+    {"type": "slash", "attributes": [{"key": "jailed", "value": "atonevalcons1z8uz2ec5gmxln0wsh2yd65f07pg8t82dx4uumc"}]}
+  ]
+}
