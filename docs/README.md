@@ -54,11 +54,11 @@ With the dashboard on, `/health` reports that the process is alive and `/ready` 
 ## System Requirements:
 
 * CPU: minimum of 1 core
-* Memory: 128MB minimum, 256MB strongly recommended for containers.
+* Memory: about 100MB for 16 chains with Fibre and a bridge; give it 256MB.
 * Bandwidth: 
   * Inbound: ~500KiB/s per-validator. Ex: monitoring 16 validators consumes 8MiB/s inbound.
   * Outbound: negligible, ~5-10 KiB/s per validator.
-* Storage: ~60MB for the Docker container, ~35MB for binary alone. The cache file should be only a few KB.
+* Storage: ~60MB for the Docker container, ~35MB for binary alone. The state file is a few MB.
 
 ## How does it work?
 
