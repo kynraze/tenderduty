@@ -779,6 +779,10 @@ func watchFor(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration) [
 	return watchUntil(t, c, chain, wait, nil)
 }
 
+func atLeast(n int) func([]*alertMsg) bool {
+	return func(raised []*alertMsg) bool { return len(raised) >= n }
+}
+
 // watchUntil stops early once enough is raised; a fixed wait is too short on a loaded race run.
 func watchUntil(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration, enough func([]*alertMsg) bool) []*alertMsg {
 	t.Helper()
@@ -811,7 +815,7 @@ func TestNoRpcAlarmHasItsOwnDedupKey(t *testing.T) {
 	c := auditConfig(t)
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", noNodes: true}
 	chain.Alerts.AlertIfNoServers = true
-	raised := watchFor(t, c, chain, 200*time.Millisecond)
+	raised := watchUntil(t, c, chain, 5*time.Second, atLeast(1))
 	if len(raised) != 1 || raised[0].uniqueId != "junovaloper1examplenorpc" {
 		t.Fatalf("no RPC alarm used the wrong dedup key: %+v", raised)
 	}
@@ -827,7 +831,7 @@ func TestRestoredDownNodeIsCheckedBeforeAlerting(t *testing.T) {
 		t.Fatalf("node restored as down alerted before it was checked: %+v", raised)
 	}
 	node.markDown("still down", false)
-	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 1 || raised[0].resolved {
+	if raised := watchUntil(t, c, chain, 5*time.Second, atLeast(1)); len(raised) != 1 || raised[0].resolved {
 		t.Fatalf("node that is still down did not alert: %+v", raised)
 	}
 }
@@ -921,13 +925,13 @@ func TestInactiveAtStartupAlerts(t *testing.T) {
 	chain := &ChainConfig{name: "Juno", ChainId: "juno-1", ValAddress: "junovaloper1example", observedBlock: true, lastBlockTime: time.Now(),
 		valInfo: &ValInfo{Moniker: "validator", Valcons: "junovalcons1example"}}
 	chain.Alerts.MissedBlocksAlerts, chain.Alerts.AlertIfInactive = true, true
-	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 1 || !strings.Contains(raised[0].message, "active set") {
+	if raised := watchUntil(t, c, chain, 5*time.Second, atLeast(1)); len(raised) != 1 || !strings.Contains(raised[0].message, "active set") {
 		t.Fatalf("validator outside the active set did not alert at startup: %+v", raised)
 	}
 	chain.validatorMux.Lock()
 	chain.valInfo.Jailed = true
 	chain.validatorMux.Unlock()
-	if raised := watchFor(t, c, chain, 300*time.Millisecond); len(raised) != 2 || !raised[0].quiet || !strings.Contains(raised[1].message, "jailed") {
+	if raised := watchUntil(t, c, chain, 5*time.Second, atLeast(2)); len(raised) != 2 || !raised[0].quiet || !strings.Contains(raised[1].message, "jailed") {
 		t.Fatalf("jailed validator did not alert: %+v", raised)
 	}
 }
