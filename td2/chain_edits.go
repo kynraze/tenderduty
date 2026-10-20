@@ -73,7 +73,7 @@ func setChains(options ChainCommandOptions, args []string, all bool, output io.W
 		}
 		candidate, changes, err := applyChainSettingsDiff(data, settings)
 		if err != nil {
-			if strings.Contains(err.Error(), "unknown setting") {
+			if strings.Contains(err.Error(), "unknown setting") && !strings.Contains(err.Error(), "; see ") {
 				err = fmt.Errorf("%w Every setting: tenderduty chain show %s", err, name)
 			}
 			return false, err
@@ -133,11 +133,11 @@ func renameChainFile(options ChainCommandOptions, old, next string, output io.Wr
 		return err
 	}
 	if badChainFileName(strings.TrimSpace(next)) {
-		return errBadChainName
+		return fmt.Errorf("the new name must be a file name without periods, path separators or reserved punctuation")
 	}
 	next = chainFileName(next)
 	if badChainFileName(next) {
-		return errBadChainName
+		return fmt.Errorf("the new name must be a file name without periods, path separators or reserved punctuation")
 	}
 	matches, err := matchingChainNames(options.Directory, next)
 	if err != nil {
@@ -149,6 +149,7 @@ func renameChainFile(options ChainCommandOptions, old, next string, output io.Wr
 		}
 	}
 	if old == next {
+		fmt.Fprintf(output, "%s is already named %s\n", old, next)
 		return nil
 	}
 	target := filepath.Join(options.Directory, next+".yml")

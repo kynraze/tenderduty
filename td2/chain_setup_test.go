@@ -136,15 +136,20 @@ func TestChainBridgeSetup(t *testing.T) {
 }
 
 func TestChainFibreSetup(t *testing.T) {
-	for _, mode := range []string{"enable", "missing-listen", "missing-token", "competing", "instance", "off"} {
+	for _, mode := range []string{"enable", "missing-listen", "missing-token", "competing", "instance", "off", "osmosis"} {
 		t.Run(mode, func(t *testing.T) {
 			options, filename, original := chainCommandFixture(t)
-			config := "fibre_metrics:\n  listen: 127.0.0.1:4318\n  token: metrics-secret\n"
+			if mode == "osmosis" {
+				if err := os.WriteFile(filename, bytes.ReplaceAll(original, []byte("celestiavaloper1test"), []byte("osmovaloper1test")), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config := "otel_metrics:\n  listen: 127.0.0.1:4318\n  token: metrics-secret\n"
 			if mode == "missing-listen" {
 				config = "{}\n"
 			}
 			if mode == "missing-token" {
-				config = "fibre_metrics:\n  listen: 10.0.0.1:4318\n"
+				config = "otel_metrics:\n  listen: 10.0.0.1:4318\n"
 			}
 			if mode == "competing" {
 				config += "alert_defaults:\n  fibre_enabled: yes\n"
@@ -199,6 +204,9 @@ func TestChainFibreSetup(t *testing.T) {
 			if !strings.Contains(output.String(), `OTEL_RESOURCE_ATTRIBUTES="service.namespace=chain-1"`) {
 				t.Fatalf("missing namespace: %s", &output)
 			}
+			if strings.Contains(output.String(), "doesn't look like Celestia") != (mode == "osmosis") {
+				t.Fatalf("Celestia warning: %s", &output)
+			}
 			if strings.Contains(output.String(), "metrics-secret") {
 				t.Fatalf("secret leaked: %s", &output)
 			}
@@ -222,12 +230,13 @@ func TestMetricsEndpoint(t *testing.T) {
 
 func TestBridgeSetupWarnings(t *testing.T) {
 	for _, tc := range []struct {
-		name, codespace, threshold         string
-		code                               uint32
-		lag                                int64
-		warnChain, warnLag, offline, force bool
+		name, codespace, threshold, valoper string
+		code                                uint32
+		lag                                 int64
+		warnChain, warnLag, offline, force  bool
 	}{
 		{name: "celestia", lag: 4},
+		{name: "osmosis-node-down", offline: true, lag: 4, warnChain: true, valoper: "osmovaloper1test"},
 		{name: "other-chain", codespace: "sdk", code: 6, lag: 4, warnChain: true},
 		{name: "uncertain", codespace: "sdk", code: 2, lag: 4},
 		{name: "unreachable", offline: true, lag: 4},
@@ -263,6 +272,9 @@ func TestBridgeSetupWarnings(t *testing.T) {
 				node.Close()
 			}
 			original = bytes.ReplaceAll(original, []byte("https://rpc.example"), []byte(node.URL))
+			if tc.valoper != "" {
+				original = bytes.ReplaceAll(original, []byte("celestiavaloper1test"), []byte(tc.valoper))
+			}
 			if err := os.WriteFile(filename, original, 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -306,7 +318,7 @@ func TestBridgeSetupWarnings(t *testing.T) {
 			if tc.warnLag && !strings.Contains(text, "sampling is 1,234 blocks behind head;") {
 				t.Fatal(text)
 			}
-			if !tc.offline && queries != 1 {
+			if !tc.offline && tc.valoper == "" && queries != 1 {
 				t.Fatalf("queries %d", queries)
 			}
 			data, err := os.ReadFile(filename)

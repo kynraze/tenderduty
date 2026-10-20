@@ -61,6 +61,7 @@ Remote config (see docs/remote.md):
   -password string           password for -encrypt/-decrypt, or env PASSWORD, prompts if unset
 
 A relative -f, -cc or -state is relative to the current directory, not to -home.
+With -home /etc/tenderduty, state defaults to /var/lib/tenderduty/.tenderduty-state.json.
 
 Use "tenderduty [command] -h" for more information about a command.
 `
@@ -93,7 +94,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// usage is hand-written; flags only parse
 	flags := flag.NewFlagSet("tenderduty", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&home, "home", "", "directory for config.yml, chains.d and the state file, can also be set with the ENV var 'TENDERDUTY_HOME'")
+	flags.StringVar(&home, "home", "", "directory for config.yml, chains.d and state (in /var/lib/tenderduty for /etc/tenderduty), can also be set with the ENV var 'TENDERDUTY_HOME'")
 	flags.StringVar(&configFile, "f", "", "configuration file to use, can also be set with the ENV var 'CONFIG'")
 	flags.StringVar(&encryptedFile, "encrypted-config", "config.yml.asc", "encrypted config file, only valid with -encrypt or -decrypt flag")
 	flags.StringVar(&password, "password", "", "password to use for encrypting/decrypting the config, if unset will prompt, also can use ENV var 'PASSWORD'")
@@ -150,6 +151,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	if encryptConfig || decryptConfig {
 		if password == "" {
+			if !term.IsTerminal(int(syscall.Stdin)) {
+				log.Println("no terminal to ask for the password; pass -password or env PASSWORD")
+				return 1
+			}
 			fmt.Fprint(stdout, "Please enter the encryption password: ")
 			pass, err := term.ReadPassword(int(syscall.Stdin))
 			if err != nil {

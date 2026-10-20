@@ -36,6 +36,8 @@ Global Flags:
   -f string                  config file, or env CONFIG (default <home>/config.yml)
   -cc string                 chain config directory (default <home>/chains.d)
   -state string              state file (default <home>/.tenderduty-state.json)
+
+With -home /etc/tenderduty, state defaults to /var/lib/tenderduty/.tenderduty-state.json.
 `
 
 const chainHelpText = `Add, change, remove or list the chain files in chains.d.
@@ -75,7 +77,7 @@ Flags:
   --token-file string        bridge auth token file (celestia bridge auth read)
   --alert yes|no             bridge alerts (alerts.bridge_enabled)
   --force                    save even if the check fails
-  --endpoint string          tenderduty URL for the printed --metrics.endpoint, e.g. behind NAT (default: from fibre_metrics.listen)
+  --endpoint string          tenderduty URL for the printed --metrics.endpoint, e.g. behind NAT (default: from otel_metrics.listen)
   -h, -help                  help for bridge
 ` + GlobalFlagsHelp,
 	"fibre": `Turn on Fibre alerts for a chain and print the fibre start flags.
@@ -91,7 +93,7 @@ Examples:
 Flags:
   --instance string          Fibre instance name (alerts.fibre_instance)
   --off                      turn Fibre alerts off
-  --endpoint string          tenderduty URL for the printed --otel-endpoint, e.g. behind NAT (default: from fibre_metrics.listen)
+  --endpoint string          tenderduty URL for the printed --otel-endpoint, e.g. behind NAT (default: from otel_metrics.listen)
   -h, -help                  help for fibre
 ` + GlobalFlagsHelp,
 	"show": `Show a chain, its validators, nodes and effective settings with their sources.

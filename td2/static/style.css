@@ -295,7 +295,6 @@ dialog::backdrop { background: #000a; }
 .app { grid-template-columns: 220px minmax(0, 1fr); max-width: none; }
 .side { padding: 26px 14px; gap: 0; background: var(--base); border-color: color-mix(in srgb, var(--line) 60%, transparent); }
 .brand { display: block; padding: 0 12px 26px; font-size: 19px; font-weight: 700; letter-spacing: -.03em; }
-.brand span { color: var(--accent); }
 .nav a { display: flex; align-items: center; gap: 10px; border-radius: 8px; }
 .nav a svg { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; }
 .nav a.active { box-shadow: none; }
@@ -418,3 +417,15 @@ dialog::backdrop { background: #000a; }
 @container (width < 840px) { .fibre-endorsements { grid-template-columns: minmax(0, 1fr); } .fibre-endorsements > .fibre-missed { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
 @media (max-width: 899px) { .fibre-endorsements { grid-template-columns: minmax(0, 1fr); } .fibre-endorsements > .fibre-missed { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
 @media (max-width: 550px) { .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary-cell { padding: 14px 12px; } .summary-meta { padding: 11px 12px; } .history-top .fibre-controls { margin-left: 0; } .history-chain { max-width: 100%; } }
+
+#detail-heading, #detail-subtitle { overflow-wrap: anywhere; }
+#detail-vote { display: inline-block; margin-top: 12px; }
+#detail-vote[hidden] { display: none; }
+#detail-proposal section + section { margin-top: 24px; }
+.proposal-summary { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
+.proposal-tally-bar { display: flex; height: 16px; overflow: hidden; border-radius: 4px; background: var(--line); }
+.proposal-tally-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; font-size: 12px; }
+.proposal-tally-legend span { display: inline-flex; flex-direction: row-reverse; align-items: center; gap: 8px; }
+.proposal-tally-legend i { width: 8px; height: 8px; border-radius: 50%; }
+#chain-dialog .dialog-head > div { min-width: 0; }
+#detail-close { flex-shrink: 0; align-self: flex-start; }

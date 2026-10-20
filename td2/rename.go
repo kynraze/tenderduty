@@ -58,6 +58,9 @@ func (c *Config) renameChainState(old, next string) {
 	moveChainPrefix(alarms.SentTgAlarms, old, next)
 	moveChainPrefix(alarms.SentDiAlarms, old, next)
 	moveChainPrefix(alarms.SentSlkAlarms, old, next)
+	moveChainPrefix(alarms.SentGtAlarms, old, next)
+	moveChainPrefix(alarms.Escalated, old, next)
+	moveChainPrefix(alarms.EscalationsSent, old, next)
 	for _, recovery := range alarms.PendingRecoveries {
 		if recovery.Chain == old {
 			recovery.Chain = next

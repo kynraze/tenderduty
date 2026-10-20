@@ -92,7 +92,8 @@ func (cc *ChainConfig) bridgeFacts(now time.Time) (title string, facts []bridgeF
 		return
 	case !s.Up:
 		down := "no, since " + s.DownSince.In(alertLocation()).Format("15:04 MST")
-		if s.Reason != "" {
+		// the reason can name the bridge host
+		if s.Reason != "" && !td.HideLogs {
 			down += " (" + s.Reason + ")"
 		}
 		add("\U0001f4e1", "Reachable", down, "critical")

@@ -773,6 +773,12 @@ func TestRestoredBlockTimeDoesNotRaiseStallAlarm(t *testing.T) {
 // watchFor runs watch on the chain and returns the alerts it raised in that time.
 func watchFor(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration) []*alertMsg {
 	t.Helper()
+	return watchUntil(t, c, chain, wait, nil)
+}
+
+// watchUntil stops early once enough is raised; a fixed wait is too short on a loaded race run.
+func watchUntil(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration, enough func([]*alertMsg) bool) []*alertMsg {
+	t.Helper()
 	fastWatch(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
@@ -785,6 +791,11 @@ func watchFor(t *testing.T, c *Config, chain *ChainConfig, wait time.Duration) [
 		select {
 		case alert := <-c.alertChan:
 			raised = append(raised, alert)
+			if enough != nil && enough(raised) {
+				cancel()
+				<-done
+				return raised
+			}
 		case <-deadline:
 			cancel()
 			<-done
@@ -842,12 +853,13 @@ func TestRestoredAlarmsNoLongerMonitoredAreCleared(t *testing.T) {
 	for message := range orphaned {
 		alarms.AllAlarms["Juno"][message] = time.Now()
 	}
-	raised := watchFor(t, c, chain, 100*time.Millisecond)
-	for _, alert := range raised {
+	watchUntil(t, c, chain, 2*time.Second, func(raised []*alertMsg) bool {
+		alert := raised[len(raised)-1]
 		if id, ok := orphaned[alert.message]; ok && alert.resolved && alert.uniqueId == id {
 			delete(orphaned, alert.message)
 		}
-	}
+		return len(orphaned) == 0
+	})
 	if len(orphaned) != 0 || alarms.getCount("Juno") != 0 {
 		t.Fatalf("restored alarms were not cleared: %v", orphaned)
 	}

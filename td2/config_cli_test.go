@@ -42,10 +42,12 @@ func TestConfigCLISet(t *testing.T) {
 	}
 	for _, tc := range []struct{ setting, want string }{
 		{"listen_prt=7", "did you mean listen_port"},
-		{"fibre_metrics.t=abc", "did you mean fibre_metrics.tls_cert or fibre_metrics.tls_key or fibre_metrics.token"},
+		{"otel_metrics.t=abc", "did you mean otel_metrics.tls_cert or otel_metrics.tls_key or otel_metrics.token"},
 		{"chains.X=foo", "tenderduty chain set"},
+		{"servers.rpc.example.com=RPC", "edit servers in config.yml"},
+		{"servers={}", "edit servers in config.yml"},
 		{"reports.include_testnets=maybe", "yes or no"},
-		{"fibre_metrics.listen=broken", "configuration is invalid"},
+		{"otel_metrics.listen=broken", "configuration is invalid"},
 		{"alert_defaults.telegram.min_severity=bad", "must be info"},
 	} {
 		before, _ := os.ReadFile(options.ConfigFile)
@@ -62,7 +64,7 @@ func TestConfigCLISet(t *testing.T) {
 	if !strings.Contains(string(data), "stdin-secret") || strings.Contains(output.String(), "stdin-secret") {
 		t.Fatalf("%s / %s", data, &output)
 	}
-	if err := run("set", "fibre_metrics.token=generate"); err != nil {
+	if err := run("set", "otel_metrics.token=generate"); err != nil {
 		t.Fatal(err)
 	}
 	_, token, _ := strings.Cut(output.String(), "copy it to Fibre/bridge now: ")
@@ -71,11 +73,73 @@ func TestConfigCLISet(t *testing.T) {
 	if err != nil || len(decoded) != 32 || strings.Count(output.String(), token) != 1 {
 		t.Fatalf("token: %s", &output)
 	}
-	if err := run("show", "fibre_metrics"); err != nil {
+	if err := run("show", "otel_metrics"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), token) || !strings.Contains(output.String(), "token: ***") || strings.Contains(output.String(), "telegram:") {
 		t.Fatalf("%s", &output)
+	}
+}
+
+func TestConfigCLISetListenHost(t *testing.T) {
+	for _, listen := range []string{"127.0.0.1:8888", "[::1]:8888"} {
+		t.Run(listen, func(t *testing.T) {
+			options, _, _ := chainCommandFixture(t)
+			original := "enable_dashboard: yes\nlisten_port: 8888 # dashboard\n"
+			if err := os.WriteFile(options.ConfigFile, []byte(original), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			if err := ConfigCommand(context.Background(), options, []string{"set", "listen_port=" + listen}, strings.NewReader(""), &output); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(options.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := &Config{}
+			if err := decodeConfig(data, c); err != nil || c.Listen != listen {
+				t.Fatalf("saved listen %q: %v, data %s", c.Listen, err, data)
+			}
+			if !strings.Contains(string(data), "# dashboard") || !strings.Contains(output.String(), "restart tenderduty to apply listen_port") {
+				t.Fatalf("data %s, output %s", data, &output)
+			}
+		})
+	}
+}
+
+func TestConfigCLISetWithoutChains(t *testing.T) {
+	dir := t.TempDir()
+	password := ""
+	options := ChainCommandOptions{ConfigFile: filepath.Join(dir, "config.yml"), Directory: filepath.Join(dir, "chains.d"), StateFile: filepath.Join(dir, "state.json"), Password: &password}
+	if err := os.Mkdir(options.Directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := "enable_dashboard: yes\nlisten_port: 8888\ntelegram:\n  enabled: no\n"
+	if err := os.WriteFile(options.ConfigFile, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := ConfigCommand(context.Background(), options, []string{"set", "telegram.enabled=yes"}, strings.NewReader(""), &output); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(options.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(before), "telegram:\n  enabled: yes\n") || !strings.Contains(output.String(), "telegram.enabled: no -> yes") {
+		t.Fatalf("data %s, output %s", before, &output)
+	}
+	err = ConfigCommand(context.Background(), options, []string{"set", "listen_port=abc"}, strings.NewReader(""), &output)
+	if err == nil || !strings.Contains(err.Error(), "dashboard port abc is invalid") {
+		t.Fatalf("invalid dashboard port: %v", err)
+	}
+	after, err := os.ReadFile(options.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("invalid edit changed config: %s", after)
 	}
 }
 
@@ -88,7 +152,7 @@ func TestConfigShow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(options.Directory, "Other.yml"), original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	config := "telegram:\n  api_key: do-not-show\nfibre_metrics:\n  token: hide-me\nalert_defaults:\n  fibre_enabled: yes\n"
+	config := "telegram:\n  api_key: do-not-show\notel_metrics:\n  token: hide-me\nalert_defaults:\n  fibre_enabled: yes\n"
 	if err := os.WriteFile(options.ConfigFile, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +172,7 @@ func TestConfigShow(t *testing.T) {
 	if err := ConfigCommand(context.Background(), options, []string{"show", "TeLeGrAm"}, strings.NewReader(""), &output); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "fibre_metrics:") {
+	if strings.Contains(output.String(), "otel_metrics:") {
 		t.Fatalf("%s", &output)
 	}
 	if err := ConfigCommand(context.Background(), options, []string{"show", "bogus"}, strings.NewReader(""), &output); err == nil || !strings.Contains(err.Error(), "sections:") {
@@ -147,7 +211,7 @@ func TestConfigCLIRefusalsAndHelp(t *testing.T) {
 
 func TestConfigShowRelativeKeysAndEmptyValues(t *testing.T) {
 	options, _, _ := chainCommandFixture(t)
-	config := "telegram:\n  enabled: yes\n  api_key: secret\n  admins: []\nfibre_metrics:\n  tls_cert: ''\nalert_defaults:\n  telegram:\n    api_key: ''\n"
+	config := "telegram:\n  enabled: yes\n  api_key: secret\n  admins: []\notel_metrics:\n  tls_cert: ''\nalert_defaults:\n  telegram:\n    api_key: ''\n"
 	if err := os.WriteFile(options.ConfigFile, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +220,7 @@ func TestConfigShowRelativeKeysAndEmptyValues(t *testing.T) {
 		want    []string
 	}{
 		{"telegram", []string{"  enabled: yes", "  api_key: ***", "  admins: -", "Change one: tenderduty config set telegram.enabled=no"}},
-		{"fibre_metrics", []string{"  tls_cert: -", "  token: -"}},
+		{"otel_metrics", []string{"  tls_cert: -", "  token: -"}},
 		{"alert_defaults", []string{"  telegram.api_key: -", "  telegram.enabled: -"}},
 		{"general", []string{"general:", "Change one: tenderduty config set "}},
 	} {

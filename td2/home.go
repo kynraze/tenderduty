@@ -43,6 +43,9 @@ func ResolveHome(home string) (string, error) {
 // ResolvePaths fills missing paths from home, the system layout or the working directory.
 // A given path is used as it is, so a relative one stays relative to the working directory.
 func ResolvePaths(home, configFile, directory, stateFile string) (string, string, string) {
+	if home != "" && filepath.Clean(home) == filepath.Dir(SystemConfigFile) && stateFile == "" {
+		stateFile = SystemStateFile
+	}
 	if runtime.GOOS != "windows" && home == "" && configFile == "" {
 		if _, err := os.Stat("config.yml"); os.IsNotExist(err) {
 			if _, err := os.Stat(SystemConfigFile); err == nil {

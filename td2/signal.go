@@ -463,7 +463,7 @@ func (cc *ChainConfig) signalResolution(message string, state signalState, monik
 			if cc.hasOwnNodes() {
 				return resolution{"✅", "All nodes ready", "all nodes ready"}, true
 			}
-			return resolution{"✅", "Node ready", signalBinaryDetail(state.BinaryVersion, signalMessageVersion(message))}, true
+			return resolution{"✅", "RPC node ready", signalBinaryDetail(state.BinaryVersion, signalMessageVersion(message))}, true
 		}
 		// cancelled only when a successful read shows the upgrade gone or moved
 		cc.stateMux.RLock()
@@ -533,10 +533,11 @@ func signalBinaryDetail(binary string, version uint64) string {
 		return ""
 	}
 	binary = strings.TrimPrefix(strings.TrimSpace(binary), "v")
+	// without an alert_if_down node this is whatever RPC tenderduty reads, not the validator
 	if signalBinaryReady(binary, version) {
-		return "node ready: celestia-app " + binary
+		return "RPC node ready: celestia-app " + binary + " · own node unknown (none with alert_if_down)"
 	}
-	return fmt.Sprintf("node runs celestia-app %s, version %d needs v%d or later", binary, version, version)
+	return fmt.Sprintf("RPC node runs celestia-app %s, version %d needs v%d or later", binary, version, version)
 }
 
 func signalUpgradeDetail(chain, message string) string {

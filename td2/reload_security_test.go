@@ -19,7 +19,7 @@ func TestReloadKeepsFibreTokenWhileTheListenerIsOpen(t *testing.T) {
 	filename, chains := filepath.Join(dir, "config.yml"), filepath.Join(dir, "chains.d")
 	write := func(fibre string) {
 		t.Helper()
-		config := "fibre_metrics:\n" + fibre + "chains:\n  Chain:\n    chain_id: chain-1\n    valoper_address: cosmosvaloper1test\n    nodes:\n      - url: http://localhost:26657\n        alert_if_down: yes\n"
+		config := "otel_metrics:\n" + fibre + "chains:\n  Chain:\n    chain_id: chain-1\n    valoper_address: cosmosvaloper1test\n    nodes:\n      - url: http://localhost:26657\n        alert_if_down: yes\n"
 		if err := os.WriteFile(filename, []byte(config), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestReloadKeepsFibreTokenWhileTheListenerIsOpen(t *testing.T) {
 	write("  listen: 127.0.0.1:4318\n")
 	err := c.reload(filename, chains, &password)
 	c.workers.Wait()
-	if err == nil || !strings.Contains(err.Error(), "Not reloaded: fibre_metrics.listen changes only on restart") {
+	if err == nil || !strings.Contains(err.Error(), "Not reloaded: otel_metrics.listen changes only on restart") {
 		t.Fatalf("a reload that drops the token was accepted: %v", err)
 	}
 	if c.liveSettings != nil || c.settings().FibreMetrics.Token != "secret" || c.Chains["Chain"] != chain {
@@ -103,7 +103,7 @@ func TestReloadMayDropFibreTokenOnLoopback(t *testing.T) {
 			t.Errorf("%s: error %v, refused want %v", name, err, tc.refused)
 		}
 		if err != nil {
-			want := fmt.Sprintf("Not reloaded: fibre_metrics.listen changes only on restart, and dropping the token now would leave %s open without one. Restart tenderduty to apply.", tc.old.Listen)
+			want := fmt.Sprintf("Not reloaded: otel_metrics.listen changes only on restart, and dropping the token now would leave %s open without one. Restart tenderduty to apply.", tc.old.Listen)
 			if err.Error() != want {
 				t.Errorf("%s: message %q, want %q", name, err, want)
 			}

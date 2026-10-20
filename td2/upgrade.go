@@ -98,7 +98,7 @@ func upgradeTimeLeft(chain, message string) string {
 	if isSignalUpgrade(message) {
 		return formatUpgradeETA(eta.(time.Time), time.Now(), alertLocation())
 	}
-	line := "Around " + eta.(time.Time).Format("2 Jan 2006 15:04 UTC")
+	line := "Around " + eta.(time.Time).In(alertLocation()).Format("2 Jan 2006 15:04 MST")
 	if left := time.Until(eta.(time.Time)); left > 0 {
 		line += " · " + shortDuration(left) + " left"
 	}

@@ -20,7 +20,7 @@ func TestResolvedNotificationsSayWhatIsTrueNow(t *testing.T) {
 		{"percentage", "Kynraze has missed > 10% of the slashing window's blocks on atomone-1", "✅", "Resolved", "Kynraze is back under 10% of the slashing window missed on atomone-1"},
 		{"stalled", "stalled: have not seen a new block on atomone-1 in 10 minutes", "✅", "Resolved", "atomone-1 is producing blocks again"},
 		{"no rpc", "no RPC endpoints are working for atomone-1", "✅", "Resolved", "RPC endpoints are working again for atomone-1"},
-		{"node down", nodeDownMessage("https://rpc.example.com:443", "atomone-1"), "✅", "Resolved", "RPC node https://rpc.example.com:443 is back up on atomone-1"},
+		{"node down", nodeDownMessage("https://rpc.example.com:443", "atomone-1"), "✅", "Resolved", "RPC node rpc.example.com:443 is back up on atomone-1"},
 		{"jailed", jailMessage(jailed, "atomone-1"), "✅", "Active again", "Kynraze is back in the active set on atomone-1"},
 		{"inactive", jailMessage(&ValInfo{Moniker: "Kynraze"}, "atomone-1"), "✅", "Active again", "Kynraze is back in the active set on atomone-1"},
 		{"tombstoned", jailMessage(&ValInfo{Moniker: "Kynraze", Jailed: true, Tombstoned: true}, "atomone-1"), "✅", "Resolved", "Kynraze is no longer tombstoned on atomone-1"},
@@ -120,7 +120,7 @@ func TestRaisingAgainForgetsTheLastResolution(t *testing.T) {
 	c := auditConfig(t)
 	c.Chains["Chain"] = &ChainConfig{name: "Chain", ChainId: "chain-1"}
 	message := "Kynraze has missed 5 blocks on chain-1"
-	resolve("Chain", message, resolution{"ℹ️", "No longer watched", "off"})
+	resolve("Chain", message, resolution{"ℹ️", "Alert stopped", "off"})
 	id := "x"
 	c.alert("Chain", message, "warning", false, &id)
 	if _, ok := storedResolution("Chain", message); ok {
@@ -130,7 +130,7 @@ func TestRaisingAgainForgetsTheLastResolution(t *testing.T) {
 
 func TestOrphanedAlarmIsNotCalledFixed(t *testing.T) {
 	r := orphanResolution("Severity: critical\nRPC node https://rpc.example.com:443 has been down for > 3 minutes on atomone-1")
-	if r.label != "No longer watched" || r.text != "RPC node https://rpc.example.com:443 has been down for > 3 minutes on atomone-1\nThe alert was turned off or its settings changed" {
+	if r.label != "Alert stopped" || r.text != "RPC node https://rpc.example.com:443 has been down for > 3 minutes on atomone-1\nThe alert was turned off or its settings changed" {
 		t.Fatalf("orphan resolution %+v", r)
 	}
 }

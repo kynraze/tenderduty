@@ -47,7 +47,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	if fatal {
 		return errors.New("tenderduty configuration is invalid")
 	}
-	log.Println("tenderduty config is valid, starting with", len(td.Chains), "chains")
+	log.Println("tenderduty config is valid, starting with", plural(len(td.Chains), "chain"))
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	if hup := reloadSignal(); hup != nil {
@@ -64,6 +64,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	})
 	td.restoreRecoveries()
 	td.startWorker(td.runNotifications)
+	td.startWorker(td.runEscalations)
 	// alerts held for quiet hours go out once they end
 	td.startWorker(func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -81,7 +82,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	td.startWorker(td.runReports)
 	if td.EnableDash {
 		td.startWorker(func() {
-			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory, td.bridgeHistory, td.dashboardLogo); err != nil {
+			if err := dash.Serve(td.ctx, td.Listen, td.updateChan, td.logChan, td.HideLogs, td.healthStatus, td.fibreHistory, td.bridgeHistory, td.dashboardLogo, td.proposalDetails); err != nil {
 				failures <- err
 			}
 		})

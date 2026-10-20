@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,14 +50,17 @@ type Config struct {
 	GroupNodeAlerts bool `yaml:"group_node_alerts"`
 	// seconds to wait for other down nodes on the server
 	GroupWaitSeconds int `yaml:"group_wait_seconds"`
+	// names for node hosts in alerts
+	Servers map[string]string `yaml:"servers"`
 
 	// EnableDash enables the web dashboard
 	EnableDash bool `yaml:"enable_dashboard"`
-	// Listen is the URL for the dashboard to listen on, must be a valid/parsable URL
+	// Listen is a TCP port or host:port for the dashboard.
 	Listen string `yaml:"listen_port"`
 	// HideLogs controls whether logs are sent to the dashboard. It will also suppress many alarm details.
 	// This is useful if the dashboard will be public.
-	HideLogs bool `yaml:"hide_logs"`
+	HideLogs         bool  `yaml:"hide_logs"`
+	AlertNodeAddress *bool `yaml:"alert_node_address"`
 
 	// NodeDownMin controls how long we wait before sending an alert that a node is not responding or has
 	// fallen behind.
@@ -66,8 +70,8 @@ type Config struct {
 
 	// Prom controls if the prometheus exporter is enabled.
 	Prom bool `yaml:"prometheus_enabled"`
-	// PrometheusListenPort is the port number used by the prometheus web server
-	PrometheusListenPort int `yaml:"prometheus_listen_port"`
+	// PrometheusListenPort is the port or host:port used by the prometheus web server
+	PrometheusListenPort string `yaml:"prometheus_listen_port"`
 
 	// Pagerduty configuration values
 	Pagerduty PDConfig `yaml:"pagerduty"`
@@ -77,10 +81,14 @@ type Config struct {
 	Telegram TeleConfig `yaml:"telegram"`
 	// Slack webhook information
 	Slack SlackConfig `yaml:"slack"`
+	// Gotify server information
+	Gotify GotifyConfig `yaml:"gotify"`
 	// Healthcheck information
 	Healthcheck HealthcheckConfig `yaml:"healthcheck"`
 	// QuietHours delays alerts below its minimum severity.
 	QuietHours QuietHoursConfig `yaml:"quiet_hours"`
+	// Escalation sends unresolved alarms to one more destination, see escalation.go.
+	Escalation EscalationConfig `yaml:"escalation"`
 	Reports    ReportsConfig    `yaml:"reports"`
 
 	govSummaryMux sync.Mutex
@@ -92,7 +100,7 @@ type Config struct {
 	// AlertDefaults supplies shared settings before chain overrides are applied.
 	AlertDefaults AlertConfig `yaml:"alert_defaults"`
 	// FibreMetrics receives Fibre OTLP exports.
-	FibreMetrics FibreMetricsConfig `yaml:"fibre_metrics"`
+	FibreMetrics FibreMetricsConfig `yaml:"otel_metrics"`
 
 	bridgeOnce  sync.Once
 	bridgeStore *bridgeHistoryStore
@@ -143,6 +151,8 @@ type ChainConfig struct {
 	workers         sync.WaitGroup
 	settingsVersion uint64
 	retiring        bool
+	restoredChecked bool // watch has checked the alarms restored from the state file
+	proposalTallies proposalTallyCache
 	stateMux        sync.RWMutex
 	validatorMux    sync.RWMutex
 	refreshMux      sync.Mutex
@@ -316,6 +326,11 @@ type AlertConfig struct {
 	GovSeverity string `yaml:"gov_severity"`
 	GovAlerts   bool   `yaml:"gov_enabled"`
 
+	ChangesEnabled     bool   `yaml:"changes_enabled"`
+	ChangesDropPercent int    `yaml:"changes_drop_percent"`
+	ChangesRisePercent int    `yaml:"changes_rise_percent"`
+	ChangesSeverity    string `yaml:"changes_severity"`
+
 	// JailRiskMinutes alerts when missing every block would jail within this many minutes.
 	JailRiskMinutes int `yaml:"jail_risk_minutes"`
 
@@ -343,6 +358,8 @@ type AlertConfig struct {
 	Telegram TeleConfig `yaml:"telegram"`
 	// Slack webhook information
 	Slack SlackConfig `yaml:"slack"`
+	// Gotify server information
+	Gotify GotifyConfig `yaml:"gotify"`
 }
 
 // FibreMetricsConfig is the OTLP/HTTP listener for Fibre metrics.
@@ -421,6 +438,15 @@ type SlackConfig struct {
 	MinSeverity string `yaml:"min_severity"`
 }
 
+// GotifyConfig holds the server and application token of a self-hosted Gotify for sending alerts
+type GotifyConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	URL     string `yaml:"url"`
+	Token   string `yaml:"token"`
+	// MinSeverity drops lower severities; empty sends all.
+	MinSeverity string `yaml:"min_severity"`
+}
+
 // on is false for an unset switch.
 func on(enabled *bool) bool {
 	return enabled != nil && *enabled
@@ -446,6 +472,17 @@ type HealthcheckConfig struct {
 	PingRate int64  `yaml:"ping_rate"`
 }
 
+func validListenPort(listen string) bool {
+	portText := listen
+	validHost := true
+	if strings.Contains(listen, ":") {
+		host, value, err := net.SplitHostPort(listen)
+		portText, validHost = value, err == nil && host != ""
+	}
+	port, err := strconv.Atoi(portText)
+	return validHost && err == nil && port >= 1 && port <= 65535
+}
+
 // validateConfig is a non-exhaustive check for common problems with the configuration. Needs love.
 func validateConfig(c *Config) (fatal bool, problems []string) {
 	problems = make([]string, 0)
@@ -455,20 +492,18 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		problems = append(problems, "error: "+err.Error())
 	}
 
-	if c.EnableDash {
-		port, parseErr := strconv.Atoi(c.Listen)
-		if parseErr != nil || port < 1 || port > 65535 {
-			fatal = true
-			problems = append(problems, fmt.Sprintf("error: The dashboard port %s is invalid", c.Listen))
-		}
+	if c.EnableDash && !validListenPort(c.Listen) {
+		fatal = true
+		problems = append(problems, fmt.Sprintf("error: The dashboard port %s is invalid", c.Listen))
 	}
-	if c.Prom && (c.PrometheusListenPort < 1 || c.PrometheusListenPort > 65535) {
+	if c.Prom && !validListenPort(c.PrometheusListenPort) {
 		fatal = true
 		problems = append(problems, "error: The prometheus listen port is invalid")
 	}
 	fibreFatal, fibreProblems := validateFibreMetrics(c)
 	fatal = fatal || fibreFatal
 	problems = append(problems, fibreProblems...)
+	problems = append(problems, validateEscalation(c)...)
 	if err := c.QuietHours.parse(); err != nil {
 		c.QuietHours.Enabled = false
 		problems = append(problems, "warning: "+err.Error()+", quiet hours are off")
@@ -492,13 +527,19 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 
 	if c.NodeDownMin < 1 {
 		// older configs could leave this out
+		if c.NodeDownMin < 0 {
+			problems = append(problems, "warning: 'node_down_alert_minutes' can't be negative, using 3 minutes")
+		} else {
+			problems = append(problems, "warning: 'node_down_alert_minutes' is not set, using 3 minutes")
+		}
 		c.NodeDownMin = 3
-		problems = append(problems, "warning: 'node_down_alert_minutes' is not set, using 3 minutes")
 	} else if c.NodeDownMin < 3 {
 		problems = append(problems, "warning: setting 'node_down_alert_minutes' to less than three minutes might result in false alarms")
 	}
-	if c.NodeDownSeverity == "" {
-		c.NodeDownSeverity = "critical"
+	problems = append(problems, defaultAlertSeverity(&c.NodeDownSeverity, "node_down_alert_severity", "critical")...)
+	problems = append(problems, validateAlertSeverities(&c.AlertDefaults, "alert_defaults")...)
+	if c.AlertNodeAddress == nil {
+		c.AlertNodeAddress = yes(true)
 	}
 	if c.GroupWaitSeconds == 0 {
 		c.GroupWaitSeconds = defaultGroupWaitSeconds
@@ -506,6 +547,36 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		c.GroupWaitSeconds = minGroupWaitSeconds
 		problems = append(problems, fmt.Sprintf("warning: 'group_wait_seconds' must be at least %d, using %d", minGroupWaitSeconds, minGroupWaitSeconds))
 	}
+
+	serverKeys := make([]string, 0, len(c.Servers))
+	for key := range c.Servers {
+		serverKeys = append(serverKeys, key)
+	}
+	sort.Strings(serverKeys)
+	servers := make(map[string]string, len(c.Servers))
+	for _, key := range serverKeys {
+		name := c.Servers[key]
+		switch {
+		case strings.Contains(key, "/"):
+			problems = append(problems, fmt.Sprintf("warning: servers key must be an IP or hostname: %q, ignored", key))
+			continue
+		case strings.TrimSpace(name) == "":
+			problems = append(problems, fmt.Sprintf("warning: servers[%q] has an empty name, ignored", key))
+			continue
+		}
+		host := key
+		if withoutPort, _, err := net.SplitHostPort(host); err == nil {
+			host = withoutPort
+			problems = append(problems, fmt.Sprintf("warning: servers key %q has a port, using %s", key, strings.ToLower(host)))
+		}
+		host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+		if existing, ok := servers[host]; ok {
+			problems = append(problems, fmt.Sprintf("warning: servers has %s more than once, using %q", host, existing))
+			continue
+		}
+		servers[host] = name
+	}
+	c.Servers = servers
 
 	for k, v := range c.Chains {
 		if v == nil {
@@ -613,6 +684,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.FibreIdleMinutes = 0
 			problems = append(problems, fmt.Sprintf("warning: %s fibre_idle_minutes can't be negative, using 0", k))
 		}
+		problems = append(problems, validateChanges(&v.Alerts, k)...)
 		if v.Alerts.GovEarlyRemindPercent < 0 || v.Alerts.GovEarlyRemindPercent > 99 {
 			v.Alerts.GovEarlyRemindPercent = 25
 			problems = append(problems, fmt.Sprintf("warning: %s gov_early_remind_percent must be between 0 and 99, using 25", k))
@@ -625,11 +697,14 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			problems = append(problems, fmt.Sprintf("warning: %s gov_remind_minutes can't be negative, using 60", k))
 		}
 		if v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskMinutes == 0 {
-			v.Alerts.JailRiskMinutes = 60
+			v.Alerts.JailRiskMinutes = 90
 		}
 		if v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskMinutes < 0 {
-			v.Alerts.JailRiskMinutes = 60
-			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_minutes can't be negative, using 60", k))
+			v.Alerts.JailRiskMinutes = 90
+			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_minutes can't be negative, using 90", k))
+		}
+		if c.Escalation.Enabled && v.Alerts.jailRiskEnabled() && v.Alerts.JailRiskMinutes < c.Escalation.AfterMinutes {
+			problems = append(problems, fmt.Sprintf("warning: %s jail_risk_minutes is below escalation after_minutes; close to jail escalates at half of it", k))
 		}
 		if len(v.blocksResults) != showBLocks {
 			blocks := make([]int, showBLocks)
@@ -666,6 +741,10 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Slack.Webhook = c.Slack.Webhook
 			v.Alerts.Slack.Mentions = c.Slack.Mentions
 		}
+		if v.Alerts.Gotify.URL == "" {
+			v.Alerts.Gotify.URL = c.Gotify.URL
+			v.Alerts.Gotify.Token = c.Gotify.Token
+		}
 		if v.Alerts.Telegram.ApiKey == "" {
 			v.Alerts.Telegram.ApiKey = c.Telegram.ApiKey
 			v.Alerts.Telegram.Mentions = c.Telegram.Mentions
@@ -677,9 +756,9 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 			v.Alerts.Pagerduty.ApiKey = c.Pagerduty.ApiKey
 			v.Alerts.Pagerduty.DefaultSeverity = c.Pagerduty.DefaultSeverity
 		}
-		for _, min := range []*string{&v.Alerts.Pagerduty.MinSeverity, &v.Alerts.Discord.MinSeverity, &v.Alerts.Telegram.MinSeverity, &v.Alerts.Slack.MinSeverity} {
+		for _, min := range []*string{&v.Alerts.Pagerduty.MinSeverity, &v.Alerts.Discord.MinSeverity, &v.Alerts.Telegram.MinSeverity, &v.Alerts.Slack.MinSeverity, &v.Alerts.Gotify.MinSeverity} {
 			if *min != "" && severityRank(*min) == 4 && *min != "critical" {
-				problems = append(problems, fmt.Sprintf("warning: %s min_severity %q is not info, warning, error or critical, using critical", k, *min))
+				problems = append(problems, fmt.Sprintf("warning: %s min_severity %q is not info, warning, error, critical or escalation, using critical", k, *min))
 			}
 		}
 		if v.Alerts.Pagerduty.MinSeverity == "" {
@@ -701,9 +780,13 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if v.Alerts.Slack.MinSeverity == "" {
 			v.Alerts.Slack.MinSeverity = c.Slack.MinSeverity
 		}
+		if v.Alerts.Gotify.MinSeverity == "" {
+			v.Alerts.Gotify.MinSeverity = c.Gotify.MinSeverity
+		}
 		tgOn := enabledFor(c.Telegram.Enabled, v.Alerts.Telegram.Enabled)
 		discOn := enabledFor(c.Discord.Enabled, v.Alerts.Discord.Enabled)
 		slackOn := enabledFor(c.Slack.Enabled, v.Alerts.Slack.Enabled)
+		gotifyOn := enabledFor(c.Gotify.Enabled, v.Alerts.Gotify.Enabled)
 		pdOn := enabledFor(c.Pagerduty.Enabled, v.Alerts.Pagerduty.Enabled)
 		if tgOn && (v.Alerts.Telegram.ApiKey == "" || v.Alerts.Telegram.Channel == "") {
 			problems = append(problems, fmt.Sprintf("warning: %s telegram alerts need an API key and channel, they will not be sent", k))
@@ -714,21 +797,21 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if slackOn && !validHTTPURL(v.Alerts.Slack.Webhook) {
 			problems = append(problems, fmt.Sprintf("warning: %s slack alerts need a valid webhook URL, they will not be sent", k))
 		}
+		if gotifyOn && (!validHTTPURL(v.Alerts.Gotify.URL) || v.Alerts.Gotify.Token == "") {
+			problems = append(problems, fmt.Sprintf("warning: %s gotify alerts need a valid URL and an app token, gotify is off for this chain", k))
+			v.Alerts.Gotify.Enabled = yes(false)
+			gotifyOn = false
+		}
 		if pdOn && v.Alerts.Pagerduty.ApiKey == "" {
 			problems = append(problems, fmt.Sprintf("warning: %s pagerduty alerts need an API key, they will not be sent", k))
 		}
-		if v.Alerts.ProposalSeverity == "" {
-			v.Alerts.ProposalSeverity = "warning"
-		}
-		if v.Alerts.FibreSeverity == "" {
-			v.Alerts.FibreSeverity = "warning"
-		}
-		if v.Alerts.GovSeverity == "" {
-			v.Alerts.GovSeverity = "info"
-		}
+		problems = append(problems, validateAlertSeverities(&v.Alerts, k)...)
 
 		if on(v.Alerts.Slack.Enabled) && !on(c.Slack.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for slack alerts, but it is not enabled", k))
+		}
+		if on(v.Alerts.Gotify.Enabled) && !on(c.Gotify.Enabled) {
+			problems = append(problems, fmt.Sprintf("warn: %20s is configured for gotify alerts, but it is not enabled", k))
 		}
 		if on(v.Alerts.Discord.Enabled) && !on(c.Discord.Enabled) {
 			problems = append(problems, fmt.Sprintf("warn: %20s is configured for discord alerts, but it is not enabled", k))
@@ -742,7 +825,7 @@ func validateConfig(c *Config) (fatal bool, problems []string) {
 		if len(enabledAlertFamilies(v.Alerts)) == 0 {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no alert types configured", k))
 		}
-		if !pdOn && !discOn && !tgOn && !slackOn {
+		if !pdOn && !discOn && !tgOn && !slackOn && !gotifyOn {
 			problems = append(problems, fmt.Sprintf("warn: %20s has no notifications configured", k))
 		}
 		if c.EnableDash {
@@ -784,7 +867,7 @@ func loadChainConfig(yamlFile string) (*ChainConfig, error) {
 // unmarshalConfig ignores unknown settings like older versions did, but warns about them so typos get noticed.
 func unmarshalConfig(name string, data []byte, out, check interface{}) error {
 	if err := unmarshalLenient(data, out); err != nil {
-		return err
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	if err := decodeConfig(data, check); err != nil {
 		warnings := unknownConfigWarnings(data, check)
@@ -838,6 +921,15 @@ func loadConfigQuiet(yamlFile, chainConfigDirectory string, password *string) (*
 }
 
 func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, password *string, restore, quiet bool) (*Config, error) {
+	return loadConfigWithPolicy(yamlFile, stateFile, chainConfigDirectory, password, restore, quiet, true)
+}
+
+// Shared settings can be edited before the first chain is added.
+func loadConfigForEdit(yamlFile, chainConfigDirectory string, password *string) (*Config, error) {
+	return loadConfigWithPolicy(yamlFile, "", chainConfigDirectory, password, false, true, false)
+}
+
+func loadConfigWithPolicy(yamlFile, stateFile, chainConfigDirectory string, password *string, restore, quiet, requireChains bool) (*Config, error) {
 	c := &Config{}
 	var configData []byte
 	if strings.HasPrefix(yamlFile, "http://") || strings.HasPrefix(yamlFile, "https://") {
@@ -924,7 +1016,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 		}
 		chainConfig, e := loadChainConfig(path.Join(chainConfigDirectory, chainConfigFile.Name()))
 		if e != nil {
-			l(fmt.Sprintf("Failed to read %s", chainConfigFile), e)
+			l(fmt.Sprintf("Failed to read %s", chainConfigFile.Name()), e)
 			return nil, e
 		}
 
@@ -949,7 +1041,7 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 		}
 	}
 
-	if len(c.Chains) == 0 {
+	if requireChains && len(c.Chains) == 0 {
 		return nil, errNoChains
 	}
 	if err := applyAlertDefaults(c, configData, chainFiles); err != nil {
@@ -983,11 +1075,11 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	case e == nil && len(bytes.TrimSpace(b)) > 0:
 		if e = json.Unmarshal(b, saved); e != nil {
 			// a broken state file shouldn't stop monitoring, just start fresh
-			l("⚠️ could not decode saved state, starting without it", e)
+			l("⚠️ could not decode saved state, starting without it:", e)
 			saved = &savedState{}
 		}
 	case e != nil && !os.IsNotExist(e):
-		l("⚠️ could not load saved state, starting without it", e)
+		l("⚠️ could not load saved state, starting without it:", e)
 	}
 	for k, v := range saved.Blocks {
 		if c.Chains[k] != nil {
@@ -1082,28 +1174,37 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 		if saved.Alarms.PendingRecoveries != nil {
 			alarms.PendingRecoveries = saved.Alarms.PendingRecoveries
 		}
+		// an alarm still open keeps its delivery records, however old: else it is sent again and never resolved
+		active := func(key string) bool {
+			chain, message, _ := strings.Cut(key, "\x00")
+			_, ok := saved.Alarms.AllAlarms[chain][message]
+			return ok
+		}
 		if saved.Alarms.SentTgAlarms != nil {
 			alarms.SentTgAlarms = saved.Alarms.SentTgAlarms
-			clearStale(alarms.SentTgAlarms, "telegram", on(c.Pagerduty.Enabled), staleHours)
+			clearStale(alarms.SentTgAlarms, "telegram", on(c.Pagerduty.Enabled), staleHours, active)
 		}
 		if saved.Alarms.SentPdAlarms != nil {
 			alarms.SentPdAlarms = saved.Alarms.SentPdAlarms
-			clearStale(alarms.SentPdAlarms, "PagerDuty", on(c.Pagerduty.Enabled), staleHours)
+			clearStale(alarms.SentPdAlarms, "PagerDuty", on(c.Pagerduty.Enabled), staleHours, active)
 		}
 		if saved.Alarms.SentDiAlarms != nil {
 			alarms.SentDiAlarms = saved.Alarms.SentDiAlarms
-			clearStale(alarms.SentDiAlarms, "Discord", on(c.Pagerduty.Enabled), staleHours)
+			clearStale(alarms.SentDiAlarms, "Discord", on(c.Pagerduty.Enabled), staleHours, active)
 		}
 		if saved.Alarms.SentSlkAlarms != nil {
 			alarms.SentSlkAlarms = saved.Alarms.SentSlkAlarms
-			clearStale(alarms.SentSlkAlarms, "Slack", on(c.Pagerduty.Enabled), staleHours)
+			clearStale(alarms.SentSlkAlarms, "Slack", on(c.Pagerduty.Enabled), staleHours, active)
+		}
+		if saved.Alarms.SentGtAlarms != nil {
+			alarms.SentGtAlarms = saved.Alarms.SentGtAlarms
+			clearStale(alarms.SentGtAlarms, "Gotify", on(c.Pagerduty.Enabled), staleHours, active)
 		}
 		if saved.Alarms.AllAlarms != nil {
+			// no age cutoff: the first checks resolve what is no longer true
 			alarms.AllAlarms = saved.Alarms.AllAlarms
-			for _, alrm := range saved.Alarms.AllAlarms {
-				clearStale(alrm, "dashboard", on(c.Pagerduty.Enabled), staleHours)
-			}
 		}
+		alarms.Escalated, alarms.EscalationsSent = saved.Alarms.Escalated, saved.Alarms.EscalationsSent
 		if saved.Alarms.Groups != nil {
 			alarms.Groups = saved.Alarms.Groups
 			alarms.pruneGroups()
@@ -1154,9 +1255,9 @@ func loadConfigOptions(yamlFile, stateFile, chainConfigDirectory string, passwor
 	return c, nil
 }
 
-func clearStale(alarms map[string]time.Time, what string, hasPagerduty bool, hours float64) {
+func clearStale(alarms map[string]time.Time, what string, hasPagerduty bool, hours float64, active func(string) bool) {
 	for k := range alarms {
-		if hasPendingRecovery(k) {
+		if hasPendingRecovery(k) || active(k) {
 			continue
 		}
 		if time.Since(alarms[k]).Hours() >= hours {

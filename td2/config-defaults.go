@@ -116,6 +116,10 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 		"fibre_endorsement_minutes": 120,
 		"gov_early_remind_percent":  25,
 		"gov_enabled":               true,
+		"changes_enabled":           true,
+		"changes_drop_percent":      10,
+		"changes_rise_percent":      10,
+		"changes_severity":          "info",
 		"upgrade_enabled":           true,
 		"missed_blocks_enabled":     true,
 		"consecutive_enabled":       true,
@@ -169,7 +173,7 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 		chain.Alerts.PercentageAlerts = false
 	}
 	if percentage {
-		c.configWarnings = append(c.configWarnings, "warning: percentage_* is replaced by jail_risk_percent, see docs/chains.md")
+		c.configWarnings = append(c.configWarnings, "warning: percentage_* is replaced by jail_risk_percent, see docs/config.md")
 	}
 	if len(ignored) > 0 {
 		names := make([]string, 0, len(ignored))
@@ -177,7 +181,7 @@ func applyAlertDefaults(c *Config, configData []byte, chainFiles map[string][]by
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		c.configWarnings = append(c.configWarnings, "warning: "+strings.Join(names, ", ")+" are ignored, the alert stages have a fixed severity, see docs/chains.md")
+		c.configWarnings = append(c.configWarnings, "warning: "+strings.Join(names, ", ")+" are ignored, the alert stages have a fixed severity, see docs/config.md")
 	}
 	return nil
 }

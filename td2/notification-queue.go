@@ -14,23 +14,32 @@ type queuedNotification struct {
 	Sequence    uint64     `json:"sequence"`
 	Destination notifyDest `json:"destination"`
 	pendingRecovery
-	Resolved bool `json:"resolved"`
+	Resolved  bool `json:"resolved"`
+	Transient bool `json:"transient,omitempty"`
+	Escalated bool `json:"escalated,omitempty"`
 	// Queued starts the node-down grouping wait
 	Queued   time.Time `json:"queued,omitempty"`
 	snapshot *alertMsg // credentials kept only in memory, for removed chains
 }
 
 func (item queuedNotification) workerKey() string {
+	if item.Transient {
+		return fmt.Sprintf("%d\x00%s\x00%s", item.Destination, item.Chain, item.ID)
+	}
+	if item.Escalated && !item.Resolved {
+		return fmt.Sprintf("%d\x00%s\x00%s\x00escalated", item.Destination, item.Chain, item.Message)
+	}
 	return fmt.Sprintf("%d\x00%s\x00%s", item.Destination, item.Chain, item.Message)
 }
 
 // enqueue is called while notifyMux is held. Preserve incident transitions in order.
 func (a *alarmCache) enqueue(msg *alertMsg) {
-	for destination, enabled := range map[notifyDest]bool{pd: msg.pd, tg: msg.tg, di: msg.disc, slk: msg.slk} {
+	for destination, enabled := range map[notifyDest]bool{pd: msg.pd, tg: msg.tg, di: msg.disc, slk: msg.slk, gt: msg.gotify} {
 		if !enabled {
 			continue
 		}
-		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, Queued: time.Now(), snapshot: msg}
+		item := queuedNotification{Destination: destination, pendingRecovery: pendingRecovery{Chain: msg.chain, Message: msg.message, Severity: msg.severity, ID: msg.uniqueId, Lasted: msg.lasted, Quiet: msg.quiet}, Resolved: msg.resolved, Escalated: msg.escalated, Queued: time.Now(), snapshot: msg}
+		item.Transient = msg.transient
 		var last *queuedNotification
 		for i := range a.Outbox {
 			if a.Outbox[i].workerKey() == item.workerKey() {
@@ -40,7 +49,7 @@ func (a *alarmCache) enqueue(msg *alertMsg) {
 		if last != nil && last.Resolved == item.Resolved {
 			continue
 		}
-		if last == nil && a.sentTo(destination, msg.chain+"\x00"+msg.message, msg.message) != msg.resolved {
+		if !msg.transient && !msg.escalated && last == nil && a.sentTo(destination, msg.chain+"\x00"+msg.message, msg.message) != msg.resolved {
 			continue
 		}
 		a.NextNotification++
@@ -61,6 +70,8 @@ func (a *alarmCache) sentTo(destination notifyDest, key, legacy string) bool {
 		sent = a.SentDiAlarms
 	case slk:
 		sent = a.SentSlkAlarms
+	case gt:
+		sent = a.SentGtAlarms
 	}
 	return !sent[key].IsZero() || !sent[legacy].IsZero()
 }
@@ -101,6 +112,8 @@ func (c *Config) restoreRecoveries() {
 				msg.disc = false
 			case slk:
 				msg.slk = false
+			case gt:
+				msg.gotify = false
 			}
 		}
 		alarms.enqueue(msg)
@@ -200,6 +213,12 @@ func (c *Config) deliverQueue(key string) {
 		if !exists {
 			return
 		}
+		if item.Transient && c.holdsAlert(item.Chain, item.Severity, false, time.Now()) {
+			if !waitContext(c.context(), time.Second) {
+				return
+			}
+			continue
+		}
 		// try to save the queue first, but a broken state file should never hold back an alert
 		if !c.queueSaved(item.Sequence) {
 			if err := c.persistState(); err != nil {
@@ -213,10 +232,10 @@ func (c *Config) deliverQueue(key string) {
 			}
 			continue
 		}
-		msg := c.makeAlert(item.Chain, item.Message, item.Severity, item.Resolved, &item.ID)
+		msg := c.queuedAlert(item)
 		orphan := false
 		if r, ok := storedResolution(item.Chain, item.Message); ok {
-			orphan = item.Resolved && r.label == "No longer watched"
+			orphan = item.Resolved && (r.label == "Alert stopped" || r.label == "No longer watched")
 		}
 		if (msg == nil || orphan) && item.snapshot != nil {
 			copy := *item.snapshot
@@ -225,6 +244,7 @@ func (c *Config) deliverQueue(key string) {
 		if msg == nil {
 			skip = true
 		} else {
+			msg.transient = item.Transient
 			msg.lasted, msg.quiet = item.Lasted, item.Quiet && item.Resolved
 		}
 		var err error
@@ -253,6 +273,8 @@ func (c *Config) deliverQueue(key string) {
 					if msg.slk {
 						err = notifySlack(msg)
 					}
+				case gt:
+					err = notifyGotify(msg)
 				}
 			}
 		}

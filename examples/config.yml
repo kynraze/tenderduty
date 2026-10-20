@@ -4,21 +4,25 @@
 
 # controls whether the dashboard is enabled.
 enable_dashboard: yes
-# What TCP port the dashboard will listen on. Only the port is controllable for now.
+# What TCP port the dashboard will listen on. host:port, such as 127.0.0.1:8888, listens only there.
 listen_port: 8888
 # Disables the log feed and hides most node details. Use it if the dashboard is public.
 hide_logs: yes
+# no: alerts name nodes by server instead of IP.
+alert_node_address: yes
 # How long to wait before alerting that a node is down.
 node_down_alert_minutes: 3
 # Severity of node down alerts.
 node_down_alert_severity: critical
 # One chat message for nodes of one server that go down together. Name a node's server with nodes[].server.
-# group_node_alerts: no
-# group_wait_seconds: 60 # default 60, minimum 10
+group_node_alerts: no
+group_wait_seconds: 60 # minimum 10
+# Names for node hosts in alerts, so chain files don't need nodes[].server.
+servers: {}
 
 # Should the prometheus exporter be enabled?
 prometheus_enabled: yes
-# What port should it listen on? For now only port is configurable.
+# What TCP port it listens on, no auth. host:port, such as 127.0.0.1:28686, listens only there.
 prometheus_listen_port: 28686
 
 # Alert destinations. Enabling one here is enough, every chain uses it unless the chain's
@@ -30,8 +34,6 @@ pagerduty:
   enabled: no
   # An Events API v2 integration key, not an oauth token. See docs/pagerduty.md.
   api_key: ""
-  # Not currently used.
-  default_severity: alert
   # Only send alerts of this severity and up: info, warning, error or critical. Empty sends everything.
   # Every destination has it.
   min_severity: warning
@@ -69,6 +71,19 @@ slack:
   # Incoming webhook URL.
   webhook: ""
 
+# Gotify settings, a self-hosted push server. See docs/gotify.md.
+gotify:
+  enabled: no
+  url: ""          # the server address, with https://
+  token: ""        # an application token
+
+# Send alerts that need action and stay unresolved to one more destination. See docs/config.md.
+escalation:
+  enabled: no
+  after_minutes: 30        # 1 to 1440
+  to: ""                   # pagerduty, telegram, discord, slack or gotify
+  min_severity: critical   # info, warning, error or critical
+
 # Alerts below min_severity wait until quiet hours end, and are sent then if still active.
 quiet_hours:
   enabled: no
@@ -89,17 +104,17 @@ healthcheck:
   ping_rate: 60
 
 # Receive the OTLP/HTTP metrics a Celestia Fibre server exports. See docs/fibre.md.
-# fibre_metrics:
-#   # host:port to listen on, empty is off. 4318 is the standard OTLP port.
-#   listen: 127.0.0.1:4318
-#   # Fibre must send "Authorization: Bearer <token>". Required unless listen is a loopback address.
-#   token: ""
-#   allow_without_token: no # only with a firewall that lets just Fibre's IP in
-#   # HTTPS, set both or neither.
-#   tls_cert: ""
-#   tls_key: ""
-#   # Serve every metric Fibre exports on the Prometheus endpoint (needs prometheus_enabled).
-#   export_raw: no
+otel_metrics:
+  # host:port to listen on, empty is off, e.g. 127.0.0.1:4318. 4318 is the standard OTLP port.
+  listen: ""
+  # Fibre must send "Authorization: Bearer <token>". Required unless listen is a loopback address.
+  token: ""
+  allow_without_token: no # only with a firewall that lets just Fibre's IP in
+  # HTTPS, set both or neither.
+  tls_cert: ""
+  tls_key: ""
+  # Serve every metric Fibre exports on the Prometheus endpoint (needs prometheus_enabled).
+  export_raw: no
 
 # Daily and weekly reports to the alert destinations of every chain. Empty is off. See docs/config.md.
 reports:
@@ -114,46 +129,25 @@ alert_defaults:
   # governance, upgrades (and Celestia version signalling). Set any *_enabled to no to turn it off.
   consecutive_missed: 5 # Blocks missed in a row before the warning.
   jail_risk_percent: 90 # Percent of allowed misses used before the critical alert.
-  jail_risk_minutes: 60 # Also alert when jailing is within this many minutes while missing.
+  jail_risk_minutes: 90 # Also alert when jailing is within this many minutes while missing.
   stalled_minutes: 10 # Minutes without a new block before alerting.
+  changes_enabled: yes # One message when stake moves more than the percents below, or commission, self-bond or description change.
+  changes_drop_percent: 10 # 0 disables drops.
+  changes_rise_percent: 10 # 0 disables rises.
+  changes_severity: info
+  gov_enabled: yes # Message when a proposal opens for voting, cleared once the validator votes.
   gov_remind_minutes: 60 # Final reminder before voting ends without a vote.
   gov_early_remind_percent: 25 # Warning at this percent of voting time left; 0 is off.
   upgrade_remind_minutes: 60 # Reminder before the scheduled upgrade.
   # Celestia version signalling: warn when this share of voting power signalled and this validator has not,
   # remind critically at the second share, and when an own node is not ready this long before the upgrade.
-  # signal_percent: 5
-  # signal_remind_percent: 66
-  # signal_remind_minutes: 60
-  # info, warning, error or critical. Governance notices default to info, early reminders are warning, final reminders critical.
-  # gov_severity: info
+  signal_percent: 5
+  signal_remind_percent: 66
+  signal_remind_minutes: 60
+  # Severity of proposal notices: info, warning, error or critical. Early reminders are warning, final reminders critical.
+  gov_severity: info
   missed_proposal_enabled: no # Missed block proposals are optional.
-  # missed_proposal_count: 3 # Misses within missed_proposal_minutes that alert.
-  # missed_proposal_minutes: 60
-  # missed_proposal_severity: warning
-
-  # Celestia Fibre: alert when the validator is not a registered Fibre provider, its Fibre host is
-  # unreachable, or the host's certificate is not this validator's. With fibre_metrics on, also alerts on
-  # what Fibre reports. Run tenderduty on a different machine from Fibre. See docs/fibre.md.
-  # bridge_enabled: no
-  # bridge_severity: warning
-  # bridge_lag_blocks: 20
-  # bridge_lag_minutes: 5
-
-  fibre_enabled: no
-  # Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.
-  fibre_severity: warning
-  # Hostname Fibre reports as service.instance.id. Only needed when several chains have fibre_enabled; set it
-  # in each chain's file, not here.
-  # fibre_instance: fibre-host-1
-  # Alert when Fibre's storage is at this percent of its budget or more, 1 to 100, 0 is off. See docs/fibre.md.
-  # fibre_storage_percent: 90
-  # Alert when Fibre has stored no upload for this many minutes, 0 is off. Only for steady uploads.
-  # fibre_idle_minutes: 0
-  # fibre_endorsement_alert: no
-  # fibre_endorsement_blobs: 50
-  # fibre_endorsement_minutes: 120
-
-# In the chain file, next to public_fallback (see docs/bridge.md):
-# bridge:
-#   url: http://203.0.113.10:26658
-#   token_file: /etc/tenderduty/bridge-mocha.token
+  missed_proposal_count: 3 # Misses within missed_proposal_minutes that alert.
+  missed_proposal_minutes: 60
+  missed_proposal_severity: warning
+  # Celestia bridge and Fibre settings go in the chain's file, see tenderduty -example-celestia.

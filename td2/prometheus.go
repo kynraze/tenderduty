@@ -18,6 +18,13 @@ var (
 	promMux sync.RWMutex
 )
 
+func prometheusListenAddress(listen string) string {
+	if !strings.Contains(listen, ":") {
+		return ":" + listen
+	}
+	return listen
+}
+
 type metricType uint8
 
 const (
@@ -229,10 +236,15 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 
 	promMux := http.NewServeMux()
 
-	l(fmt.Sprintf("serving prometheus metrics at 0.0.0.0:%d/metrics", td.PrometheusListenPort))
+	addr := prometheusListenAddress(td.PrometheusListenPort)
+	logAddr := addr
+	if strings.HasPrefix(logAddr, ":") {
+		logAddr = "0.0.0.0" + logAddr
+	}
+	l(fmt.Sprintf("serving prometheus metrics at %s/metrics", logAddr))
 	promMux.Handle("/metrics", promhttp.Handler())
 	promSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", td.PrometheusListenPort),
+		Addr:              addr,
 		Handler:           promMux,
 		ReadTimeout:       20 * time.Second,
 		WriteTimeout:      20 * time.Second,

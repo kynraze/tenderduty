@@ -317,8 +317,11 @@ func showChain(options ChainCommandOptions, requested string, output io.Writer) 
 			}
 			// Mentions/default_severity follow the credential, even when explicitly set on the chain.
 			credential := "api_key"
-			if parts[1] == "discord" || parts[1] == "slack" {
+			switch parts[1] {
+			case "discord", "slack":
 				credential = "webhook"
+			case "gotify":
+				credential = "url"
 			}
 			cred := yamlPath(before, "alerts."+parts[1]+"."+credential)
 			if shared != nil && cred != nil && cred.Value == "" && (parts[2] == "mentions" && parts[1] != "pagerduty" || parts[2] == "default_severity" && parts[1] == "pagerduty") {
@@ -371,7 +374,7 @@ func showChain(options ChainCommandOptions, requested string, output io.Writer) 
 		if listen == "" {
 			listen = "-"
 		}
-		fmt.Fprintf(table, "\nFibre\nfibre_metrics.listen\t%s\ntoken: %s\n", listen, tokenState(c.FibreMetrics.Token))
+		fmt.Fprintf(table, "\nFibre\notel_metrics.listen\t%s\ntoken: %s\n", listen, tokenState(c.FibreMetrics.Token))
 	}
 	if chain.Bridge.URL != "" {
 		fmt.Fprintf(table, "\nBridge\nbridge.url\t%s\ntoken: %s\n", chain.Bridge.URL, tokenState(chain.Bridge.token))
@@ -424,6 +427,8 @@ func notificationSwitches(c *Config, chain *ChainConfig, channel string) (*bool,
 		return c.Discord.Enabled, chain.Alerts.Discord.Enabled
 	case "slack":
 		return c.Slack.Enabled, chain.Alerts.Slack.Enabled
+	case "gotify":
+		return c.Gotify.Enabled, chain.Alerts.Gotify.Enabled
 	case "pagerduty":
 		return c.Pagerduty.Enabled, chain.Alerts.Pagerduty.Enabled
 	}

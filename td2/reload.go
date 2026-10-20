@@ -187,7 +187,7 @@ func (c *Config) removeChainAlarms(name string) {
 	alarms.notifyMux.RUnlock()
 	for _, message := range messages {
 		id := c.alarmID(name, message)
-		resolve(name, message, orphanResolution(message))
+		resolve(name, message, removedResolution(message))
 		c.alert(name, message, "info", true, &id)
 	}
 }
@@ -342,7 +342,7 @@ func fibreTokenKept(old, next *Config) error {
 	if fibreMetricsLoopback(host) {
 		return nil
 	}
-	return fmt.Errorf("Not reloaded: fibre_metrics.listen changes only on restart, and dropping the token now would leave %s open without one. Restart tenderduty to apply.", old.FibreMetrics.Listen)
+	return fmt.Errorf("Not reloaded: otel_metrics.listen changes only on restart, and dropping the token now would leave %s open without one. Restart tenderduty to apply.", old.FibreMetrics.Listen)
 }
 
 func (c *Config) applyReload(next *Config) chainDiff {
@@ -403,7 +403,7 @@ func (c *Config) applyReload(next *Config) chainDiff {
 	c.liveSettings = next
 	if oldSettings.NodeDownMin != next.NodeDownMin || oldSettings.NodeDownSeverity != next.NodeDownSeverity ||
 		!reflect.DeepEqual(oldSettings.Pagerduty, next.Pagerduty) || !reflect.DeepEqual(oldSettings.Telegram, next.Telegram) ||
-		!reflect.DeepEqual(oldSettings.Discord, next.Discord) || !reflect.DeepEqual(oldSettings.Slack, next.Slack) {
+		!reflect.DeepEqual(oldSettings.Discord, next.Discord) || !reflect.DeepEqual(oldSettings.Slack, next.Slack) || !reflect.DeepEqual(oldSettings.Gotify, next.Gotify) {
 		c.settingsVersion++
 	}
 	c.settingsMux.Unlock()
@@ -463,15 +463,23 @@ func (c *Config) reloadFailed(problems []string) {
 		names = append(names, name)
 	}
 	c.chainsMux.RUnlock()
-	c.notice(names, body)
+	// the whole config failed, no single chain heads it
+	c.noticeByDestination(names, body, func(msg *alertMsg, _ []string) { msg.chain, msg.extra = "", "" })
 }
 
-// notice sends an informational message once to each enabled chat destination.
-func (c *Config) notice(names []string, body string) {
+// noticeByDestination sends an informational message once to each enabled chat destination.
+// prepare can tailor each notice to the chains sharing its destination.
+func (c *Config) noticeByDestination(names []string, body string, prepare func(*alertMsg, []string)) {
 	if c.context().Err() != nil {
 		return
 	}
-	seen := make(map[string]bool)
+	type noticeDestination struct {
+		msg   alertMsg
+		names []string
+		send  func(*alertMsg) error
+	}
+	seen := make(map[string]*noticeDestination)
+	var destinations []*noticeDestination
 	for _, name := range names {
 		msg := c.makeAlert(name, body, "info", false, nil)
 		if msg == nil {
@@ -488,6 +496,7 @@ func (c *Config) notice(names []string, body string) {
 		msg.tg = enabledFor(settings.Telegram.Enabled, alerts.Telegram.Enabled)
 		msg.disc = enabledFor(settings.Discord.Enabled, alerts.Discord.Enabled)
 		msg.slk = enabledFor(settings.Slack.Enabled, alerts.Slack.Enabled)
+		msg.gotify = enabledFor(settings.Gotify.Enabled, alerts.Gotify.Enabled)
 		msg.pd, msg.transient = false, true
 		msg.ctx = c.deliveryCtx
 		for _, destination := range []struct {
@@ -498,18 +507,30 @@ func (c *Config) notice(names []string, body string) {
 			{"tg:" + msg.tgKey + ":" + msg.tgChannel, msg.tg, notifyTg},
 			{"di:" + msg.discHook, msg.disc, notifyDiscord},
 			{"slk:" + msg.slkHook, msg.slk, notifySlack},
+			{"gt:" + msg.gotifyURL, msg.gotify, notifyGotify},
 		} {
-			if !destination.enabled || seen[destination.key] {
+			if !destination.enabled {
 				continue
 			}
-			seen[destination.key] = true
-			copy, send := *msg, destination.send
-			c.startWorker(func() {
-				if err := send(&copy); err != nil {
-					l("could not send notice:", err)
-				}
-			})
+			if previous := seen[destination.key]; previous != nil {
+				previous.names = append(previous.names, name)
+				continue
+			}
+			next := &noticeDestination{msg: *msg, names: []string{name}, send: destination.send}
+			seen[destination.key] = next
+			destinations = append(destinations, next)
 		}
+	}
+	for _, destination := range destinations {
+		copy, send := destination.msg, destination.send
+		if prepare != nil {
+			prepare(&copy, destination.names)
+		}
+		c.startWorker(func() {
+			if err := send(&copy); err != nil {
+				l("could not send notice:", err)
+			}
+		})
 	}
 }
 

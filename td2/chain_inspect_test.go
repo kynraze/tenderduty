@@ -243,7 +243,7 @@ func TestDuplicateValidatorFromMultistakingAndSharedConfig(t *testing.T) {
 
 func TestChainShowFibreBridgeTokens(t *testing.T) {
 	options, filename, _ := chainCommandFixture(t)
-	if err := os.WriteFile(options.ConfigFile, []byte("fibre_metrics:\n  listen: 127.0.0.1:4318\n  token: fibre-secret-value\n"), 0600); err != nil {
+	if err := os.WriteFile(options.ConfigFile, []byte("otel_metrics:\n  listen: 127.0.0.1:4318\n  token: fibre-secret-value\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	tokenFile := filepath.Join(filepath.Dir(filename), "bridge.token")

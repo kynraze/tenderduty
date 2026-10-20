@@ -15,7 +15,7 @@ func TestReloadSharedSettingsSummary(t *testing.T) {
 	next.Chains = map[string]*ChainConfig{"Chain": {ChainId: "new"}}
 	restarts := keepListeners(old, next)
 	applied := changedSharedSettings(old, next)
-	want := []string{"fibre_metrics.export_raw", "telegram.api_key", "telegram.min_severity"}
+	want := []string{"otel_metrics.export_raw", "telegram.api_key", "telegram.min_severity"}
 	if !reflect.DeepEqual(applied, want) {
 		t.Fatalf("applied = %v, want %v", applied, want)
 	}
@@ -44,7 +44,8 @@ func TestUnknownConfigKeySuggestions(t *testing.T) {
 			"warning: alerts.telegram.min_severty is not a setting; did you mean alerts.telegram.min_severity?",
 		}},
 		{"chains:\n  Chain:\n    alerts:\n      gov_priority: warning\n", &Config{}, []string{"warning: chains.Chain.alerts.gov_priority is not a setting; did you mean chains.Chain.alerts.gov_severity?"}},
-		{"fibre_metrics:\n  export_raw: yes\n", &Config{}, nil},
+		{"otel_metrics:\n  export_raw: yes\n", &Config{}, nil},
+		{"fibre_metrics:\n  export_raw: yes\n", &Config{}, []string{"warning: fibre_metrics is not a setting; did you mean otel_metrics?"}},
 		{"alerts:\n  gov_priority: warning\n  gov_priority: info\n", &ChainConfig{}, []string{"warning: alerts.gov_priority is not a setting; did you mean alerts.gov_severity?"}},
 	} {
 		if got := unknownConfigWarnings([]byte(test.data), test.target); !reflect.DeepEqual(got, test.want) {

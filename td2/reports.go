@@ -125,6 +125,14 @@ type reportHour struct {
 }
 
 type reportSnapshot struct {
+	Commission        *string `json:"commission,omitempty"`
+	MinSelfDelegation *string `json:"min_self_delegation,omitempty"`
+	Moniker           *string `json:"moniker,omitempty"`
+	Identity          *string `json:"identity,omitempty"`
+	Website           *string `json:"website,omitempty"`
+	SecurityContact   *string `json:"security_contact,omitempty"`
+	Details           *string `json:"details,omitempty"`
+
 	Stake      *float64  `json:"stake,omitempty"`
 	Symbol     string    `json:"symbol,omitempty"`
 	At         time.Time `json:"at"`
@@ -460,15 +468,21 @@ func (cc *ChainConfig) reportStake(now time.Time) reportSnapshot {
 		if b, err := request.Marshal(); err == nil {
 			if response, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Delegation", b); err == nil && response != nil && response.Response.Code == 0 {
 				s.Self, _ = parseReportSelf(response.Response.Value)
+			} else if err == nil && response != nil && strings.Contains(response.Response.Log, "not found") {
+				zero := 0.0 // the whole self-delegation was withdrawn
+				s.Self = &zero
 			}
 		}
 	}
+	rawSelf := s.Self
+	s.Self = nil // only expose self-bond after scaling it to stake units
 	token := cc.cachedBondToken(ctx)
 	requestVal := staking.QueryValidatorRequest{ValidatorAddr: cc.ValAddress}
 	if b, err := requestVal.Marshal(); err == nil {
 		if response, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Validator", b); err == nil && response != nil && response.Response.Code == 0 {
 			val := staking.QueryValidatorResponse{}
 			if val.Unmarshal(response.Response.Value) == nil && !val.Validator.Tokens.IsNil() {
+				s.captureValidatorChanges(val.Validator)
 				tokens, err := strconv.ParseFloat(val.Validator.Tokens.String(), 64)
 				// Use token units when known, otherwise keep consensus-power units.
 				if err == nil && tokens >= 0 && !math.IsInf(tokens, 0) && (token.stakeKnown() || tokens > 0 && s.Power != nil && *s.Power > 0) {
@@ -480,10 +494,10 @@ func (cc *ChainConfig) reportStake(now time.Time) reportSnapshot {
 					} else {
 						scale = float64(*s.Power) / tokens
 					}
-					if s.Self == nil {
+					if rawSelf == nil {
 						return s
 					}
-					self, delegated := *s.Self*scale, (tokens-*s.Self)*scale
+					self, delegated := *rawSelf*scale, (tokens-*rawSelf)*scale
 					s.Self = &self
 					if delegated >= 0 {
 						s.Delegated = &delegated
@@ -495,6 +509,16 @@ func (cc *ChainConfig) reportStake(now time.Time) reportSnapshot {
 		}
 	}
 	return s
+}
+
+// lastReadSnapshot skips snapshots taken while the RPC was down, so a change across them is still seen.
+func lastReadSnapshot(snapshots []reportSnapshot) *reportSnapshot {
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		if s := snapshots[i]; s.Stake != nil || s.Power != nil || s.Commission != nil {
+			return &s
+		}
+	}
+	return nil
 }
 
 func (c *Config) collectReportSnapshots(now time.Time, force bool) {
@@ -527,9 +551,16 @@ func (c *Config) collectReportSnapshots(now time.Time, force bool) {
 		if c.reportData.Snapshots == nil {
 			c.reportData.Snapshots = make(map[string][]reportSnapshot)
 		}
+		previous := lastReadSnapshot(c.reportData.Snapshots[name])
 		c.reportData.Snapshots[name] = append(c.reportData.Snapshots[name], snapshot)
 		c.trimReportsLocked(now)
 		c.reportsMux.Unlock()
+		settings := cc.alertSettings()
+		if settings.ChangesEnabled {
+			if message := validatorChanges(previous, snapshot, settings); message != "" {
+				c.validatorChangeNotice(name, message, settings.ChangesSeverity, snapshot.At)
+			}
+		}
 	}
 }
 

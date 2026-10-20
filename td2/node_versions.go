@@ -116,7 +116,7 @@ func (cc *ChainConfig) ownNodeDetails(version uint64, unreadyOnly bool) string {
 				detail += fmt.Sprintf(" · needs v%d", version)
 			}
 		}
-		lines = append(lines, nodeEndpoint(node.Url)+" · "+detail)
+		lines = append(lines, td.nodeDisplay(cc.name, node.Url)+" · "+detail)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -135,7 +135,7 @@ func (cc *ChainConfig) notUpgradedNodes(version uint64) string {
 		if _, known := parseBinaryMajor(binary); !known {
 			binary = "version unknown"
 		}
-		nodes = append(nodes, nodeEndpoint(node.Url)+" ("+binary+")")
+		nodes = append(nodes, td.nodeDisplay(cc.name, node.Url)+" ("+binary+")")
 	}
 	if len(nodes) == 0 {
 		return ""

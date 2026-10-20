@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -445,10 +446,14 @@ func TestReportBuildTrends(t *testing.T) {
 		h.Signed, h.Missed, h.Watched = 10000-missed, missed, 3600
 	}
 	text := c.buildReport(now, false, false, nil).telegram()
-	for _, want := range []string{"1.20M (+12.4K · +1.0%)", "#72 ▲3", "812 delegators (+5)", "self 50K (=)", "99.99% signed"} {
+	for _, want := range []string{"1.20M (+12.4K · +1.0%)", "#72 ▲3", "812 delegators (+5)", "self 50K\n", "99.99% signed"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q:\n%s", want, text)
 		}
+	}
+	// a daily report hides unchanged values, and a change rounding to 0 is no change
+	if strings.Contains(text, "(=)") || reportChange(-0.3) != "=" || reportChange(0.6) != "+1" {
+		t.Fatalf("unchanged value shown or −0 printed:\n%s", text)
 	}
 	if reportSigningTrend(reportTotals(c.reportData.Hours[cc.name], now.Add(-24*time.Hour), now), reportTotals(c.reportData.Hours[cc.name], now.Add(-48*time.Hour), now.Add(-24*time.Hour))) != " ▲0.01" {
 		t.Fatal("previous period signing trend")
@@ -869,9 +874,65 @@ func TestReportNoValidatorData(t *testing.T) {
 		if len(row.Lines) == 0 || row.Lines[0] != "🔌 No validator data, RPC unreachable" || strings.Contains(strings.Join(row.Lines, "\n"), "Not in the active set") {
 			t.Fatalf("unreachable validator: %+v", row)
 		}
-		if row.Dot != dotGreen {
-			t.Fatalf("unread validator counted as inactive: %+v", row)
+		// the weekly header here reads "watched partly" instead of counts
+		if row.Dot != dotYellow || !weekly && !strings.Contains(strings.Join(r.Header, "\n"), "🟡 1 no data") {
+			t.Fatalf("unread validator: %+v %q", row, r.Header)
 		}
+	}
+}
+
+// out of the active set reads the same on the dashboard, /status and the report
+func TestInactiveIsNotRed(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	cc := &ChainConfig{name: "Chain", ChainId: "kichain_1783-1", monitoring: true, monitoringSince: time.Now(), valInfo: &ValInfo{Moniker: "Kynraze"}}
+	c.Chains["Chain"] = cc
+	inactive := "Kynraze is no longer in the active set on kichain_1783-1"
+	alarms.AllAlarms["Chain"] = map[string]time.Time{inactive: now}
+	alarms.AlarmSeverities = map[string]string{"Chain\x00" + inactive: "critical"}
+
+	if n := cc.urgentAlerts(); n != 0 {
+		t.Fatalf("inactive counted urgent: %d", n)
+	}
+	if dot, label := cc.chainState("Chain", cc.valInfo); dot != "⚪" || label != "not in the active set" {
+		t.Fatalf("status %s %s", dot, label)
+	}
+	r := c.buildReport(now, false, false, nil)
+	if r.Rows[0].Dot != dotWhite || r.Header[1] != "🟢 0 healthy · ⚪ 1 inactive" || r.Rows[0].Lines[0] != "⚪ Not in the active set" {
+		t.Fatalf("report %q %+v", r.Header, r.Rows[0])
+	}
+
+	down := "RPC node http://a has been down for > 3 minutes on kichain_1783-1"
+	alarms.AllAlarms["Chain"][down] = now
+	if dot, _ := cc.chainState("Chain", cc.valInfo); dot != "🔴" || cc.urgentAlerts() != 1 || c.buildReport(now, false, false, nil).Rows[0].Dot != dotRed {
+		t.Fatal("a node down on an inactive validator is not red")
+	}
+	delete(alarms.AllAlarms["Chain"], down)
+	cc.valInfo.Jailed = true
+	if dot, _ := cc.chainState("Chain", cc.valInfo); dot != "🔴" || c.buildReport(now, false, false, nil).Rows[0].Dot != dotRed {
+		t.Fatal("jailed is not red")
+	}
+}
+
+// a red row with no incidents in the period names its active alert, without the node address
+func TestReportRedRowNamesActiveAlert(t *testing.T) {
+	c := auditConfig(t)
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", monitoring: true, monitoringSince: time.Now(), valInfo: &ValInfo{Moniker: "Kynraze", Bonded: true}}
+	c.Chains["Chain"] = cc
+	down := "RPC node http://a has been down for > 3 minutes on chain-1"
+	alarms.AllAlarms["Chain"] = map[string]time.Time{down: now}
+	alarms.AlarmSeverities = map[string]string{"Chain\x00" + down: "critical"}
+	row := c.buildReport(now, false, false, nil).Rows[0]
+	if row.Dot != dotRed || !slices.Contains(row.Lines, "🔔 Active: RPC node down") {
+		t.Fatalf("row %+v", row)
+	}
+	if row := c.buildReport(now, true, false, nil).Rows[0]; row.Dot != dotRed || !strings.Contains(row.Lines[0], "🔔 0 (active: RPC node down)") {
+		t.Fatalf("weekly row %+v", row)
+	}
+	delete(alarms.AllAlarms["Chain"], down)
+	if row := c.buildReport(now, false, false, nil).Rows[0]; row.Dot != dotGreen || len(row.Lines) != 0 {
+		t.Fatalf("row %+v", row)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -162,16 +163,59 @@ func TestGovBacklogNoticeDestinationsAndCard(t *testing.T) {
 	if !strings.HasPrefix(body, "Proposals already in voting\nAlpha #7 ") {
 		t.Fatalf("chains not sorted: %q", body)
 	}
-	if got := <-received; !strings.Contains(got, "Proposals already in voting") {
-		t.Fatal("missing summary title")
+	var sent DiscordMessage
+	if err := json.Unmarshal([]byte(<-received), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Content != "🗳 **Proposals already in voting**" {
+		t.Fatalf("unexpected shared summary title: %q", sent.Content)
 	}
 	msg := &alertMsg{message: body, severity: "info", transient: true, discStyle: "plain"}
 	card := msg.card()
-	if card.Title != "Proposals already in voting" || card.Icon != "🗳" || len(card.Fields) != 2 {
+	if card.Title != "" || card.Icon != "🗳" || len(card.Fields) != 2 {
 		t.Fatalf("unexpected card: %+v", card)
 	}
-	if text := buildDiscordMessage(msg).Content; !strings.Contains(text, "Alpha #7 ") || !strings.Contains(text, "Chain #7 ") {
+	if card.Fields[0].Icon != "" || card.Fields[0].Label != "Alpha" || !strings.HasPrefix(card.Fields[0].Value, "#7 ") {
+		t.Fatalf("unexpected proposal row: %+v", card.Fields[0])
+	}
+	for _, field := range card.Fields {
+		if field.Label == "Note" {
+			t.Fatalf("proposal rendered as a note: %+v", field)
+		}
+	}
+	if len(sent.Embeds) != 1 || len(sent.Embeds[0].Fields) != 2 || sent.Embeds[0].Fields[0].Name != "Alpha" || !strings.HasPrefix(sent.Embeds[0].Fields[0].Value, "#7 ") {
+		t.Fatalf("unexpected summary embed: %+v", sent.Embeds)
+	}
+	if text := buildDiscordMessage(msg).Content; strings.Contains(text, "Note") || !strings.Contains(text, "**Alpha:** #7 ") || !strings.Contains(text, "**Chain:** #7 ") {
 		t.Fatalf("plain summary lost proposal lines: %q", text)
+	}
+	if title := buildGotifyMessage(msg).Title; title != "🗳 Proposals already in voting" {
+		t.Fatalf("unexpected gotify title: %q", title)
+	}
+	if title := buildSlackMessage(msg).Attachments[0].Title; title != "🗳 Proposals already in voting" {
+		t.Fatalf("unexpected slack title: %q", title)
+	}
+}
+
+func TestGovBacklogCardRows(t *testing.T) {
+	msg := &alertMsg{message: "Proposals already in voting\nAlpha #7 Update #8 title · 3d left\nFallback line\n", transient: true}
+	card := msg.card()
+	if len(card.Fields) != 2 || card.Fields[0] != row("", "Alpha", "#7 Update #8 title · 3d left") || card.Fields[1] != row("ℹ️", "Note", "Fallback line") {
+		t.Fatalf("unexpected proposal rows: %+v", card.Fields)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"telegram", card.telegramLines()[0], "<b>Alpha:</b> #7 Update #8 title · <b>3d left</b>"},
+		{"markdown", card.markdownLines()[0], "**Alpha:** #7 Update #8 title · **3d left**"},
+		{"plain", card.plainLines()[0], "Alpha: #7 Update #8 title · 3d left"},
+		{"embed", card.discordEmbed(0).Fields[0].Name, "Alpha"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
@@ -196,5 +240,82 @@ func TestGovBacklogClippingAndCancellation(t *testing.T) {
 	c.cancel()
 	if body := c.flushGovBacklog(now.Add(2 * time.Minute)); body != "" {
 		t.Fatal("cancelled config flushed a summary")
+	}
+}
+
+func TestGovBacklogTelegramDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		key     string
+		channel string
+		enabled bool
+		want    int
+	}{
+		{"shared chat", testToken, "@one", true, 1},
+		{"separate chats", testToken, "@two", true, 2},
+		{"separate bots", "456:test", "@one", true, 2},
+		{"disabled chain", testToken, "@one", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type delivery struct{ path, chat, text string }
+			received := make(chan delivery, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/getMe") {
+					io.WriteString(w, `{"ok":true,"result":{"id":123,"is_bot":true,"first_name":"Test"}}`)
+					return
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				received <- delivery{r.URL.Path, r.Form.Get("chat_id"), r.Form.Get("text")}
+				io.WriteString(w, `{"ok":true,"result":{"message_id":1}}`)
+			}))
+			target, _ := url.Parse(server.URL)
+			oldTransport := http.DefaultTransport
+			t.Cleanup(func() {
+				http.DefaultTransport = oldTransport
+				server.Close()
+			})
+			http.DefaultTransport = redirectTransport{base: oldTransport, target: target}
+			c, cc, _, p := unseenGovChain(t)
+			c.Discord.Enabled = yes(false)
+			c.Telegram = TeleConfig{Enabled: yes(true), ApiKey: testToken, Channel: "@one", MinSeverity: "critical"}
+			cc.Alerts.Telegram = c.Telegram
+			alpha := c.Telegram
+			alpha.ApiKey, alpha.Channel, alpha.Enabled = tc.key, tc.channel, yes(tc.enabled)
+			c.Chains["Alpha"] = &ChainConfig{name: "Alpha", Alerts: AlertConfig{Telegram: alpha}}
+			c.Chains["Unrelated"] = &ChainConfig{name: "Unrelated", Alerts: AlertConfig{Telegram: c.Telegram}}
+			now := p.VotingStart
+			c.collectGovBacklog(cc.name, p, now)
+			c.collectGovBacklog("Alpha", p, now)
+			p.ID = 2
+			c.collectGovBacklog(cc.name, p, now)
+			c.flushGovBacklog(now.Add(2 * time.Minute))
+			c.workers.Wait()
+			if len(received) != tc.want || len(alarms.Outbox) != 0 {
+				t.Fatalf("got %d deliveries and %d outbox entries", len(received), len(alarms.Outbox))
+			}
+			for i := 0; i < tc.want; i++ {
+				got := <-received
+				header, _, _ := strings.Cut(got.text, "\n")
+				if tc.name == "shared chat" {
+					if header != "🗳 <b>Proposals already in voting</b>" || !strings.Contains(got.text, "<b>Alpha:</b> #7 ") || !strings.Contains(got.text, "<b>Chain:</b> #7 ") {
+						t.Fatalf("unexpected shared summary: %+v", got)
+					}
+				} else {
+					name, other := "Chain", "Alpha"
+					if got.chat == "@two" || strings.Contains(got.path, "456:test") {
+						name, other = other, name
+					}
+					if header != "🗳 <b>"+name+"</b> · Proposals already in voting" || !strings.Contains(got.text, "<b>"+name+":</b> #7 ") || strings.Contains(got.text, "<b>"+other+":</b> #") {
+						t.Fatalf("unexpected routed summary: %+v", got)
+					}
+				}
+				if strings.Contains(got.text, "Note") || strings.Contains(got.text, "Unrelated") || (strings.Contains(got.text, "<b>Chain:</b> #7 ") && strings.Index(got.text, "<b>Chain:</b> #2 ") > strings.Index(got.text, "<b>Chain:</b> #7 ")) {
+					t.Fatalf("unrelated or unsorted proposals: %+v", got)
+				}
+			}
+		})
 	}
 }

@@ -56,6 +56,7 @@ func TestAddChainChecksLocalInputBeforeTheNetwork(t *testing.T) {
 		{"node scheme", AddChainOptions{Valoper: "celestiavaloper1test", Node: "ftp://rpc.example"}, `--node must be an http:// or https:// URL, got "ftp://rpc.example"`},
 		{"node before set", AddChainOptions{Valoper: "celestiavaloper1test", Node: "notaurl", Settings: []string{"nope=1"}, Name: "a/b"}, `--node must be an http:// or https:// URL, got "notaurl"`},
 		{"set unknown key", AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Settings: []string{"alerts.fibre_enabld=yes"}}, `unknown setting "alerts.fibre_enabld"; did you mean alerts.fibre_enabled?`},
+		{"set invalid severity", AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Settings: []string{"alerts.gov_severity=loud"}}, `alerts.gov_severity must be info, warning, error or critical, got "loud"`},
 		{"set bad value", AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Settings: []string{"public_fallback=yes", "alerts.consecutive_missed=lots"}}, `alerts.consecutive_missed must be a whole number, got "lots"`},
 		{"set before name", AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Settings: []string{"public_fallback=maybe"}, Name: "a/b"}, `public_fallback must be yes or no, got "maybe"`},
 		{"path traversal", AddChainOptions{Valoper: "valoper", Node: "https://rpc.example", Name: "../outside"}, badName},

@@ -92,6 +92,9 @@ func TestReloadInvalidKeepsOldStateAndReportsOncePerDestination(t *testing.T) {
 	if !strings.Contains(body, "Config reload failed") || !strings.Contains(body, "requires chain_id and valoper_address") {
 		t.Fatalf("notice didn't report the problems: %s", body)
 	}
+	if strings.Contains(body, "**Chain**") || strings.Contains(body, "**Other**") {
+		t.Fatalf("config-wide notice headed by a chain: %s", body)
+	}
 	if err := os.WriteFile(filename, []byte("chains: ["), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +111,13 @@ func TestReloadSettingsPreserveChainAndListeners(t *testing.T) {
 	c := auditConfig(t)
 	c.updateChan = make(chan *dash.ChainStatus, 8)
 	c.statsChan = make(chan *promUpdate, 8)
-	c.EnableDash, c.Listen, c.Prom, c.PrometheusListenPort = true, "8888", true, 28686
+	c.EnableDash, c.Listen, c.Prom, c.PrometheusListenPort = true, "8888", true, "28686"
 	c.FibreMetrics = FibreMetricsConfig{Listen: "127.0.0.1:4318", Token: "old"}
 	chain := reloadTestChain()
 	chain.blocksResults, chain.statTotalSigns = []int{3, 0}, 17
 	c.Chains["Chain"] = chain
 	next := &Config{
-		Listen: "9999", PrometheusListenPort: 9000,
+		Listen: "9999", PrometheusListenPort: "127.0.0.1:9000",
 		FibreMetrics: FibreMetricsConfig{Listen: "127.0.0.1:4319", Token: "new", TLSCert: "cert", TLSKey: "key"},
 		Chains:       map[string]*ChainConfig{"Chain": reloadTestChain()},
 	}
@@ -135,7 +138,7 @@ func TestReloadSettingsPreserveChainAndListeners(t *testing.T) {
 		t.Fatal("chain settings didn't apply")
 	}
 	s := c.settings()
-	if !s.EnableDash || s.Listen != "8888" || !s.Prom || s.PrometheusListenPort != 28686 || s.FibreMetrics.Listen != "127.0.0.1:4318" || s.FibreMetrics.TLSCert != "" {
+	if !s.EnableDash || s.Listen != "8888" || !s.Prom || s.PrometheusListenPort != "28686" || s.FibreMetrics.Listen != "127.0.0.1:4318" || s.FibreMetrics.TLSCert != "" {
 		t.Fatal("restart-only settings were applied")
 	}
 	if s.FibreMetrics.Token != "new" || s.NodeDownMin != 9 || s.AlertDefaults.ConsecutiveMissed != 7 {
@@ -168,7 +171,7 @@ func TestReloadRemovedChainResolvesAndDeletesSeries(t *testing.T) {
 		t.Fatal("removed chain or its alarm is still active")
 	}
 	r, ok := storedResolution("Chain", message)
-	if !ok || r.label != "No longer watched" {
+	if !ok || r.label != "No longer watched" || r.text != message+"\n"+removedNote {
 		t.Fatalf("resolution = %+v, %v", r, ok)
 	}
 	update, stat := <-c.updateChan, <-c.statsChan

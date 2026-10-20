@@ -109,11 +109,11 @@ func TestSignalOwnNodeUnknownAndFallback(t *testing.T) {
 		checkCard(t, "unknown own node", (&alertMsg{chain: cc.name, message: soon}).card())
 	}
 	node.AlertIfDown = false
-	if !cc.signalNodesReady(cc.signal.BinaryVersion, 11) || signalUpgradeDetail(cc.name, soon) != "node ready: celestia-app 11.0.0" {
+	if !cc.signalNodesReady(cc.signal.BinaryVersion, 11) || signalUpgradeDetail(cc.name, soon) != "RPC node ready: celestia-app 11.0.0 · own node unknown (none with alert_if_down)" {
 		t.Fatal("active-node fallback changed")
 	}
 	cc.signalAlarms(&ValInfo{Valcons: "cons"}, false)
-	if r, ok := storedResolution(cc.name, soon); !ok || r.text != "node ready: celestia-app 11.0.0" {
+	if r, ok := storedResolution(cc.name, soon); !ok || r.text != "RPC node ready: celestia-app 11.0.0 · own node unknown (none with alert_if_down)" {
 		t.Fatalf("fallback resolution %+v", r)
 	}
 }

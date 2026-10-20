@@ -21,7 +21,7 @@ import (
 
 var restartSettings = []string{
 	"enable_dashboard", "listen_port", "prometheus_enabled", "prometheus_listen_port",
-	"fibre_metrics.listen", "fibre_metrics.tls_cert", "fibre_metrics.tls_key", "hide_logs", "healthcheck",
+	"otel_metrics.listen", "otel_metrics.tls_cert", "otel_metrics.tls_key", "hide_logs", "healthcheck",
 }
 
 func configField(v reflect.Value, key string) reflect.Value {
@@ -83,7 +83,7 @@ Usage:
 Examples:
   tenderduty config show telegram
   tenderduty config set reports.daily=09:00 reports.timezone=Asia/Jakarta
-  tenderduty config set fibre_metrics.listen=10.0.0.5:4318 fibre_metrics.token=generate
+  tenderduty config set otel_metrics.listen=10.0.0.5:4318 otel_metrics.token=generate
   echo "$BOT_TOKEN" | tenderduty config set telegram.api_key=-
 
 Use =- to read a value from stdin, or token=generate for a random token.
@@ -163,7 +163,7 @@ func ConfigCommand(ctx context.Context, options ChainCommandOptions, args []stri
 
 func showConfig(options ChainCommandOptions, section string, output io.Writer) error {
 	keys, order := configSettingTypes()
-	sections := []string{"general", "pagerduty", "discord", "telegram", "slack", "quiet_hours", "healthcheck", "reports", "fibre_metrics", "alert_defaults"}
+	sections := []string{"general", "pagerduty", "discord", "telegram", "slack", "gotify", "quiet_hours", "healthcheck", "reports", "otel_metrics", "alert_defaults"}
 	for _, key := range order {
 		top, _, nested := strings.Cut(key, ".")
 		if !nested {
@@ -190,7 +190,7 @@ func showConfig(options ChainCommandOptions, section string, output io.Writer) e
 			return fmt.Errorf("unknown section %q; sections: %s", section, strings.Join(sections, ", "))
 		}
 	}
-	c, err := loadConfigQuiet(options.ConfigFile, options.Directory, options.Password)
+	c, err := loadConfigForEdit(options.ConfigFile, options.Directory, options.Password)
 	if err != nil {
 		return fmt.Errorf("cannot load config: %w", err)
 	}
@@ -269,6 +269,14 @@ func showConfig(options ChainCommandOptions, section string, output io.Writer) e
 				return err
 			}
 			text := settingText(keys[key], &node)
+			if node.Kind == yaml.MappingNode {
+				node.Style = yaml.FlowStyle
+				data, err := yaml.Marshal(&node)
+				if err != nil {
+					return err
+				}
+				text = strings.TrimSpace(string(data))
+			}
 			if text == "unset" || text == `""` {
 				text = "-"
 			}
@@ -389,6 +397,9 @@ func setConfig(options ChainCommandOptions, args []string, input io.Reader, outp
 			return fmt.Errorf(`write key=value without spaces around "="`)
 		}
 		key = strings.ToLower(key)
+		if key == "servers" || strings.HasPrefix(key, "servers.") {
+			return fmt.Errorf("edit servers in config.yml by hand")
+		}
 		if key == "chains" || strings.HasPrefix(key, "chains.") {
 			return fmt.Errorf("chains settings are managed with tenderduty chain set")
 		}
@@ -426,6 +437,9 @@ func setConfig(options ChainCommandOptions, args []string, input io.Reader, outp
 	}
 	candidate, changes, err := applySettingsDiff(data, settings, keys)
 	if err != nil {
+		if strings.HasPrefix(err.Error(), "yaml:") {
+			return fmt.Errorf("%s: %w", filepath.Base(options.ConfigFile), err)
+		}
 		return err
 	}
 	changed := false
@@ -448,14 +462,15 @@ func setConfig(options ChainCommandOptions, args []string, input io.Reader, outp
 		if err := os.WriteFile(file, candidate, 0600); err != nil {
 			return err
 		}
-		c, err := loadConfigQuiet(file, options.Directory, options.Password)
+		c, err := loadConfigForEdit(file, options.Directory, options.Password)
 		if err != nil {
 			return err
 		}
 		_, problems := validateConfig(c)
 		c.cancel()
 		c.deliveryCancel()
-		if err := addedErrors(liveProblems(options.ConfigFile, options.Directory, options.Password), problems); err != nil {
+		live := liveProblems(options.ConfigFile, options.Directory, options.Password)
+		if err := addedErrors(live, problems); err != nil {
 			return err
 		}
 		defer func() {
@@ -464,6 +479,7 @@ func setConfig(options ChainCommandOptions, args []string, input io.Reader, outp
 					fmt.Fprintln(output, "Still to fix:", strings.TrimPrefix(problem, "error: "))
 				}
 			}
+			printAddedWarnings(output, live, problems)
 		}()
 		info, err := os.Stat(options.ConfigFile)
 		if err != nil {

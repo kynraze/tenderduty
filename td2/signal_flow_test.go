@@ -35,7 +35,7 @@ func TestSignalBinaryMajor(t *testing.T) {
 			t.Fatalf("%q: %d %v", tc.binary, major, known)
 		}
 	}
-	if signalBinaryDetail("abc", 11) != "" || signalBinaryDetail("v11.0.0-mocha", 11) != "node ready: celestia-app 11.0.0-mocha" || signalBinaryDetail("10.4.0-corto", 11) != "node runs celestia-app 10.4.0-corto, version 11 needs v11 or later" {
+	if signalBinaryDetail("abc", 11) != "" || signalBinaryDetail("v11.0.0-mocha", 11) != "RPC node ready: celestia-app 11.0.0-mocha · own node unknown (none with alert_if_down)" || signalBinaryDetail("10.4.0-corto", 11) != "RPC node runs celestia-app 10.4.0-corto, version 11 needs v11 or later" {
 		t.Fatal("wrong binary detail")
 	}
 }
@@ -88,7 +88,7 @@ func TestSignalScheduledBinaryReadiness(t *testing.T) {
 			}
 			if !signalBinaryReady(binary, 11) {
 				r, ok := storedResolution(cc.name, soon)
-				if !ok || r.text != "node ready: celestia-app 11.0.0" {
+				if !ok || r.text != "RPC node ready: celestia-app 11.0.0 · own node unknown (none with alert_if_down)" {
 					t.Fatalf("resolution %+v", r)
 				}
 				checkCard(t, "binary ready", (&alertMsg{chain: cc.name, message: soon, resolved: true}).card())

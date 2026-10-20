@@ -69,7 +69,7 @@ func (c *Config) chainNamed(name string) (string, *ChainConfig) {
 
 // telegramCommand answers HTML commands and updates mentions only.
 func (c *Config) telegramCommand(command, args string, now time.Time, from tgMention) string {
-	switch command {
+	switch strings.ToLower(command) {
 	case "mentionme":
 		if strings.EqualFold(strings.TrimSpace(args), "off") {
 			if !removeMention(from.ID) {
@@ -114,17 +114,21 @@ func (cc *ChainConfig) chainState(name string, info *ValInfo) (dot, label string
 		return "🔴", "tombstoned"
 	case info.Jailed:
 		return "🔴", "jailed"
-	case alarms.getCount(name) > 0:
-		return "🔴", plural(alarms.getCount(name), "active alert")
+	case cc.urgentAlerts() > 0:
+		return "🔴", plural(cc.urgentAlerts(), "active alert")
 	case cc.hasNoNodes():
 		return "🟡", "no RPC node working"
 	case !cc.isMonitoring():
 		return "🟡", "not watching blocks"
+	case info.Moniker == "not connected":
+		return "🟡", "no validator data"
 	case !info.Bonded:
 		return "⚪", "not in the active set"
-	default:
-		return "🟢", "healthy"
 	}
+	if _, notices, label := cc.dashboardAlerts(); notices > 0 {
+		return "🔵", strings.ToLower(label)
+	}
+	return "🟢", "healthy"
 }
 
 func (c *Config) statusSummary() string {
@@ -139,7 +143,7 @@ func (c *Config) statusSummary() string {
 		line string
 	}
 	rows := make([]row, 0, len(names))
-	healthy := 0
+	healthy, inactive := 0, 0
 	for _, name := range names {
 		c.chainsMux.RLock()
 		cc := c.Chains[name]
@@ -149,9 +153,13 @@ func (c *Config) statusSummary() string {
 		}
 		info, _ := cc.validatorState()
 		dot, label := cc.chainState(name, info)
-		rank := map[string]int{"🔴": 0, "🟡": 1, "⚪": 2, "🟢": 3}[dot]
-		if dot == "🟢" {
+		rank := map[string]int{"🔴": 0, "🟡": 1, "🔵": 2, "⚪": 3, "🟢": 4}[dot]
+		// as in the report: notices are healthy, out of the active set is counted apart
+		switch dot {
+		case "🟢", "🔵":
 			healthy++
+		case "⚪":
+			inactive++
 		}
 		line := fmt.Sprintf("%s <b>%s</b> · %s", dot, html.EscapeString(name), label)
 		if info.Window > 0 {
@@ -163,7 +171,14 @@ func (c *Config) statusSummary() string {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i].rank < rows[j].rank || (rows[i].rank == rows[j].rank && rows[i].line < rows[j].line)
 	})
-	lines := []string{fmt.Sprintf("📊 <b>Status</b> · %d of %s healthy", healthy, plural(len(names), "chain")), ""}
+	header := fmt.Sprintf("📊 <b>Status</b> · %d of %s healthy", healthy, plural(len(names), "chain"))
+	if inactive > 0 {
+		header += fmt.Sprintf(" · ⚪ %d inactive", inactive)
+	}
+	if rest := len(rows) - healthy - inactive; rest > 0 {
+		header += fmt.Sprintf(" · 🔴 %d needs attention", rest)
+	}
+	lines := []string{header, ""}
 	for _, r := range rows {
 		lines = append(lines, r.line)
 	}
@@ -229,7 +244,10 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 		if info.TotalPower > 0 {
 			power += " (" + html.EscapeString(percent(info.VotingPower, info.TotalPower)) + ")"
 		}
-		lines = append(lines, statusField("⚖️", "Voting power", power+fmt.Sprintf(" · #%d/%d", info.Rank, info.ActiveSet)))
+		if info.Rank > 0 {
+			power += fmt.Sprintf(" · #%d/%d", info.Rank, info.ActiveSet)
+		}
+		lines = append(lines, statusField("⚖️", "Voting power", power))
 	}
 	lines = append(lines, cc.statusReportLines(name, now)...)
 	healthyNodes := 0
@@ -302,7 +320,19 @@ func (cc *ChainConfig) statusDetail(name string, now time.Time) string {
 	alarms.notifyMux.RLock()
 	active := make([]string, 0, len(alarms.AllAlarms[name]))
 	for message := range alarms.AllAlarms[name] {
-		first, _, _ := strings.Cut((&alertMsg{message: message}).summary(), "\n")
+		msg := &alertMsg{chain: name, message: message}
+		summary := msg.summary()
+		// hide_logs: name nodes as the Nodes lines above do
+		if nodeURL, _, ok := nodeDownParts(message); ok && td.HideLogs {
+			label := "node"
+			for i, node := range cc.Nodes {
+				if node.Url == nodeURL {
+					label = fmt.Sprintf("Node %d", i+1)
+				}
+			}
+			summary = strings.ReplaceAll(msg.rawSummary(), nodeURL, label)
+		}
+		first, _, _ := strings.Cut(summary, "\n")
 		active = append(active, "• "+html.EscapeString(first))
 	}
 	alarms.notifyMux.RUnlock()
@@ -330,11 +360,7 @@ func splitMessage(text string) []string {
 	return append(parts, current)
 }
 
-// telegramCommands long polls for commands, so no port needs to be open. Telegram allows one reader at a time.
-func (c *Config) telegramCommands() {
-	c.telegramCommandsContext(c.context())
-}
-
+// telegramCommandsContext long polls for commands, so no port needs to be open. Telegram allows one reader at a time.
 func (c *Config) telegramCommandsContext(ctx context.Context) {
 	client := newNotificationClient(ctx, 60*time.Second)
 	var bot *tgbotapi.BotAPI

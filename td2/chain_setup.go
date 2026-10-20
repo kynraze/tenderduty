@@ -50,11 +50,11 @@ func metricsEndpoint(m FibreMetricsConfig, remote, override string) (string, err
 }
 
 func printMetricsSetup(m FibreMetricsConfig, endpoint, chainID string, bridge bool, output io.Writer) {
-	if m.Listen == "" {
-		fmt.Fprintln(output, "Run first: tenderduty config set fibre_metrics.listen=<ip>:4318 fibre_metrics.token=generate")
+	if bridge && m.Listen == "" {
+		fmt.Fprintln(output, "Run first: tenderduty config set otel_metrics.listen=<ip>:4318 otel_metrics.token=generate")
 	}
 	if m.Token != "" {
-		fmt.Fprintln(output, "token: fibre_metrics.token in config.yml (config show hides it)")
+		fmt.Fprintln(output, "token: otel_metrics.token in config.yml (config show hides it)")
 	}
 	if bridge {
 		scheme, address, _ := strings.Cut(endpoint, "://")
@@ -203,6 +203,9 @@ func setupBridge(ctx context.Context, options ChainCommandOptions, name, address
 
 // Only a definite missing module warrants a warning; transport failures say nothing.
 func bridgeNotCelestia(ctx context.Context, cc *ChainConfig) bool {
+	if !celestiaAddress(cc) {
+		return true
+	}
 	if len(cc.Nodes) == 0 {
 		return false
 	}
@@ -217,7 +220,28 @@ func bridgeNotCelestia(ctx context.Context, cc *ChainConfig) bool {
 	return moduleMissing(err)
 }
 
+// Every Celestia network uses celestiavaloper addresses; this needs no node.
+func celestiaAddress(cc *ChainConfig) bool {
+	addresses := []string{cc.ValAddress}
+	for _, v := range cc.Validators {
+		addresses = append(addresses, v.ValAddress)
+	}
+	for _, a := range addresses {
+		if a != "" && !strings.HasPrefix(a, "celestiavaloper") {
+			return false
+		}
+	}
+	return true
+}
+
 func setupFibre(ctx context.Context, options ChainCommandOptions, name, instance, override string, off, hasInstance bool, output io.Writer) error {
+	return setupFibreWithFetch(ctx, options, name, instance, override, off, hasInstance, output, addChainFetchers{
+		validator:     registryValidator,
+		fibreProvider: registryFibreProvider,
+	})
+}
+
+func setupFibreWithFetch(ctx context.Context, options ChainCommandOptions, name, instance, override string, off, hasInstance bool, output io.Writer, fetch addChainFetchers) error {
 	name, _, err := standaloneChain(options, name)
 	if err != nil {
 		return err
@@ -236,12 +260,13 @@ func setupFibre(ctx context.Context, options ChainCommandOptions, name, instance
 	defer c.cancel()
 	defer c.deliveryCancel()
 	remote, chainID := "", ""
-	queried := false
+	queried, celestia := false, true
 	for key, cc := range c.Chains {
 		if key != name && !strings.HasPrefix(key, name+" / ") {
 			continue
 		}
 		chainID = cc.ChainId
+		celestia = celestia && celestiaAddress(cc)
 		cc.Alerts.FibreAlerts = true
 		if hasInstance {
 			cc.Alerts.FibreInstance = instance
@@ -252,19 +277,36 @@ func setupFibre(ctx context.Context, options ChainCommandOptions, name, instance
 		if cc.fibreUnsupported {
 			fmt.Fprintln(output, "✗ chain has no x/valaddr support")
 		}
-		if !queried && remote == "" && strings.Contains(cc.ValconsOverride, "valcons1") && len(cc.Nodes) > 0 {
+		if !queried && remote == "" && len(cc.Nodes) > 0 {
 			queried = true
-			client, err := rpchttp.New(cc.Nodes[0].Url, "/websocket")
-			if err == nil {
-				probe, cancel := context.WithTimeout(ctx, 10*time.Second)
-				remote, _, err = getFibreProvider(probe, client, cc.ValconsOverride)
-				cancel()
-				if moduleMissing(err) {
-					cc.fibreUnsupported = true
-					fmt.Fprintln(output, "✗ chain has no x/valaddr support")
+			probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+			node, valcons := cc.Nodes[0].Url, cc.ValconsOverride
+			var err error
+			if !strings.Contains(valcons, "valcons1") {
+				var validator *ValInfo
+				validator, err = fetch.validator(probe, node, cc.ValAddress)
+				valcons = ""
+				if err == nil && validator != nil {
+					valcons = validator.Valcons
 				}
 			}
+			if err == nil && valcons != "" {
+				var found bool
+				remote, found, err = fetchFibreProvider(probe, fetch, node, valcons)
+				if moduleMissing(err) {
+					cc.fibreUnsupported = true
+					fmt.Fprintln(output, "\u2717 chain has no x/valaddr support")
+				} else if err == nil && found {
+					fmt.Fprintf(output, "\u2713 registered Fibre provider at %s\n", stripControl(remote))
+				} else if err == nil {
+					fmt.Fprintf(output, "\u26a0 %s is not a registered Fibre provider yet; the not registered alert fires until it is\n", name)
+				}
+			}
+			cancel()
 		}
+	}
+	if !celestia {
+		fmt.Fprintf(output, "⚠ %s doesn't look like Celestia; Fibre alerts only make sense for a Celestia network\n", name)
 	}
 	endpoint, err := metricsEndpoint(c.FibreMetrics, remote, override)
 	if err != nil {
@@ -272,19 +314,21 @@ func setupFibre(ctx context.Context, options ChainCommandOptions, name, instance
 	}
 	m := c.FibreMetrics
 	if m.Listen == "" {
-		fmt.Fprintln(output, "⚠ Fibre metrics are off; run: tenderduty config set fibre_metrics.listen=<ip>:4318 fibre_metrics.token=generate (restart needed)")
+		fmt.Fprintln(output, "⚠ Fibre metrics are off; run: tenderduty config set otel_metrics.listen=<ip>:4318 otel_metrics.token=generate (restart needed)")
 	} else {
 		fmt.Fprintf(output, "✓ Fibre metrics listen on %s\n", m.Listen)
 	}
 	host, _, _ := net.SplitHostPort(m.Listen)
-	if m.Token == "" && !m.AllowWithoutToken && !fibreMetricsLoopback(host) {
-		fmt.Fprintln(output, "⚠ Fibre metrics need a token; run: tenderduty config set fibre_metrics.token=generate")
-	} else if m.Token != "" {
-		fmt.Fprintln(output, "✓ Fibre metrics token set")
-	} else if m.AllowWithoutToken {
-		fmt.Fprintln(output, "⚠ Fibre metrics accept no token (allow_without_token); keep port 4318 firewalled to Fibre's IP")
-	} else {
-		fmt.Fprintln(output, "✓ Fibre metrics on loopback, no token needed")
+	if m.Listen != "" {
+		if m.Token == "" && !m.AllowWithoutToken && !fibreMetricsLoopback(host) {
+			fmt.Fprintln(output, "⚠ Fibre metrics need a token; run: tenderduty config set otel_metrics.token=generate")
+		} else if m.Token != "" {
+			fmt.Fprintln(output, "✓ Fibre metrics token set")
+		} else if m.AllowWithoutToken {
+			fmt.Fprintln(output, "⚠ Fibre metrics accept no token (allow_without_token); keep port 4318 firewalled to Fibre's IP")
+		} else {
+			fmt.Fprintln(output, "✓ Fibre metrics on loopback, no token needed")
+		}
 	}
 	settings := []string{name, "alerts.fibre_enabled=yes"}
 	if hasInstance {

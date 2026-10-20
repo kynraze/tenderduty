@@ -1,6 +1,7 @@
 package tenderduty
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -120,6 +121,12 @@ func (cc *ChainConfig) dashboardAlertLines() []dash.AlertLine {
 		if td.HideLogs {
 			// only the alert's kind, as in its title; messages can name hosts
 			_, kind := msg.header()
+			// these titles are only the severity
+			if _, _, ok := nodeDownParts(message); ok {
+				kind = "RPC node down"
+			} else if strings.HasPrefix(message, "no RPC endpoints are working for ") {
+				kind = "No RPC endpoint working"
+			}
 			lines = append(lines, line{dash.AlertLine{Text: kind, Notice: notice, Severity: severity, Since: since[message]}, severity})
 			continue
 		}
@@ -203,6 +210,50 @@ func (cc *ChainConfig) dashboardAlerts() (active, notices int, label string) {
 		}
 	}
 	return len(messages), notices, label
+}
+
+// urgentAlarm tells if an alarm needs action, as the dashboard does: no notices, and out of the active set shows as inactive.
+func (cc *ChainConfig) urgentAlarm(message, severity string) bool {
+	if notice, _ := cc.noticeAlarm(message, severity); notice {
+		return false
+	}
+	if strings.Contains(message, " is no longer in the active set on ") {
+		info, _ := cc.validatorState()
+		return info.Bonded || info.Jailed || info.Tombstoned
+	}
+	return true
+}
+
+func (cc *ChainConfig) urgentAlerts() int {
+	return len(cc.urgentMessages())
+}
+
+// urgentMessages maps each alarm that needs action to its severity.
+func (cc *ChainConfig) urgentMessages() map[string]string {
+	alarms.notifyMux.RLock()
+	severities := make(map[string]string, len(alarms.AllAlarms[cc.name]))
+	for message := range alarms.AllAlarms[cc.name] {
+		severities[message] = alarms.AlarmSeverities[cc.name+"\x00"+message]
+	}
+	alarms.notifyMux.RUnlock()
+	for message, severity := range severities {
+		if !cc.urgentAlarm(message, severity) {
+			delete(severities, message)
+		}
+	}
+	return severities
+}
+
+// urgentLabels names the alarms that need action as report incidents do, without node addresses.
+func (cc *ChainConfig) urgentLabels() []string {
+	labels := make([]string, 0)
+	for message := range cc.urgentMessages() {
+		if label := reportAlarmKind(cc.name, message); !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 func (node *NodeConfig) snapshot() nodeStatus {

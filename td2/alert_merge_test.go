@@ -148,7 +148,7 @@ func TestDeprecatedAlertWarningsOnce(t *testing.T) {
 	}
 	count := 0
 	for _, warning := range c.configWarnings {
-		if warning == "warning: percentage_* is replaced by jail_risk_percent, see docs/chains.md" {
+		if warning == "warning: percentage_* is replaced by jail_risk_percent, see docs/config.md" {
 			count++
 		}
 	}

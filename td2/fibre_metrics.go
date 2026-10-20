@@ -320,13 +320,14 @@ func (st *fibreStore) snapshot(chain string) fibreSnapshot {
 // Match the hostname, or the sole unnamed chain with Fibre alerts.
 // Chains found without x/valaddr don't compete, so fibre_enabled in alert_defaults still works.
 // Neither do chains a labeled Fibre feeds: label only the new Fibre and the old one keeps its chain.
+// Nor do chains with non-Celestia addresses, so one with its RPC down can't block the Celestia one.
 // ponytail: the mark is not saved, so after a restart unlabeled exports wait for the labeled Fibre's first export (≤1 min).
 func (c *Config) fibreChainFor(instance string) string {
 	c.chainsMux.RLock()
 	defer c.chainsMux.RUnlock()
 	unnamed, count := "", 0
 	for key, cc := range c.Chains {
-		if cc == nil || !cc.alertSettings().FibreAlerts {
+		if cc == nil || !cc.alertSettings().FibreAlerts || !celestiaAddress(cc) {
 			continue
 		}
 		cc.stateMux.RLock()
@@ -1090,10 +1091,10 @@ func validateFibreMetrics(c *Config) (fatal bool, problems []string) {
 	m := c.FibreMetrics
 	if (m.TLSCert == "") != (m.TLSKey == "") {
 		fatal = true
-		problems = append(problems, "error: fibre_metrics needs both tls_cert and tls_key, or neither")
+		problems = append(problems, "error: otel_metrics needs both tls_cert and tls_key, or neither")
 	}
 	if m.ExportRaw && !c.Prom {
-		problems = append(problems, "warning: fibre_metrics export_raw needs prometheus_enabled, there is nowhere to export the metrics to")
+		problems = append(problems, "warning: otel_metrics export_raw needs prometheus_enabled, there is nowhere to export the metrics to")
 	}
 	if m.Listen == "" {
 		return
@@ -1101,29 +1102,29 @@ func validateFibreMetrics(c *Config) (fatal bool, problems []string) {
 	host, port, err := net.SplitHostPort(m.Listen)
 	if n, convErr := strconv.Atoi(port); err != nil || convErr != nil || n < 1 || n > 65535 {
 		fatal = true
-		problems = append(problems, fmt.Sprintf("error: fibre_metrics listen %q is not a valid host:port", m.Listen))
+		problems = append(problems, fmt.Sprintf("error: otel_metrics listen %q is not a valid host:port", m.Listen))
 		return
 	}
 	if !fibreMetricsLoopback(host) && m.Token == "" {
 		if m.AllowWithoutToken {
-			problems = append(problems, fmt.Sprintf("warning: fibre_metrics listens on %s without a token; make sure a firewall lets only Fibre's IP reach it", m.Listen))
+			problems = append(problems, fmt.Sprintf("warning: otel_metrics listens on %s without a token; make sure a firewall lets only Fibre's IP reach it", m.Listen))
 		} else {
 			fatal = true
-			problems = append(problems, fmt.Sprintf("error: fibre_metrics listens on %s without a token. Anyone who can reach it could send metrics that look healthy and hide a Fibre that is down, set a token or listen on 127.0.0.1", m.Listen))
+			problems = append(problems, fmt.Sprintf("error: otel_metrics listens on %s without a token. Anyone who can reach it could send metrics that look healthy and hide a Fibre that is down, set a token or listen on 127.0.0.1", m.Listen))
 		}
 	}
 	if !fibreMetricsLoopback(host) && m.Token != "" && m.TLSCert == "" {
-		problems = append(problems, fmt.Sprintf("warning: fibre_metrics listens on %s with a token but no tls_cert, the token travels in cleartext. Set tls_cert and tls_key, or put it behind a TLS proxy", m.Listen))
+		problems = append(problems, fmt.Sprintf("warning: otel_metrics listens on %s with a token but no tls_cert, the token travels in cleartext. Set tls_cert and tls_key, or put it behind a TLS proxy", m.Listen))
 	}
 	// several unnamed chains are fine: Fibres with service.namespace route by chain_id, others are logged as ignored
 	enabled := 0
 	for _, v := range c.Chains {
-		if v != nil && v.Alerts.FibreAlerts {
+		if v != nil && (v.Alerts.FibreAlerts || v.Bridge.URL != "") {
 			enabled++
 		}
 	}
 	if enabled == 0 {
-		problems = append(problems, "warning: fibre_metrics is listening but no chain has fibre_enabled, nothing will use the metrics")
+		problems = append(problems, "warning: otel_metrics is listening but no chain has fibre_enabled or bridge.url, nothing will use the metrics")
 	}
 	return
 }
@@ -1361,8 +1362,9 @@ func (cc *ChainConfig) fibreMetricsAlarms(valInfo *ValInfo, reconcile bool) {
 	wanted := make(map[string]string)
 	for kind, verdict := range verdicts {
 		message := cc.fibreMetricsMessage(kind)
+		// by kind: a changed node_down_alert_minutes keeps the raised text instead of a false all-clear
 		for restored := range active {
-			if fibreMetricsCurrentMessage(restored) == message {
+			if fibreMetricsKind(restored) == kind {
 				message = restored
 				break
 			}

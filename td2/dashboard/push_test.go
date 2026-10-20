@@ -22,7 +22,7 @@ func TestStatusUpdateIsPushed(t *testing.T) {
 	updates := make(chan *ChainStatus, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, port, updates, make(chan LogMessage), false, func() HealthStatus { return HealthStatus{} }, nil, nil, nil)
+		done <- Serve(ctx, port, updates, make(chan LogMessage), false, func() HealthStatus { return HealthStatus{} }, nil, nil, nil, nil)
 	}()
 	defer func() { cancel(); <-done }()
 	var conn *websocket.Conn

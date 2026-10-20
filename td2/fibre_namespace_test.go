@@ -160,7 +160,7 @@ func TestPrintMetricsSetupNamespace(t *testing.T) {
 		printMetricsSetup(FibreMetricsConfig{Listen: "127.0.0.1:4318", Token: token}, "http://127.0.0.1:4318", "mocha-5", false, &output)
 		want := "OTEL_RESOURCE_ATTRIBUTES=\"service.namespace=mocha-5\" \\\n  fibre start --otel-endpoint http://127.0.0.1:4318\n"
 		if token != "" {
-			want = "token: fibre_metrics.token in config.yml (config show hides it)\nOTEL_EXPORTER_OTLP_HEADERS=\"authorization=Bearer <token>\" \\\n" + want
+			want = "token: otel_metrics.token in config.yml (config show hides it)\nOTEL_EXPORTER_OTLP_HEADERS=\"authorization=Bearer <token>\" \\\n" + want
 		}
 		if output.String() != want {
 			t.Fatalf("setup %q, want %q", output.String(), want)

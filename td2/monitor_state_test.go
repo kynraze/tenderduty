@@ -169,3 +169,19 @@ func TestAlarmOriginalSeverity(t *testing.T) {
 		t.Fatal("new alarm retained old severity")
 	}
 }
+
+// hide_logs: node alerts on the dashboard say what broke, not where.
+func TestHiddenNodeAlertKinds(t *testing.T) {
+	c := auditConfig(t)
+	c.HideLogs = true
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1"}
+	c.Chains["Chain"] = cc
+	alarms.AllAlarms["Chain"] = map[string]time.Time{nodeDownMessage("http://10.0.0.5:26657", "chain-1"): time.Now(), "no RPC endpoints are working for chain-1": time.Now()}
+	var kinds []string
+	for _, line := range cc.dashboardAlertLines() {
+		kinds = append(kinds, line.Text+line.Detail)
+	}
+	if got := strings.Join(kinds, ","); strings.Contains(got, "10.0.0.5") || !strings.Contains(got, "RPC node down") || !strings.Contains(got, "No RPC endpoint working") {
+		t.Fatalf("hidden node alerts: %q", got)
+	}
+}

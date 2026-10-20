@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,7 +53,7 @@ func statusSnapshot(status *ChainStatus, hideLogs bool) *ChainStatus {
 	return &copy
 }
 
-func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre func(string, string) (FibreHistory, error), bridge func(string, string) (BridgeHistory, error), logo func(string) []byte) error {
+func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs chan LogMessage, hideLogs bool, health func() HealthStatus, fibre func(string, string) (FibreHistory, error), bridge func(string, string) (BridgeHistory, error), logo func(string) []byte, proposal func(context.Context, string, uint64) (ProposalDetail, error)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var err error
@@ -157,6 +158,9 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/logo", LogoHandler(logo))
+	if proposal != nil {
+		mux.HandleFunc("/proposal", ProposalHandler(proposal))
+	}
 	if fibre != nil {
 		if hideLogs {
 			fibre = hideFibreDetails(fibre)
@@ -228,9 +232,12 @@ func Serve(ctx context.Context, port string, updates chan *ChainStatus, logs cha
 	return err
 }
 
-func newServer(port string, handler http.Handler) *http.Server {
+func newServer(listen string, handler http.Handler) *http.Server {
+	if !strings.Contains(listen, ":") {
+		listen = ":" + listen
+	}
 	return &http.Server{
-		Addr:              ":" + port,
+		Addr:              listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 3 * time.Second,
 		// a hijacked websocket is not bound by these

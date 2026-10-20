@@ -196,10 +196,10 @@ function avatar(name) {
     return img
 }
 
-function cardRow(name, text, title) {
+function cardRow(name, text, title, open) {
     const row = element('button', 'card-row')
     row.type = 'button'
-    row.addEventListener('click', () => showDetail(name))
+    row.addEventListener('click', () => open ? open(row) : showDetail(name))
     row.appendChild(avatar(name))
     const body = element('span', 'card-row-body')
     body.appendChild(element('strong', '', name))
@@ -288,7 +288,9 @@ function renderGovernance() {
     list.replaceChildren()
     const now = Date.now() / 1000
     for (const proposal of rows.slice(0, governanceExpanded ? rows.length : 3)) {
-        const row = cardRow(proposal.name, `#${proposal.id} ${proposal.title}`, proposal.title)
+        const row = cardRow(proposal.name, `#${proposal.id} ${proposal.title}`, proposal.title, row => showProposal(proposal.name, proposal.id, row))
+        row.dataset.proposalChain = proposal.name
+        row.dataset.proposalId = String(proposal.id)
         const side = element('span', 'card-row-side')
         const left = proposal.end - now
         const tone = proposal.voted ? 'good' : left < 86400 ? 'red' : 'amber'
@@ -571,9 +573,120 @@ function fillDetail(name) {
 }
 
 function showDetail(name) {
+    chainDialog.dataset.proposal = ''
+    document.getElementById('detail-proposal').hidden = true
+    document.getElementById('detail-chain-extra').hidden = false
+    document.getElementById('detail-vote').hidden = true
     if (!fillDetail(name)) return
     chainDialog.dataset.chain = name
     chainDialog.showModal()
+}
+
+function proposalDate(seconds) {
+    return seconds ? new Date(seconds * 1000).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : '\u2014'
+}
+
+function fillProposalHeader(proposal) {
+    document.getElementById('detail-heading').textContent = `${proposal.chain} \u00b7 ${proposal.chain_id || 'Unknown chain'} \u00b7 Proposal #${proposal.id}`
+    document.getElementById('detail-subtitle').textContent = proposal.title || ''
+    const left = proposal.end - Date.now() / 1000
+    const vote = document.getElementById('detail-vote')
+    vote.hidden = false
+    vote.className = `status governance-pill ${proposal.voted ? 'good' : left < 86400 ? 'red' : 'amber'}`
+    vote.textContent = proposal.voted ? 'Voted' : 'Not voted'
+    const facts = document.getElementById('detail-facts')
+    facts.replaceChildren()
+    appendFact(facts, 'Voting ends', [proposalDate(proposal.end), left <= 0 ? 'ended' : `${durationText(left)} left`])
+    appendFact(facts, 'Voting started', proposalDate(proposal.start))
+    appendFact(facts, 'Your vote', `${proposal.moniker || 'Validator'} ${proposal.voted ? 'voted' : 'has not voted'}`)
+}
+
+function fillProposalSummary(summary) {
+    const section = document.getElementById('proposal-summary')
+    section.replaceChildren()
+    const text = element('p', 'proposal-summary')
+    const characters = Array.from(summary || '')
+    let expanded = false
+    const draw = () => { text.textContent = characters.length ? (expanded || characters.length <= 400 ? summary : characters.slice(0, 400).join('') + '\u2026') : 'No summary on chain' }
+    draw()
+    section.appendChild(text)
+    if (characters.length > 400) {
+        const toggle = element('button', 'tool', 'Show full summary')
+        toggle.type = 'button'
+        toggle.setAttribute('aria-expanded', 'false')
+        toggle.addEventListener('click', () => {
+            expanded = !expanded
+            draw()
+            toggle.textContent = expanded ? 'Show less' : 'Show full summary'
+            toggle.setAttribute('aria-expanded', String(expanded))
+        })
+        section.appendChild(toggle)
+    }
+}
+
+function fillProposalTally(proposal) {
+    const section = document.getElementById('proposal-tally')
+    section.replaceChildren()
+    if (!proposal.tally) {
+        section.appendChild(element('p', 'footnote', proposal.tally_error || 'tally unavailable from this node'))
+        return
+    }
+    const bar = element('div', 'proposal-tally-bar')
+    bar.setAttribute('aria-hidden', 'true')
+    const legend = element('div', 'proposal-tally-legend')
+    for (const [key, label, color] of [['yes', 'Yes', 'good'], ['abstain', 'Abstain', 'muted'], ['no', 'No', 'critical'], ['veto', 'Veto', 'warning']]) {
+        const value = proposal.tally[key] || 0
+        const segment = element('span')
+        segment.style.width = `${value}%`
+        segment.style.background = `var(--${color})`
+        bar.appendChild(segment)
+        const item = element('span', '', `${label} ${value.toFixed(1)}%`)
+        const swatch = element('i')
+        swatch.style.background = `var(--${color})`
+        item.appendChild(swatch)
+        legend.appendChild(item)
+    }
+    section.appendChild(bar)
+    section.appendChild(legend)
+    if (proposal.tally.turnout != null) section.appendChild(element('p', 'footnote', `Turnout ${proposal.tally.turnout.toFixed(1)}% of bonded stake`))
+}
+
+async function showProposal(name, id, origin) {
+    const chain = chains.get(name)
+    const proposal = chain?.proposals?.find(item => item.id === id)
+    if (!proposal) return
+    const token = {}
+    chainDialog.proposalRequest = token
+    chainDialog.proposalOrigin = origin
+    chainDialog.dataset.chain = ''
+    chainDialog.dataset.proposal = String(id)
+    chainDialog.dataset.proposalChain = name
+    document.getElementById('detail-chain-extra').hidden = true
+    document.getElementById('detail-proposal').hidden = false
+    fillProposalHeader({ ...proposal, chain: name, chain_id: chain.chain_id, moniker: chain.moniker })
+    for (const section of ['proposal-tally', 'proposal-summary']) document.getElementById(section).replaceChildren(element('p', 'footnote', 'Loading\u2026'))
+    chainDialog.showModal()
+    try {
+        const response = await fetch(`proposal?chain=${encodeURIComponent(name)}&id=${encodeURIComponent(id)}`, { cache: 'no-store' })
+        if (!response.ok) throw new Error('proposal request failed')
+        const details = await response.json()
+        if (!chainDialog.open || !chainDialog.dataset.proposal || chainDialog.proposalRequest !== token) return
+        fillProposalHeader(details)
+        fillProposalTally(details)
+        fillProposalSummary(details.summary)
+    } catch (_) {
+        if (!chainDialog.open || !chainDialog.dataset.proposal || chainDialog.proposalRequest !== token) return
+        for (const section of ['proposal-tally', 'proposal-summary']) document.getElementById(section).replaceChildren(element('p', 'footnote', 'Could not load proposal details'))
+    }
+}
+
+function restoreProposalFocus() {
+    if (!chainDialog.dataset.proposal) return
+    const row = Array.from(document.getElementById('governance-list').children).find(item => item.dataset.proposalChain === chainDialog.dataset.proposalChain && item.dataset.proposalId === chainDialog.dataset.proposal)
+    const target = row || chainDialog.proposalOrigin
+    if (target?.isConnected) target.focus()
+    chainDialog.dataset.proposal = ''
+    chainDialog.proposalRequest = null
 }
 
 function addActivity(entry) {
@@ -671,6 +784,7 @@ document.addEventListener('keydown', event => {
 })
 renderDate()
 document.getElementById('detail-close').addEventListener('click', () => chainDialog.close())
+chainDialog.addEventListener('close', restoreProposalFocus)
 document.getElementById('sort-urgency').addEventListener('click', () => {
     statusOrder.splice(0, statusOrder.length, ...[...chains.values()]
         .sort((left, right) => stateFor(left).rank - stateFor(right).rank || left.name.localeCompare(right.name))

@@ -80,7 +80,27 @@ func (c *Config) nodeServer(chain, nodeURL string) string {
 			}
 		}
 	}
-	return resolveServer(c.context(), nodeURL)
+	if name := c.serverName(nodeURL); name != "" {
+		return name
+	}
+	server := resolveServer(c.context(), nodeURL)
+	if name := c.namedServer(server); name != "" {
+		return name
+	}
+	return server
+}
+
+func (c *Config) namedServer(host string) string {
+	return c.settings().Servers[strings.ToLower(host)]
+}
+
+// serverName uses only the URL host; displaying a node never needs DNS.
+func (c *Config) serverName(nodeURL string) string {
+	parsed, err := url.Parse(nodeURL)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return c.namedServer(parsed.Hostname())
 }
 
 func resolveServer(ctx context.Context, nodeURL string) string {
@@ -126,7 +146,7 @@ func nodeDownParts(message string) (nodeURL, down string, ok bool) {
 	return m[1], m[2], true
 }
 
-func chatDest(dest notifyDest) bool { return dest == tg || dest == di || dest == slk }
+func chatDest(dest notifyDest) bool { return dest == tg || dest == di || dest == slk || dest == gt }
 
 func destOn(msg *alertMsg, dest notifyDest) bool {
 	switch dest {
@@ -136,6 +156,8 @@ func destOn(msg *alertMsg, dest notifyDest) bool {
 		return msg.disc
 	case slk:
 		return msg.slk
+	case gt:
+		return msg.gotify
 	}
 	return false
 }
@@ -148,6 +170,8 @@ func destIdentity(msg *alertMsg, dest notifyDest) string {
 		return msg.discHook
 	case slk:
 		return msg.slkHook
+	case gt:
+		return msg.gotifyURL + "\x00" + msg.gotifyToken
 	}
 	return ""
 }
@@ -160,6 +184,8 @@ func postGrouped(msg *alertMsg, dest notifyDest) error {
 		return postDiscord(msg)
 	case slk:
 		return postSlack(msg)
+	case gt:
+		return postGotify(msg)
 	}
 	return nil
 }
@@ -168,6 +194,9 @@ func (item queuedNotification) key() string { return item.Chain + "\x00" + item.
 
 // notifyMux held.
 func (a *alarmCache) sent(item queuedNotification) bool {
+	if item.Escalated && !item.Resolved {
+		return !a.EscalationsSent[item.key()].IsZero()
+	}
 	return a.sentTo(item.Destination, item.key(), item.Message)
 }
 
@@ -271,7 +300,16 @@ type groupCard struct {
 
 type groupLine struct{ Chain, URL string }
 
-func (g *groupCard) heading() string { return "Server " + g.Server }
+func (g *groupCard) heading() string {
+	if address := td.settings().AlertNodeAddress; address != nil && !*address {
+		if len(g.Members) > 0 {
+			member := g.Members[0]
+			return "Server " + td.nodeDisplay(member.Chain, member.URL)
+		}
+		return "Server"
+	}
+	return "Server " + g.Server
+}
 
 func (g *groupCard) summary(msg *alertMsg) string {
 	if msg.resolved {
@@ -280,7 +318,7 @@ func (g *groupCard) summary(msg *alertMsg) string {
 	body := fmt.Sprintf("%s: %s down", g.heading(), plural(len(g.Members), "node"))
 	for _, member := range g.Members {
 		if detail := ownNodeDownDetail(member.Chain, member.URL); detail != "" {
-			body += "\n" + nodeEndpoint(member.URL) + " · " + detail
+			body += "\n" + td.nodeDisplay(member.Chain, member.URL) + " · " + detail
 		}
 	}
 	return body
@@ -300,7 +338,7 @@ func (g *groupCard) card(msg *alertMsg) alertCard {
 			fields = append(fields, row("🔌", "More", plural(len(g.Members)-groupListLimit, "node")))
 			break
 		}
-		value := member.URL
+		value := td.nodeDisplay(member.Chain, member.URL)
 		if !msg.resolved {
 			if detail := ownNodeDownDetail(member.Chain, member.URL); detail != "" {
 				value += " · " + detail
@@ -393,7 +431,7 @@ func (c *Config) groupRaise(item queuedNotification, msg *alertMsg) (bool, error
 	var candidates []groupSibling
 	for _, other := range waiting {
 		otherURL, _, _ := nodeDownParts(other.Message)
-		m := c.makeAlert(other.Chain, other.Message, other.Severity, false, &other.ID)
+		m := c.queuedAlert(other)
 		if m == nil || !destOn(m, dest) || destIdentity(m, dest) != identity || c.nodeServer(other.Chain, otherURL) != server {
 			continue
 		}

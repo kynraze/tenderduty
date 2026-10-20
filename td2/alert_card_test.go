@@ -190,8 +190,8 @@ var detailForms = []struct{ message, detail string }{
 	{"RPC node http://localhost:26657 has been down for > 3 minutes on celestia", "stopped at the version 11 upgrade height 1,365: runs celestia-app 10.4.0, upgrade to v11"},
 	{signalRemindMessage(10), "71% signalled, the upgrade unlocks at 83.33%: upgrade celestia-appd, then send the signal tx"},
 	{signalMissingMessage(10), "upgrade celestia-appd, then send the signal tx"},
-	{signalUpgradeMessage(11, 1000), "≈ Wed 7 Oct 14:20 WIB, in 2d 3h\nnode runs celestia-app 10.4.0-corto, version 11 needs v11 or later"},
-	{signalUpgradeSoonMessage(11, 1000), "≈ Wed 7 Oct 14:20 +0700, in 2h\nnode ready: celestia-app 11.0.0"},
+	{signalUpgradeMessage(11, 1000), "≈ Wed 7 Oct 14:20 WIB, in 2d 3h\nRPC node runs celestia-app 10.4.0-corto, version 11 needs v11 or later"},
+	{signalUpgradeSoonMessage(11, 1000), "≈ Wed 7 Oct 14:20 +0700, in 2h\nRPC node ready: celestia-app 11.0.0 · own node unknown (none with alert_if_down)"},
 	{signalStoppedMessage(11), "upgrade celestia-appd to v11 or later"},
 	{"Kynraze is close to jail on devnet-1", "9,000 of 9,990 misses used · jailed in ~45 min at this rate"},
 	{"Kynraze is jailed on devnet-1", "jailed since Tue 6 Oct 02:00 WIB · can unjail from 02:10"},
@@ -397,7 +397,7 @@ func TestTelegramCards(t *testing.T) {
 		{"missed blocks", &alertMsg{chain: "Devnet1", severity: "critical", message: "Kynraze has missed 10 blocks on devnet-1", extra: "monitor-eu", tgMentions: "@ops"},
 			"🚨 <b>Devnet1</b> · Critical\n\n👤 <b>Validator:</b> Kynraze\n⛓ <b>Chain:</b> <code>devnet-1</code>\n🎯 <b>Missed:</b> 10 blocks in a row\n<i>monitor-eu</i>\n@ops"},
 		{"node down", &alertMsg{chain: "Devnet1", severity: "warning", message: nodeDownMessage("http://10.0.0.1:26657", "devnet-1")},
-			"⚠️ <b>Devnet1</b> · Warning\n\n🔌 <b>Node:</b> <code>http://10.0.0.1:26657</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n📡 <b>Status:</b> 🔴 down for &gt; 3 minutes"},
+			"⚠️ <b>Devnet1</b> · Warning\n\n🔌 <b>Node:</b> <code>10.0.0.1:26657</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n📡 <b>Status:</b> 🔴 down for &gt; 3 minutes"},
 		{"signing slow", &alertMsg{chain: "Devnet1", severity: "warning", message: cc.fibreMetricsMessage(kindSigning)},
 			"🐢 <b>Devnet1</b> · Signing slow\n\n⛓ <b>Chain:</b> <code>devnet-1</code>\n🐢 <b>Signing:</b> 🟡 slower than 10 ms\n⚠️ <b>Severity:</b> warning"},
 		{"proposal", &alertMsg{chain: "Devnet1", severity: "info", message: "Proposal #39 Community Pool\nEnds 10 Oct 2020 17:48 UTC"},
@@ -429,7 +429,11 @@ func TestTelegramCards(t *testing.T) {
 	}
 	orphan := &alertMsg{chain: "Devnet1", resolved: true, severity: "info", lasted: time.Hour, message: fibreDownMessage(cardHost, "devnet-1")}
 	resolve("Devnet1", orphan.message, orphanResolution(orphan.message))
-	if got, want := buildTelegramMessage(orphan), "ℹ️ <b>Devnet1</b> · No longer watched\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n👁 <b>Watching:</b> ⚪ stopped, the alert was turned off or its settings changed"; got != want {
+	if got, want := buildTelegramMessage(orphan), "ℹ️ <b>Devnet1</b> · Alert stopped\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n👁 <b>Watching:</b> ⚪ stopped, the alert was turned off or its settings changed"; got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	resolve("Devnet1", orphan.message, removedResolution(orphan.message))
+	if got, want := buildTelegramMessage(orphan), "ℹ️ <b>Devnet1</b> · No longer watched\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n👁 <b>Watching:</b> ⚪ stopped, the chain was removed from the config"; got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }

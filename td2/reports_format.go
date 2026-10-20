@@ -40,7 +40,8 @@ func compactReportNumber(n float64) string {
 		scale  float64
 		suffix string
 	}{{1e12, "T"}, {1e9, "B"}, {1e6, "M"}, {1e3, "K"}} {
-		if a >= unit.scale {
+		// 999,999 rounds up: 1.00M, not 1000K
+		if a >= unit.scale*0.9995 {
 			v := n / unit.scale
 			if a < 10*unit.scale {
 				return fmt.Sprintf("%.2f%s", v, unit.suffix)
@@ -52,7 +53,8 @@ func compactReportNumber(n float64) string {
 }
 
 func reportChange(n float64) string {
-	if n == 0 {
+	// a change that rounds to 0 would read "−0"
+	if compactReportNumber(math.Abs(n)) == "0" {
 		return "="
 	}
 	if n < 0 {
@@ -207,7 +209,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 	c.chainsMux.RUnlock()
 	partial := 0
 	partialMin, partialMax := span, time.Duration(0)
-	healthy, eventful, incidents, votes, due := 0, 0, 0, 0, 0
+	healthy, eventful, inactive, unread, incidents, votes, due := 0, 0, 0, 0, 0, 0, 0
 	dueNames := make([]string, 0)
 	for _, name := range sortedReportNames(chains) {
 		cc := chains[name]
@@ -224,14 +226,26 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		threshold := reportDefaultRedSigned
 		alertLines, count, longest := reportIncidents(history.Incidents, name, start, now)
 		signed, known := reportSigned(total)
-		// scheduled-upgrade notices do not make rows red
-		active, notices, _ := cc.dashboardAlerts()
-		dot := reportDot(active > notices, info.Jailed || info.Tombstoned || (connected && !info.Bonded), signed, known, count, threshold)
+		// notices do not make rows red, and out of the active set is inactive, as on the dashboard
+		dot := reportDot(cc.urgentAlerts() > 0, info.Jailed || info.Tombstoned, signed, known, count, threshold)
+		if dot != dotRed && connected && !info.Bonded && !info.Jailed && !info.Tombstoned {
+			dot = dotWhite
+		}
+		// an unread validator isn't known to be healthy
+		if dot == dotGreen && !connected {
+			dot = dotYellow
+		}
 		switch dot {
 		case dotGreen:
 			healthy++
 		case dotYellow:
-			eventful++
+			if connected {
+				eventful++
+			} else {
+				unread++
+			}
+		case dotWhite:
+			inactive++
 		}
 		incidents += count
 		votes += total.Votes
@@ -252,7 +266,10 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				power = compactReportNumber(*current.Stake) + " " + current.Symbol
 				powerChange = ""
 				if previous != nil && previous.Stake != nil && previous.Symbol == current.Symbol {
-					powerChange = reportChange(*current.Stake-*previous.Stake) + " " + current.Symbol
+					// "=" alone, so a daily report drops an unchanged stake
+					if powerChange = reportChange(*current.Stake - *previous.Stake); powerChange != "=" {
+						powerChange += " " + current.Symbol
+					}
 				}
 			}
 			if current.Rank != nil && *current.Rank > 0 {
@@ -278,6 +295,16 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				}
 			}
 		}
+		if !weekly {
+			// a daily report shows only what changed
+			if powerChange == "=" {
+				powerChange = ""
+			}
+			if delegatorChange == "=" {
+				delegatorChange = ""
+			}
+			rank, self = strings.TrimSuffix(rank, " ="), strings.TrimSuffix(self, " (=)")
+		}
 		turns := total.Proposed + total.MissedProps
 		if weekly {
 			row.Summary = signing + reportSigningTrend(total, previousTotal)
@@ -291,6 +318,9 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				delegatorChange = delegators
 			}
 			line := fmt.Sprintf("⚖️ %s · 🤝 %s · 🔔 %d", powerChange, delegatorChange, count)
+			if active := cc.urgentLabels(); count == 0 && len(active) > 0 {
+				line += " (active: " + strings.Join(active, ", ") + ")"
+			}
 			if longest > 0 {
 				line += " · longest " + reportDuration(longest)
 			}
@@ -358,7 +388,10 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 				delegatorsLine += " (" + delegatorChange + ")"
 			}
 			row.Lines = append(row.Lines, delegatorsLine+" · self "+self)
-			if len(alertLines) == 0 {
+			// a red row without incidents in the period names what keeps it red
+			if active := cc.urgentLabels(); len(alertLines) == 0 && len(active) > 0 {
+				row.Lines = append(row.Lines, "🔔 Active: "+strings.Join(active, ", "))
+			} else if len(alertLines) == 0 {
 				row.Lines = append(row.Lines, "🔔 No alerts")
 			} else {
 				for _, line := range alertLines {
@@ -376,7 +409,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 			}
 			row.Lines = append([]string{line}, row.Lines...)
 		case connected && !info.Bonded:
-			row.Lines = append([]string{"🚨 Not in the active set"}, row.Lines...)
+			row.Lines = append([]string{"⚪ Not in the active set"}, row.Lines...)
 		case !connected:
 			row.Lines = append([]string{"🔌 No validator data, RPC unreachable"}, row.Lines...)
 		}
@@ -448,7 +481,7 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		result.Rows = append(result.Rows, row)
 	}
 	if !weekly {
-		priority := map[string]int{dotRed: 0, dotYellow: 1, dotGreen: 2}
+		priority := map[string]int{dotRed: 0, dotYellow: 1, dotWhite: 2, dotGreen: 3}
 		sort.SliceStable(result.Rows, func(i, j int) bool {
 			return priority[result.Rows[i].Dot] < priority[result.Rows[j].Dot]
 		})
@@ -466,7 +499,13 @@ func (c *Config) buildReport(now time.Time, weekly, late bool, include map[strin
 		if eventful > 0 {
 			header += fmt.Sprintf(" · 🟡 %d had incidents", eventful)
 		}
-		if red := len(result.Rows) - healthy - eventful; red > 0 {
+		if unread > 0 {
+			header += fmt.Sprintf(" · 🟡 %d no data", unread)
+		}
+		if inactive > 0 {
+			header += fmt.Sprintf(" · ⚪ %d inactive", inactive)
+		}
+		if red := len(result.Rows) - healthy - eventful - unread - inactive; red > 0 {
 			header += fmt.Sprintf(" · 🔴 %d needs attention", red)
 		}
 		result.Header = append(result.Header, header)

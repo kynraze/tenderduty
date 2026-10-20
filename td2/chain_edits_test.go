@@ -59,7 +59,7 @@ func TestChainSetManyRefusals(t *testing.T) {
 		{[]string{"set", "Celestia", "missing", "public_fallback=yes"}, "no chain"},
 		{[]string{"set", "--all", "Celestia", "public_fallback=yes"}, "set needs"},
 		{[]string{"set", "Celestia", "public_fallback"}, "expected key=value"},
-		{[]string{"set", "Celestia", "alerts.telegram.min_severity=warn"}, "must be info, warning, error or critical"},
+		{[]string{"set", "Celestia", "alerts.telegram.min_severity=warn"}, "must be info, warning, error, critical or escalation"},
 		{[]string{"remove", "Cel", "--yes"}, "no chain"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {

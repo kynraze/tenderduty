@@ -311,7 +311,7 @@ func TestExampleCelestia(t *testing.T) {
 	if code != 0 || stderr != "" || stdout != string(defaultCelestiaConfig)+"\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "chain_id: celestia") || !strings.Contains(stdout, "#   fibre_enabled: yes") {
+	if !strings.Contains(stdout, "chain_id: celestia") || !strings.Contains(stdout, "  fibre_enabled: no") || !strings.Contains(stdout, "  token_file:") {
 		t.Fatalf("Celestia example is missing its chain or Fibre settings: %s", stdout)
 	}
 	code, stdout, stderr = runCLI("-example-chain")

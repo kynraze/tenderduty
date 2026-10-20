@@ -33,10 +33,10 @@ func TestCommandAllowed(t *testing.T) {
 
 func TestStatusCommand(t *testing.T) {
 	c := auditConfig(t)
-	healthy := &ChainConfig{ChainId: "atomone-1", lastBlockNum: 10_622_456, lastBlockTime: time.Now().Add(-4 * time.Second), monitoring: true,
+	healthy := &ChainConfig{name: "AtomOne", ChainId: "atomone-1", lastBlockNum: 10_622_456, lastBlockTime: time.Now().Add(-4 * time.Second), monitoring: true,
 		valInfo: &ValInfo{Moniker: "Validator", Bonded: true, Missed: 12, Window: 10_000, MaxMissed: 5_000, VotingPower: 169_960, TotalPower: 61_441_660, Rank: 72, ActiveSet: 100}}
 	healthy.Nodes = []*NodeConfig{{Url: "http://a"}}
-	jailed := &ChainConfig{ChainId: "realionetwork_3301-1", monitoring: true, valInfo: &ValInfo{Moniker: "Validator", Jailed: true}}
+	jailed := &ChainConfig{name: "Realio", ChainId: "realionetwork_3301-1", monitoring: true, valInfo: &ValInfo{Moniker: "Validator", Jailed: true}}
 	c.Chains["AtomOne"], c.Chains["Realio"] = healthy, jailed
 	alarms.AllAlarms["AtomOne"] = map[string]time.Time{"Severity: critical\nRPC node http://b has been down for > 3 minutes on atomone-1": time.Now()}
 
@@ -47,7 +47,7 @@ func TestStatusCommand(t *testing.T) {
 	detail := c.telegramCommand("status", "atomone-1", time.Now(), tgMention{})
 	for _, want := range []string{"🔴 <b>AtomOne</b> · 1 active alert", "⛓ <b>Validator</b>", "📦 <b>Height:</b> 10,622,456 · last block 4s ago",
 		"🎯 <b>Missed:</b> 12 / 10,000 (4,988 to jail)", "#72/100", "🔌 <b>RPC:</b> 🟢 1/1 healthy", "🚨 <b>Active alerts</b>",
-		"• RPC node http://b has been down"} {
+		"• RPC node b has been down"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail is missing %q:\n%s", want, detail)
 		}

@@ -174,7 +174,7 @@ func (st *fibreStore) rawSeries(chain, name, help string, kind fibreRawKind, lab
 	if len(labels) > fibreRawMaxLabels || len(name) > fibreRawMaxName || fibreRawLongLabel(labels) {
 		st.rawSkipped++
 		if st.fibreRawNote("limits:" + chain) {
-			l("fibre_metrics export_raw: skipping series with more than", fibreRawMaxLabels, "labels or names over", fibreRawMaxName, "bytes from Fibre for", chain+", first was", strconv.Quote(clipBytes(name, 64)))
+			l("otel_metrics export_raw: skipping series with more than", fibreRawMaxLabels, "labels or names over", fibreRawMaxName, "bytes from Fibre for", chain+", first was", strconv.Quote(clipBytes(name, 64)))
 		}
 		return nil
 	}
@@ -191,7 +191,7 @@ func (st *fibreStore) rawSeries(chain, name, help string, kind fibreRawKind, lab
 	if s == nil {
 		if len(series) >= fibreRawMaxSeries {
 			if st.fibreRawNote("full:" + chain) {
-				l("fibre_metrics export_raw: more than", fibreRawMaxSeries, "series from Fibre for", chain+", new ones are dropped until old ones go stale")
+				l("otel_metrics export_raw: more than", fibreRawMaxSeries, "series from Fibre for", chain+", new ones are dropped until old ones go stale")
 			}
 			return nil
 		}
@@ -320,11 +320,11 @@ func (st *fibreStore) recordRaw(chain string, rm *metricsv1.ResourceMetrics) {
 				}
 			case *metricsv1.Metric_ExponentialHistogram:
 				if st.fibreRawNote("exp:" + m.GetName()) {
-					l("fibre_metrics export_raw: skipping", m.GetName()+", exponential histograms are not exported")
+					l("otel_metrics export_raw: skipping", m.GetName()+", exponential histograms are not exported")
 				}
 			case *metricsv1.Metric_Summary:
 				if st.fibreRawNote("summary:" + m.GetName()) {
-					l("fibre_metrics export_raw: skipping", m.GetName()+", summaries are not exported")
+					l("otel_metrics export_raw: skipping", m.GetName()+", summaries are not exported")
 				}
 			}
 		}

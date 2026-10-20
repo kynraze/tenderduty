@@ -175,8 +175,11 @@ func TestAddChainFileLoadsWithDefaults(t *testing.T) {
 	if !bytes.Equal(configData, after) {
 		t.Fatal("shared config was rewritten")
 	}
-	data, _ := os.ReadFile(filepath.Join(chains, "Registry Name.yml"))
-	if strings.Contains(string(data), "alerts:") || strings.Contains(string(data), "extra_info:") {
+	data, err := os.ReadFile(filepath.Join(chains, "Registry-Name.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "alerts:") || strings.Contains(string(data), "extra_info:") || strings.Contains(string(data), "fibre_") || strings.Contains(string(data), "bridge") {
 		t.Fatal("generated file overrides shared defaults")
 	}
 }
@@ -264,13 +267,114 @@ func TestAddChainCelestiaFibreHint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			block := "# alerts:\n#   fibre_enabled: yes          # needs Fibre registered; see docs/fibre.md\n#   fibre_severity: critical\n"
+			block := "  fibre_enabled: no\n  # Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.\n  fibre_severity: warning\n"
 			if got := strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), block); got != tc.want {
 				t.Fatalf("Fibre block = %v, want %v: %s", got, tc.want, data)
 			}
-			hint := "Fibre: tenderduty chain set Example alerts.fibre_enabled=yes (see docs/fibre.md)\n"
+			hint := "Fibre: once registered, tenderduty chain fibre Example (see docs/fibre.md)\n"
 			if got := strings.Contains(output.String(), hint); got != tc.want {
 				t.Fatalf("Fibre hint = %v, want %v: %s", got, tc.want, output.String())
+			}
+		})
+	}
+}
+
+func TestAddChainRegisteredFibreHint(t *testing.T) {
+	fetch := addChainTestFetchers()
+	fetch.status = func(context.Context, string) (addChainStatus, error) {
+		return addChainStatus{ChainID: "mocha-5"}, nil
+	}
+	fetch.validator = func(context.Context, string, string) (*ValInfo, error) {
+		return &ValInfo{Moniker: "Kynraze", Bonded: true, Valcons: "celestiavalcons1test"}, nil
+	}
+	fetch.fibreProvider = func(_ context.Context, _, valcons string) (string, bool, error) {
+		return "fibre.example:7980", valcons == "celestiavalcons1test", nil
+	}
+	options := AddChainOptions{Valoper: "celestiavaloper1test", Node: "https://rpc.example", Name: "Example", Directory: t.TempDir()}
+	var output bytes.Buffer
+	if err := addChain(context.Background(), options, &output, fetch); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Registered Fibre provider at fibre.example:7980; for Fibre alerts: tenderduty chain fibre Example\n"; !strings.Contains(output.String(), want) {
+		t.Fatalf("output %q", output.String())
+	}
+	data, _ := os.ReadFile(filepath.Join(options.Directory, "Example.yml"))
+	var chain ChainConfig
+	if err := decodeConfig(data, &chain); err != nil {
+		t.Fatal(err)
+	}
+	if chain.Alerts.FibreAlerts || chain.Alerts.BridgeAlerts {
+		t.Fatalf("Fibre was turned on: %s", data)
+	}
+}
+
+func TestAddChainCelestiaSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		settings []string
+		fibre    bool
+	}{
+		{"defaults", nil, false},
+		{"fibre override", []string{"alerts.fibre_enabled=yes"}, true},
+		{"nested override", []string{"alerts.fibre_enabled=yes", "alerts.telegram.min_severity=warning"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configFile := filepath.Join(dir, "config.yml")
+			configData := []byte("node_down_alert_minutes: 3\ndiscord:\n  enabled: yes\n  webhook: https://discord.example/webhook\nalert_defaults:\n  missed_blocks_enabled: yes\n")
+			if err := os.WriteFile(configFile, configData, 0600); err != nil {
+				t.Fatal(err)
+			}
+			fetch := addChainTestFetchers()
+			fetch.status = func(context.Context, string) (addChainStatus, error) {
+				return addChainStatus{ChainID: "mocha-5"}, nil
+			}
+			options := AddChainOptions{
+				Valoper: "celestiavaloper1test", Node: "https://rpc.example", Name: "Celestia",
+				Directory: filepath.Join(dir, "chains.d"), ConfigFile: configFile, Settings: tc.settings,
+			}
+			if err := addChain(context.Background(), options, &bytes.Buffer{}, fetch); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(options.Directory, "Celestia.yml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.ReplaceAll(string(data), "\r\n", "\n")
+			if strings.Count(text, "\nalerts:\n") != 1 || strings.Count(text, "\nbridge:\n") != 1 {
+				t.Fatalf("expected one alerts and one bridge mapping: %s", data)
+			}
+			for _, want := range []string{
+				"fibre_instance: \"\"", "fibre_storage_percent: 0", "fibre_idle_minutes: 0",
+				"fibre_endorsement_alert: no", "fibre_endorsement_blobs: 50", "fibre_endorsement_minutes: 120",
+				"bridge_enabled: no", "bridge:\n  url: \"\"", "token_file: \"\"",
+				"# Quiet hours hold warnings back, use critical to hear about a dead Fibre at night.",
+				"# Bridge alerts, need bridge.url below. See docs/bridge.md.",
+				"# e.g. http://<bridge-ip>:26658, empty is off", "# file with the read token",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("missing %q: %s", want, data)
+				}
+			}
+			password := ""
+			c, err := loadConfigQuiet(configFile, options.Directory, &password)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.cancel()
+			defer c.deliveryCancel()
+			if fatal, problems := validateConfig(c); fatal || len(problems) != 0 {
+				t.Fatalf("generated config has problems: %v", problems)
+			}
+			chain := c.Chains["Celestia"]
+			if chain.Alerts.FibreAlerts != tc.fibre || chain.Alerts.FibreSeverity != "warning" ||
+				chain.Alerts.BridgeAlerts || chain.Alerts.BridgeSeverity != "warning" ||
+				chain.Alerts.BridgeLagBlocks != 20 || chain.Alerts.BridgeLagMinutes != 5 ||
+				chain.Bridge.URL != "" || chain.Bridge.TokenFile != "" {
+				t.Fatalf("unexpected Celestia settings: %+v, %+v", chain.Alerts, chain.Bridge)
+			}
+			if tc.name == "nested override" && chain.Alerts.Telegram.MinSeverity != "warning" {
+				t.Fatal("nested Telegram override was lost")
 			}
 		})
 	}

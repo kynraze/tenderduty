@@ -56,7 +56,7 @@ chains:
 		t.Fatalf("valid configuration was rejected: %v", problems)
 	}
 	alerts := c.Chains["Juno"].Alerts
-	if alerts.JailRiskPercent != 90 || alerts.JailRiskMinutes != 60 {
+	if alerts.JailRiskPercent != 90 || alerts.JailRiskMinutes != 90 {
 		t.Fatalf("missing risk defaults: %+v", alerts)
 	}
 }

@@ -108,7 +108,7 @@ func (cc *ChainConfig) jailAlarms(val *ValInfo, consecutive float64, reconcile b
 		percent = 90
 	}
 	if minutes == 0 {
-		minutes = 60
+		minutes = 90
 	}
 	threshold := settings.ConsecutiveMissed
 	if threshold < 1 {
@@ -260,7 +260,11 @@ func jailDetail(chain, message string) string {
 		line := fmt.Sprintf("%s of %s misses used", thousands(val.Missed), thousands(val.MaxMissed))
 		_, _, consecutive := cc.blockState()
 		if blockTime := cc.averageBlockTime(); blockTime > 0 && consecutive > 0 {
-			line += fmt.Sprintf(" · jailed in ~%d min at this rate", time.Duration(val.missesBeforeJail())*blockTime/time.Minute)
+			if left := time.Duration(val.missesBeforeJail()) * blockTime; left < time.Minute {
+				line += " · jailed in under a minute at this rate"
+			} else {
+				line += fmt.Sprintf(" · jailed in ~%d min at this rate", left/time.Minute)
+			}
 		}
 		return line
 	case "unjail":

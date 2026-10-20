@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+func TestServerListenAddress(t *testing.T) {
+	for listen, want := range map[string]string{
+		"8888":           ":8888",
+		"127.0.0.1:8888": "127.0.0.1:8888",
+		"[::1]:8888":     "[::1]:8888",
+	} {
+		if got := newServer(listen, http.NotFoundHandler()).Addr; got != want {
+			t.Errorf("newServer(%q).Addr = %q, want %q", listen, got, want)
+		}
+	}
+}
+
 func TestServerTimeouts(t *testing.T) {
 	server := newServer("0", http.NotFoundHandler())
 	if server.ReadTimeout != 15*time.Second || server.IdleTimeout != 60*time.Second || server.ReadHeaderTimeout <= 0 {

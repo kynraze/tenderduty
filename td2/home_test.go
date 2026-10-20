@@ -133,7 +133,10 @@ func TestResolvePathsSystemLayout(t *testing.T) {
 		{name: "system config", systemConfig: true, wantF: config, wantCC: directory, wantState: state},
 		{name: "cwd config wins", cwdConfig: true, systemConfig: true, wantF: "config.yml", wantCC: "chains.d", wantState: ".tenderduty-state.json"},
 		{name: "explicit config", systemConfig: true, f: "other.yml", wantF: "other.yml", wantCC: "chains.d", wantState: ".tenderduty-state.json"},
-		{name: "explicit home", systemConfig: true, home: system, wantF: config, wantCC: directory, wantState: filepath.Join(system, ".tenderduty-state.json")},
+		{name: "explicit system home", systemConfig: true, home: system, wantF: config, wantCC: directory, wantState: state},
+		{name: "cleaned system home", home: system + string(filepath.Separator) + ".", wantF: config, wantCC: directory, wantState: state},
+		{name: "system home with explicit state", home: system, state: "other.json", wantF: config, wantCC: directory, wantState: "other.json"},
+		{name: "other home", home: "other", wantF: filepath.Join("other", "config.yml"), wantCC: filepath.Join("other", "chains.d"), wantState: filepath.Join("other", ".tenderduty-state.json")},
 		{name: "explicit chain directory", systemConfig: true, cc: "other.d", wantF: config, wantCC: "other.d", wantState: state},
 		{name: "explicit state", systemConfig: true, state: "other.json", wantF: config, wantCC: directory, wantState: "other.json"},
 	} {

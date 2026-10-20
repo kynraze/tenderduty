@@ -2,7 +2,9 @@ package tenderduty
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/big"
 	"regexp"
 	"sort"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
+	dash "github.com/kynraze/tenderduty/v2/td2/dashboard"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -19,6 +22,7 @@ import (
 type govProposal struct {
 	ID          uint64
 	Title       string
+	Summary     string `json:"-"`
 	VotingStart time.Time
 	VotingEnd   time.Time
 	Voted       bool
@@ -62,17 +66,74 @@ func getProposals(ctx context.Context, client *rpchttp.HTTP, voter string) ([]go
 		if err != nil {
 			return nil, err
 		}
-		if voter != "" {
-			for i := range proposals {
-				proposals[i].Voted, err = hasVoted(ctx, client, module, proposals[i].ID, voter)
-				if err != nil {
-					return nil, err
-				}
+		return proposals, markVoted(ctx, client, proposals, voter, module)
+	}
+	// e.g. Shentu: an old proposal holds a message type the node dropped, so every Proposals query fails
+	raw, err := rawVotingProposals(ctx, client)
+	if err != nil {
+		return nil, fmt.Errorf("%w; gov store: %v", lastErr, err)
+	}
+	proposals, err := parseProposals(raw, false)
+	if err != nil {
+		return nil, err
+	}
+	// the store doesn't say which gov answers votes; an SDK 0.45 chain has only v1beta1
+	return proposals, markVoted(ctx, client, proposals, voter, govModules...)
+}
+
+func markVoted(ctx context.Context, client *rpchttp.HTTP, proposals []govProposal, voter string, modules ...string) error {
+	if voter == "" {
+		return nil
+	}
+	for i := range proposals {
+		for _, module := range modules {
+			voted, err := hasVoted(ctx, client, module, proposals[i].ID, voter)
+			if err != nil {
+				return err
+			}
+			if voted {
+				proposals[i].Voted = true
+				break
 			}
 		}
-		return proposals, nil
 	}
-	return nil, lastErr
+	return nil
+}
+
+// rawVotingProposals reads the active queue (prefix 1, key ends in the id) and each proposal (prefix 0) from the gov store,
+// wrapped like a v1 Proposals response.
+func rawVotingProposals(ctx context.Context, client *rpchttp.HTTP) ([]byte, error) {
+	resp, err := client.ABCIQuery(ctx, "/store/gov/subspace", []byte{1})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Response.Code != 0 {
+		return nil, errors.New(resp.Response.Log)
+	}
+	var out []byte
+	err = eachField(resp.Response.Value, func(num protowire.Number, typ protowire.Type, pair []byte, _ uint64) error {
+		var key []byte
+		if num == 1 && typ == protowire.BytesType {
+			_ = eachField(pair, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+				if num == 1 && typ == protowire.BytesType {
+					key = value
+				}
+				return nil
+			})
+		}
+		if len(key) < 9 {
+			return nil
+		}
+		r, err := client.ABCIQuery(ctx, "/store/gov/key", append([]byte{0}, key[len(key)-8:]...))
+		if err != nil {
+			return err
+		}
+		if r.Response.Code == 0 && len(r.Response.Value) > 0 {
+			out = protowire.AppendBytes(protowire.AppendTag(out, 1, protowire.BytesType), r.Response.Value)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // hasVoted: a chain answers with an error when there is no vote.
@@ -103,6 +164,12 @@ func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 				return eachField(value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
 					if num == 2 && typ == protowire.BytesType {
 						p.Title = firstString(value)
+						return eachField(value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+							if num == 2 && typ == protowire.BytesType {
+								p.Summary = clipRunes(string(value), 10000)
+							}
+							return nil
+						})
 					}
 					return nil
 				})
@@ -112,6 +179,8 @@ func parseProposals(b []byte, legacy bool) ([]govProposal, error) {
 				p.VotingEnd = parseTimestamp(value)
 			case num == 11 && typ == protowire.BytesType && !legacy:
 				p.Title = string(value)
+			case num == 12 && typ == protowire.BytesType && !legacy:
+				p.Summary = clipRunes(string(value), 10000)
 			}
 			return nil
 		})
@@ -337,7 +406,8 @@ func (cc *ChainConfig) govAlarmsAt(valInfo *ValInfo, reconcile bool, now time.Ti
 	wanted := make(map[string]string) // message to alert id
 	priority := make(map[string]string)
 	for _, p := range proposals {
-		if p.Voted {
+		// a closed vote can stay listed until the next refresh
+		if p.Voted || !p.VotingEnd.IsZero() && !p.VotingEnd.After(now) {
 			continue
 		}
 		message := cc.govOpenMessage(p)
@@ -526,12 +596,199 @@ func (c *Config) flushGovBacklog(now time.Time) string {
 	})
 	names := make([]string, 0, len(entries))
 	lines := make([]string, 0, len(entries))
+	chainLines := make(map[string][]string)
 	for _, entry := range entries {
 		p := entry.proposal
-		lines = append(lines, fmt.Sprintf("%s #%d %s · %s left", entry.chain, p.ID, clipRunes(govTitle(p.Title), 60), shortDuration(p.VotingEnd.Sub(now))))
-		names = append(names, entry.chain)
+		line := fmt.Sprintf("%s #%d %s · %s left", entry.chain, p.ID, clipRunes(govTitle(p.Title), 60), shortDuration(p.VotingEnd.Sub(now)))
+		lines = append(lines, line)
+		if len(chainLines[entry.chain]) == 0 {
+			names = append(names, entry.chain)
+		}
+		chainLines[entry.chain] = append(chainLines[entry.chain], line)
 	}
 	body := "Proposals already in voting\n" + clipRunes(strings.Join(lines, "\n"), 900)
-	c.notice(names, body)
+	c.noticeByDestination(names, body, func(msg *alertMsg, names []string) {
+		var lines []string
+		for _, name := range names {
+			lines = append(lines, chainLines[name]...)
+		}
+		msg.message = "Proposals already in voting\n" + clipRunes(strings.Join(lines, "\n"), 900)
+		if len(names) > 1 {
+			msg.chain, msg.extra = "", ""
+		}
+	})
 	return body
+}
+
+// parseGovTally keeps token counts exact until converting the final percentages.
+func parseGovTally(raw []byte, bonded string) (*dash.ProposalTally, error) {
+	counts := [4]*big.Int{new(big.Int), new(big.Int), new(big.Int), new(big.Int)}
+	found := false
+	err := eachField(raw, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+		if num != 1 || typ != protowire.BytesType {
+			return nil
+		}
+		found = true
+		return eachField(value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+			if num >= 1 && num <= 4 && typ == protowire.BytesType {
+				n, ok := new(big.Int).SetString(string(value), 10)
+				if !ok || n.Sign() < 0 {
+					return errors.New("invalid tally count")
+				}
+				counts[num-1] = n
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("missing tally result")
+	}
+	total := new(big.Int)
+	for _, count := range counts {
+		total.Add(total, count)
+	}
+	percent := func(n, d *big.Int) float64 {
+		if d.Sign() == 0 {
+			return 0
+		}
+		value, _ := new(big.Rat).SetFrac(new(big.Int).Mul(n, big.NewInt(100)), d).Float64()
+		return value
+	}
+	result := &dash.ProposalTally{Yes: percent(counts[0], total), Abstain: percent(counts[1], total), No: percent(counts[2], total), Veto: percent(counts[3], total)}
+	if n, ok := new(big.Int).SetString(bonded, 10); ok && n.Sign() > 0 {
+		turnout := percent(total, n)
+		result.Turnout = &turnout
+	}
+	return result, nil
+}
+
+func proposalTally(ctx context.Context, client *rpchttp.HTTP, id uint64) (*dash.ProposalTally, error) {
+	if client == nil {
+		return nil, errors.New("no current client")
+	}
+	request := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), id)
+	var lastErr error
+	for _, module := range govModules {
+		resp, err := client.ABCIQuery(ctx, "/"+module+".Query/TallyResult", request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.Response.Code != 0 {
+			lastErr = errors.New(resp.Response.Log)
+			continue
+		}
+		tally, err := parseGovTally(resp.Response.Value, "")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		pool, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Pool", nil)
+		if err == nil && pool.Response.Code == 0 {
+			bonded := ""
+			err = eachField(pool.Response.Value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+				if num == 1 && typ == protowire.BytesType {
+					return eachField(value, func(num protowire.Number, typ protowire.Type, value []byte, _ uint64) error {
+						if num == 2 && typ == protowire.BytesType {
+							bonded = string(value)
+						}
+						return nil
+					})
+				}
+				return nil
+			})
+			if err == nil {
+				tally, _ = parseGovTally(resp.Response.Value, bonded)
+			}
+		}
+		return tally, nil
+	}
+	return nil, lastErr
+}
+
+type proposalTallyEntry struct {
+	done    chan struct{}
+	expires time.Time
+	tally   *dash.ProposalTally
+	err     error
+}
+
+type proposalTallyCache struct {
+	sync.Mutex
+	entries map[uint64]*proposalTallyEntry
+	logged  map[uint64]bool
+}
+
+func (cc *ChainConfig) cachedProposalTally(ctx context.Context, id uint64) (*dash.ProposalTally, error) {
+	cache := &cc.proposalTallies
+	cache.Lock()
+	if cache.entries == nil {
+		cache.entries = make(map[uint64]*proposalTallyEntry)
+		cache.logged = make(map[uint64]bool)
+	}
+	entry := cache.entries[id]
+	if entry == nil || (!entry.expires.IsZero() && time.Now().After(entry.expires)) {
+		entry = &proposalTallyEntry{done: make(chan struct{})}
+		cache.entries[id] = entry
+		for key, old := range cache.entries {
+			if key != id && !old.expires.IsZero() && time.Now().After(old.expires) {
+				delete(cache.entries, key)
+			}
+		}
+		go func() {
+			query, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tally, err := proposalTally(query, cc.clientSnapshot(), id)
+			cache.Lock()
+			defer cache.Unlock()
+			entry.tally, entry.err = tally, err
+			ttl := 5 * time.Minute
+			if err != nil {
+				ttl = time.Minute
+				if !cache.logged[id] {
+					l(cc.ChainId, "proposal", id, "tally unavailable:", err)
+					cache.logged[id] = true
+				}
+			}
+			entry.expires = time.Now().Add(ttl)
+			close(entry.done)
+		}()
+	}
+	cache.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-entry.done:
+		return entry.tally, entry.err
+	}
+}
+
+func (c *Config) proposalDetails(ctx context.Context, chain string, id uint64) (dash.ProposalDetail, error) {
+	c.chainsMux.RLock()
+	cc := c.Chains[chain]
+	c.chainsMux.RUnlock()
+	if cc == nil {
+		return dash.ProposalDetail{}, errors.New("unknown chain")
+	}
+	proposals, _ := cc.govSnapshot()
+	for _, p := range proposals {
+		if p.ID != id {
+			continue
+		}
+		info, _ := cc.validatorState()
+		result := dash.ProposalDetail{Chain: chain, ChainID: cc.ChainId, Moniker: info.Moniker, ID: id, Title: p.Title, Summary: p.Summary, End: p.VotingEnd.Unix(), Voted: p.Voted}
+		if !p.VotingStart.IsZero() {
+			result.Start = p.VotingStart.Unix()
+		}
+		tally, err := cc.cachedProposalTally(ctx, id)
+		result.Tally = tally
+		if err != nil {
+			result.TallyError = "tally unavailable from this node"
+		}
+		return result, nil
+	}
+	return dash.ProposalDetail{}, errors.New("proposal is not open")
 }

@@ -3,6 +3,7 @@ package tenderduty
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -164,12 +165,27 @@ func parseSetting(keys map[string]reflect.Type, assignment string) (parsedSettin
 				closest, distance = name, d
 			}
 		}
-		return parsedSetting{}, fmt.Errorf("unknown setting %q; did you mean %s?", key, closest)
+		if distance <= max(2, len(key)/3) {
+			return parsedSetting{}, fmt.Errorf("unknown setting %q; did you mean %s?", key, closest)
+		}
+		show := "tenderduty chain show <Name>"
+		if _, shared := keys["alert_defaults.gov_severity"]; shared {
+			show = "tenderduty config show"
+		}
+		return parsedSetting{}, fmt.Errorf("unknown setting %q; see %s", key, show)
 	}
 	if strings.HasSuffix(key, ".min_severity") {
-		if text != "info" && text != "warning" && text != "error" && text != "critical" {
-			return parsedSetting{}, fmt.Errorf("%s must be info, warning, error or critical, got %q", key, text)
+		parts := strings.Split(strings.TrimSuffix(key, ".min_severity"), ".")
+		destination := map[string]bool{"pagerduty": true, "telegram": true, "discord": true, "slack": true, "gotify": true}[parts[len(parts)-1]]
+		if text == "escalation" && !destination {
+			return parsedSetting{}, fmt.Errorf("%s can't be escalation, only a destination's min_severity can", key)
 		}
+		if text != "info" && text != "warning" && text != "error" && text != "critical" && text != "escalation" {
+			return parsedSetting{}, fmt.Errorf("%s must be info, warning, error, critical or escalation, got %q", key, text)
+		}
+	}
+	if strings.HasSuffix(key, "_severity") && !strings.HasSuffix(key, ".min_severity") && !validAlertSeverity(text) {
+		return parsedSetting{}, fmt.Errorf("%s must be info, warning, error or critical, got %q", key, text)
 	}
 	value, ok := settingValue(t, text)
 	if !ok {
@@ -520,11 +536,29 @@ func validateChainEdits(configFile, directory string, replacements map[string][]
 	defer c.cancel()
 	defer c.deliveryCancel()
 	_, problems := validateConfig(c)
-	return addedErrors(liveProblems(configFile, directory, password), problems)
+	live := liveProblems(configFile, directory, password)
+	if err := addedErrors(live, problems); err != nil {
+		return err
+	}
+	printAddedWarnings(os.Stderr, live, problems)
+	return nil
+}
+
+// printAddedWarnings shows what an edit makes the loader replace or turn off; set itself accepts the value.
+func printAddedWarnings(output io.Writer, before, after []string) {
+	known := make(map[string]bool, len(before))
+	for _, problem := range before {
+		known[problem] = true
+	}
+	for _, problem := range after {
+		if strings.HasPrefix(problem, "warning") && !known[problem] {
+			fmt.Fprintln(output, "Warning:", strings.TrimPrefix(problem, "warning: "))
+		}
+	}
 }
 
 func liveProblems(configFile, directory string, password *string) []string {
-	c, err := loadConfigQuiet(configFile, directory, password)
+	c, err := loadConfigForEdit(configFile, directory, password)
 	if err != nil {
 		return nil
 	}
@@ -550,4 +584,41 @@ func addedErrors(before, after []string) error {
 		return nil
 	}
 	return fmt.Errorf("configuration is invalid: %s", strings.Join(added, "; "))
+}
+
+func validAlertSeverity(value string) bool {
+	switch value {
+	case "info", "warning", "error", "critical":
+		return true
+	}
+	return false
+}
+
+func defaultAlertSeverity(value *string, key, fallback string) []string {
+	if validAlertSeverity(*value) {
+		return nil
+	}
+	var problems []string
+	if *value != "" {
+		problems = append(problems, fmt.Sprintf("warning: %s %q is not info, warning, error or critical, using %s", key, *value, fallback))
+	}
+	*value = fallback
+	return problems
+}
+
+func validateAlertSeverities(a *AlertConfig, name string) []string {
+	var problems []string
+	for _, setting := range []struct {
+		key, fallback string
+		value         *string
+	}{
+		{"gov_severity", "info", &a.GovSeverity},
+		{"fibre_severity", "warning", &a.FibreSeverity},
+		{"bridge_severity", "warning", &a.BridgeSeverity},
+		{"missed_proposal_severity", "warning", &a.ProposalSeverity},
+		{"changes_severity", "info", &a.ChangesSeverity},
+	} {
+		problems = append(problems, defaultAlertSeverity(setting.value, name+" "+setting.key, setting.fallback)...)
+	}
+	return problems
 }

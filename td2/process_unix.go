@@ -91,7 +91,7 @@ func sendReload(pid int) error {
 		return err
 	}
 	if !alive {
-		return fmt.Errorf("stale PID file, that process is not tenderduty")
+		return fmt.Errorf("stale PID file, tenderduty is not running")
 	}
 	return syscall.Kill(pid, syscall.SIGHUP)
 }

@@ -88,6 +88,44 @@ func TestDestinationsNeedNoAlertDefaultsEntry(t *testing.T) {
 	}
 }
 
+func TestDashboardListenValidation(t *testing.T) {
+	for _, tc := range []struct {
+		listen string
+		valid  bool
+	}{
+		{"8888", true},
+		{"127.0.0.1:8888", true},
+		{"[::1]:8888", true},
+		{"10.0.0.5:8888", true},
+		{"1", true},
+		{"65535", true},
+		{"abc", false},
+		{"0", false},
+		{"70000", false},
+		{"127.0.0.1:", false},
+		{":8888", false},
+		{"127.0.0.1:99999", false},
+		{"127.0.0.1:0", false},
+		{"127.0.0.1:abc", false},
+		{"::1:8888", false},
+	} {
+		t.Run(tc.listen, func(t *testing.T) {
+			c := auditConfig(t)
+			c.EnableDash, c.Listen = true, tc.listen
+			fatal, problems := validateConfig(c)
+			found := false
+			for _, problem := range problems {
+				if problem == "error: The dashboard port "+tc.listen+" is invalid" {
+					found = true
+				}
+			}
+			if fatal == tc.valid || found == tc.valid {
+				t.Fatalf("listen %q: fatal=%v, problems=%v", tc.listen, fatal, problems)
+			}
+		})
+	}
+}
+
 func TestConfigLoadsWithoutAnExistingStateFile(t *testing.T) {
 	directory := t.TempDir()
 	configFile := filepath.Join(directory, "config.yml")

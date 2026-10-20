@@ -78,16 +78,22 @@ func (c *Config) ingestBridgeMetrics(rm *metricsv1.ResourceMetrics, now time.Tim
 	instance, _ := fibreAttr(attrs, "service.instance.id")
 	c.chainsMux.RLock()
 	var cc *ChainConfig
+	count := 0
 	for _, chain := range c.Chains {
 		if chain != nil && chain.ChainId == namespace && chain.Bridge.URL != "" {
 			cc = chain
-			break
+			count++
 		}
 	}
 	c.chainsMux.RUnlock()
-	if cc == nil {
+	// metrics don't say which bridge they come from; two candidates would mix them
+	if count != 1 {
+		reason := "no chain with that chain_id has bridge.url"
+		if count > 1 {
+			reason = "multiple chains with that chain_id have bridge.url"
+		}
 		if c.fibreData().noteIgnored("bridge:" + namespace + "\x00" + instance) {
-			l(fmt.Sprintf("ignoring bridge metrics from %s on %s: no chain with that chain_id has bridge.url", instance, namespace))
+			l(fmt.Sprintf("ignoring bridge metrics from %s on %s: %s", instance, namespace, reason))
 		}
 		return ""
 	}

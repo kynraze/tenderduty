@@ -38,7 +38,7 @@ func (r redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 type sentTelegram struct{ chat, text string }
 
-type pagerdutyEvent struct{ Action, Key string }
+type pagerdutyEvent struct{ Action, Key, Summary, Source string }
 
 type groupHarness struct {
 	t      *testing.T
@@ -121,12 +121,16 @@ func (h *groupHarness) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"date":1,"chat":{"id":1,"type":"channel"}}}`))
 	case r.URL.Path == "/v2/enqueue":
 		var event struct {
-			Action string `json:"event_action"`
-			Key    string `json:"dedup_key"`
+			Action  string `json:"event_action"`
+			Key     string `json:"dedup_key"`
+			Payload struct {
+				Summary string `json:"summary"`
+				Source  string `json:"source"`
+			} `json:"payload"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&event)
 		h.mux.Lock()
-		h.pd = append(h.pd, pagerdutyEvent{event.Action, event.Key})
+		h.pd = append(h.pd, pagerdutyEvent{event.Action, event.Key, event.Payload.Summary, event.Payload.Source})
 		h.mux.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"status":"success","message":"ok","dedup_key":"x"}`))
@@ -259,7 +263,7 @@ func TestGroupedNodesOfOneServerAreOneMessage(t *testing.T) {
 		t.Errorf("sent after %v, before the group wait", time.Since(started))
 	}
 	contains(t, sent[0].text, "<b>Server "+hostAIP+"</b> · 2 nodes down",
-		"<b>AtomOne:</b> <code>https://rpc-a:443</code>", "<b>Realio:</b> <code>http://10.0.0.5:26657</code>",
+		"<b>AtomOne:</b> <code>rpc-a:443</code>", "<b>Realio:</b> <code>10.0.0.5:26657</code>",
 		"down for &gt; 3 minutes", "<i>see runbook</i>")
 	if sent[0].chat != "@one" {
 		t.Errorf("sent to %q", sent[0].chat)
@@ -294,7 +298,7 @@ func TestLoneNodeGetsItsOwnCardAfterTheWait(t *testing.T) {
 	if time.Since(started) < 3*groupUnit {
 		t.Errorf("sent after %v, before the group wait", time.Since(started))
 	}
-	contains(t, sent[0].text, "<b>AtomOne</b>", "<b>Node:</b> <code>https://rpc-a:443</code>")
+	contains(t, sent[0].text, "<b>AtomOne</b>", "<b>Node:</b> <code>rpc-a:443</code>")
 	if strings.Contains(sent[0].text, "Server") {
 		t.Errorf("a lone node got a group card:\n%s", sent[0].text)
 	}
@@ -418,8 +422,8 @@ func TestGroupedRecoveryIsQuietUntilTheLastNode(t *testing.T) {
 			back = s.text
 		}
 	}
-	contains(t, back, "✅ <b>Server "+hostAIP+"</b> · Back up", "<b>AlphaOne:</b> <code>http://a1:26657</code>",
-		"<b>AlphaTwo:</b> <code>http://a2:26657</code>", "all nodes back up", "Lasted")
+	contains(t, back, "✅ <b>Server "+hostAIP+"</b> · Back up", "<b>AlphaOne:</b> <code>a1:26657</code>",
+		"<b>AlphaTwo:</b> <code>a2:26657</code>", "all nodes back up", "Lasted")
 	h.waitFor("the second pagerduty resolve", func() bool { _, resolves := h.pagerduty(); return len(resolves) == 2 })
 	h.waitFor("the outbox to drain", h.drained)
 	alarms.notifyMux.RLock()

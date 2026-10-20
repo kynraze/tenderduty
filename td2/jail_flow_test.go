@@ -147,7 +147,7 @@ func TestJailSettingsAndDefaults(t *testing.T) {
 		}
 		_, _ = validateConfig(c)
 		a := cc.Alerts
-		if a.jailRiskEnabled() != tc.risk || a.jailInactiveEnabled() != tc.inactive || a.JailRiskPercent != 90 && tc.risk || a.JailRiskMinutes != 60 && tc.risk {
+		if a.jailRiskEnabled() != tc.risk || a.jailInactiveEnabled() != tc.inactive || a.JailRiskPercent != 90 && tc.risk || a.JailRiskMinutes != 90 && tc.risk {
 			t.Fatalf("%q: %+v", tc.config, a)
 		}
 	}
@@ -223,17 +223,18 @@ func TestReportValidatorStatus(t *testing.T) {
 			info   ValInfo
 			since  time.Time
 			status string
+			dot    string
 		}{
-			{ValInfo{Bonded: true, Jailed: true, JailedUntil: since.Add(10 * time.Minute)}, since, "🚨 Jailed since 6 Oct 02:00"},
-			{ValInfo{Bonded: true, Jailed: true, JailedUntil: since.Add(10 * time.Minute)}, time.Time{}, "🚨 Jailed"},
-			{ValInfo{Tombstoned: true}, since, "🚨 Tombstoned"},
-			{ValInfo{}, time.Time{}, "🚨 Not in the active set"},
+			{ValInfo{Bonded: true, Jailed: true, JailedUntil: since.Add(10 * time.Minute)}, since, "🚨 Jailed since 6 Oct 02:00", dotRed},
+			{ValInfo{Bonded: true, Jailed: true, JailedUntil: since.Add(10 * time.Minute)}, time.Time{}, "🚨 Jailed", dotRed},
+			{ValInfo{Tombstoned: true}, since, "🚨 Tombstoned", dotRed},
+			{ValInfo{}, time.Time{}, "⚪ Not in the active set", dotWhite},
 		} {
 			c := auditConfig(t)
 			c.Reports.Timezone = "UTC+7"
 			c.Chains["Chain"] = &ChainConfig{name: "Chain", valInfo: &tc.info, jailedSince: tc.since}
 			r := c.buildReport(time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC), weekly, false, nil)
-			if r.Rows[0].Dot != dotRed || !containsMessage(r.Rows[0].Lines, tc.status) || !strings.Contains(r.telegram(), tc.status) || strings.Contains(r.telegram(), "unjail") {
+			if r.Rows[0].Dot != tc.dot || !containsMessage(r.Rows[0].Lines, tc.status) || !strings.Contains(r.telegram(), tc.status) || strings.Contains(r.telegram(), "unjail") {
 				t.Fatalf("status %+v", r.Rows[0])
 			}
 		}

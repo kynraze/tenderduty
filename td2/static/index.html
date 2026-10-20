@@ -15,7 +15,7 @@
 <body>
   <div class="app">
     <aside class="side">
-      <div class="brand">Tender<span>duty</span></div>
+      <div class="brand">Tenderduty</div>
       <nav class="nav" aria-label="Main navigation">
         <a class="active" href="#overview" id="overview-nav" aria-current="page"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="4" height="4"/><rect x="10" y="2" width="4" height="4"/><rect x="2" y="10" width="4" height="4"/><rect x="10" y="10" width="4" height="4"/></svg>Overview<span class="nav-count" id="attention-count" hidden>0</span></a>
         <a href="#fibre" id="fibre-nav" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h3l2-5 4 10 2-5h3"/></svg>Fibre</a>
@@ -112,23 +112,29 @@
 
   <dialog id="chain-dialog" aria-labelledby="detail-heading">
     <div class="dialog-head">
-      <div><h2 id="detail-heading"></h2><p id="detail-subtitle"></p></div>
-      <button type="button" id="detail-close" aria-label="Close chain detail">Close</button>
+      <div><h2 id="detail-heading"></h2><p id="detail-subtitle"></p><span id="detail-vote" hidden></span></div>
+      <button type="button" id="detail-close" aria-label="Close detail">Close</button>
     </div>
     <div id="detail-facts" class="detail-facts"></div>
-    <section id="detail-bridge" hidden>
-      <h3 id="detail-bridge-title">Bridge</h3>
-      <div id="detail-bridge-facts" class="detail-facts"></div>
-    </section>
-    <section id="detail-fibre" hidden>
-      <h3>Fibre</h3>
-      <div id="detail-fibre-facts" class="detail-facts"></div>
-      <p id="detail-fibre-note" class="footnote"></p>
-    </section>
-    <h3>Recent block history</h3>
-    <p class="footnote">Newest blocks appear first. Exact block heights are unavailable for restored history.</p>
-    <div id="detail-blocks" class="detail-blocks"></div>
-    <p id="detail-error" class="detail-error"></p>
+    <div id="detail-chain-extra">
+      <section id="detail-bridge" hidden>
+        <h3 id="detail-bridge-title">Bridge</h3>
+        <div id="detail-bridge-facts" class="detail-facts"></div>
+      </section>
+      <section id="detail-fibre" hidden>
+        <h3>Fibre</h3>
+        <div id="detail-fibre-facts" class="detail-facts"></div>
+        <p id="detail-fibre-note" class="footnote"></p>
+      </section>
+      <h3>Recent block history</h3>
+      <p class="footnote">Newest blocks appear first. Exact block heights are unavailable for restored history.</p>
+      <div id="detail-blocks" class="detail-blocks"></div>
+      <p id="detail-error" class="detail-error"></p>
+    </div>
+    <div id="detail-proposal" hidden>
+      <section aria-labelledby="proposal-tally-heading"><h3 id="proposal-tally-heading">Current tally</h3><div id="proposal-tally" aria-live="polite"></div></section>
+      <section aria-labelledby="proposal-summary-heading"><h3 id="proposal-summary-heading">Summary</h3><div id="proposal-summary" aria-live="polite"></div></section>
+    </div>
   </dialog>
   <dialog id="appearance-dialog" aria-labelledby="appearance-heading">
     <div class="dialog-head"><div><h2 id="appearance-heading">Customize appearance</h2><p>Preview changes live. Apply saves them in this browser.</p></div></div>

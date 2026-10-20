@@ -96,7 +96,7 @@ func noteFields(lines []string) []alertField {
 				notes = append(notes, row("🔌", "Node", line))
 			case strings.HasPrefix(line, "stopped at the v"), strings.HasPrefix(line, "halted at the "):
 				notes = append(notes, row("⬆️", "Upgrade", line))
-			case strings.HasPrefix(line, "node ready: "), strings.HasPrefix(line, "node runs "):
+			case strings.HasPrefix(line, "RPC node ready: "), strings.HasPrefix(line, "RPC node runs "):
 				notes = append(notes, row("⬆️", "Binary", line))
 			case strings.HasPrefix(line, "jailed since "), strings.HasPrefix(line, "can unjail "):
 				for _, part := range strings.Split(line, " · ") {
@@ -274,8 +274,8 @@ var raisedRules = []cardRule{
 	{noRpcNodes, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🔌", "RPC", dotRed+" no endpoint working")}}
 	}},
-	{cardNodeDown, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: []alertField{codeField("🔌", "Node", m[1]), chainField(m[3])}, state: []alertField{row("📡", "Status", dotRed+" down for > "+m[2])}}
+	{cardNodeDown, func(msg *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{codeField("🔌", "Node", td.nodeDisplay(msg.chain, m[1])), chainField(m[3])}, state: []alertField{row("📡", "Status", dotRed+" down for > "+m[2])}}
 	}},
 	{cardTombstoned, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[2])}
@@ -471,8 +471,8 @@ var resolvedRules = []cardRule{
 	{backRpc, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🔌", "RPC", dotGreen+" endpoints working again")}}
 	}},
-	{backNode, func(_ *alertMsg, m, _ []string) cardParts {
-		return cardParts{ident: []alertField{codeField("🔌", "Node", m[1]), chainField(m[2])}, state: []alertField{row("📡", "Status", dotGreen+" back up")}}
+	{backNode, func(msg *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{codeField("🔌", "Node", td.nodeDisplay(msg.chain, m[1])), chainField(m[2])}, state: []alertField{row("📡", "Status", dotGreen+" back up")}}
 	}},
 	{backNotTombstoned, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[2]), state: []alertField{row("☠️", "Status", dotGreen+" no longer tombstoned")}}
@@ -638,7 +638,7 @@ func (msg *alertMsg) upgradeParts(title, height string, rest []string, state str
 
 // parts returns false for a message it doesn't know.
 func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts, bool) {
-	orphan := msg.resolved && len(rest) > 0 && rest[len(rest)-1] == orphanNote
+	orphan := msg.resolved && len(rest) > 0 && (rest[len(rest)-1] == orphanNote || rest[len(rest)-1] == removedNote)
 	if orphan {
 		// orphaned alarm: keep identity fields and show that monitoring stopped
 		p, ok := raisedParts(msg, first, rest[:len(rest)-1], state)
@@ -646,6 +646,9 @@ func (msg *alertMsg) parts(first string, rest []string, state string) (cardParts
 			return cardParts{}, false
 		}
 		p.state = []alertField{row("👁", "Watching", dotWhite+" stopped, the alert was turned off or its settings changed")}
+		if rest[len(rest)-1] == removedNote {
+			p.state = []alertField{row("👁", "Watching", dotWhite+" stopped, the chain was removed from the config")}
+		}
 		return p, true
 	}
 	if msg.resolved {
@@ -699,10 +702,19 @@ func raisedParts(msg *alertMsg, first string, rest []string, state string) (card
 }
 
 func (msg *alertMsg) card() alertCard {
+	var c alertCard
 	if msg.group != nil {
-		return msg.group.card(msg)
+		c = msg.group.card(msg)
+	} else {
+		c = msg.cardFrom(msg.rawSummary())
 	}
-	return msg.cardFrom(msg.summary())
+	if msg.escalated && !msg.resolved {
+		c.State = "⏫ Escalated · " + c.State
+		if !msg.escalatedAt.IsZero() {
+			c.Fields = append(c.Fields, row("⏱", "Unresolved for", fmt.Sprintf("%d min", int(time.Since(msg.escalatedAt).Minutes()))))
+		}
+	}
+	return c
 }
 
 func (msg *alertMsg) cardFrom(body string) alertCard {
@@ -710,13 +722,50 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 	c := alertCard{Icon: icon, State: state, Extra: msg.extra}
 	if msg.transient && strings.HasPrefix(body, "Config reload failed\n") {
 		c.Title = "Previous configuration is still running"
-		c.Fields = noteFields(strings.Split(strings.TrimPrefix(body, "Config reload failed\n"), "\n"))
+		for _, line := range strings.Split(strings.TrimPrefix(body, "Config reload failed\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			if rest, ok := strings.CutPrefix(line, "warning: "); ok {
+				c.Fields = append(c.Fields, row("⚠️", "Warning", rest))
+			} else if rest, ok := strings.CutPrefix(line, "warn: "); ok {
+				c.Fields = append(c.Fields, row("⚠️", "Warning", rest))
+			} else {
+				c.Fields = append(c.Fields, row("❌", "Error", strings.TrimPrefix(line, "error: ")))
+			}
+		}
+		return c
+	}
+	if title := validatorChangeTitle(body); msg.transient && title != "" {
+		for _, line := range strings.Split(strings.TrimPrefix(body, title+"\n"), "\n") {
+			label, value := "", ""
+			for _, name := range []string{"Stake", "Self-bond", "Commission", "Min self delegation", "Moniker", "Description"} {
+				prefix := name + " "
+				if name == "Description" {
+					prefix = name + ": "
+				}
+				if rest, ok := strings.CutPrefix(line, prefix); ok {
+					label, value = name, rest
+					break
+				}
+			}
+			if label != "" {
+				c.Fields = append(c.Fields, row("", label, value))
+			} else {
+				c.Fields = append(c.Fields, noteFields([]string{line})...)
+			}
+		}
 		return c
 	}
 	if msg.transient && strings.HasPrefix(body, "Proposals already in voting\n") {
-		c.Title = "Proposals already in voting"
 		c.Icon = "🗳"
-		c.Fields = noteFields(strings.Split(strings.TrimPrefix(body, "Proposals already in voting\n"), "\n"))
+		for _, line := range strings.Split(strings.TrimPrefix(body, "Proposals already in voting\n"), "\n") {
+			if chain, proposal, ok := strings.Cut(line, " #"); ok {
+				c.Fields = append(c.Fields, row("", chain, "#"+proposal))
+			} else {
+				c.Fields = append(c.Fields, noteFields([]string{line})...)
+			}
+		}
 		return c
 	}
 	lines := strings.Split(body, "\n")
@@ -727,7 +776,7 @@ func (msg *alertMsg) cardFrom(body string) alertCard {
 	}
 	c.Title = p.title
 	fields := append(append([]alertField(nil), p.ident...), p.state...)
-	orphan := msg.resolved && strings.HasSuffix(body, "\n"+orphanNote)
+	orphan := msg.resolved && (strings.HasSuffix(body, "\n"+orphanNote) || strings.HasSuffix(body, "\n"+removedNote))
 	if !msg.resolved && state != "Tombstoned" && msg.severity != "" && msg.severity != "info" && state != strings.ToUpper(msg.severity[:1])+msg.severity[1:] {
 		fields = append(fields, row("⚠️", "Severity", msg.severity))
 	}
@@ -766,7 +815,7 @@ func (c alertCard) telegramLines() []string {
 	}
 	for _, f := range c.Fields {
 		value := html.EscapeString(f.Value)
-		if c.State == "Tombstoned" && f.Label == "Note" && f.Value == "Permanent, the validator can't be unjailed" {
+		if strings.HasSuffix(c.State, "Tombstoned") && f.Label == "Note" && f.Value == "Permanent, the validator can't be unjailed" {
 			lines = append(lines, value)
 			continue
 		}
@@ -775,7 +824,7 @@ func (c alertCard) telegramLines() []string {
 		} else {
 			value = timeLeft.ReplaceAllString(value, "· <b>$1</b>")
 		}
-		lines = append(lines, statusField(f.Icon, html.EscapeString(f.Label), value))
+		lines = append(lines, strings.TrimPrefix(statusField(f.Icon, html.EscapeString(f.Label), value), " "))
 	}
 	if c.Note != "" {
 		lines = append(lines, timeLeft.ReplaceAllString(html.EscapeString(c.Note), "· <b>$1</b>"))
@@ -786,22 +835,41 @@ func (c alertCard) telegramLines() []string {
 func (c alertCard) markdownLines() []string {
 	var lines []string
 	if c.Title != "" {
-		lines = append(lines, "**"+c.Title+"**")
+		lines = append(lines, "**"+discordText(c.Title)+"**")
 	}
 	for _, f := range c.Fields {
-		lines = append(lines, f.Icon+" **"+f.Label+":** "+discordValue(f))
+		lines = append(lines, strings.TrimSpace(f.Icon+" **"+f.Label+":**")+" "+discordValue(f))
 	}
 	if c.Note != "" {
-		lines = append(lines, timeLeft.ReplaceAllString(c.Note, "· **$1**"))
+		lines = append(lines, timeLeft.ReplaceAllString(discordText(c.Note), "· **$1**"))
 	}
 	return lines
+}
+
+// plainLines is markdownLines without markup, for gotify.
+func (c alertCard) plainLines() []string {
+	var lines []string
+	if c.Title != "" {
+		lines = append(lines, c.Title)
+	}
+	for _, f := range c.Fields {
+		lines = append(lines, strings.TrimSpace(f.Icon+" "+f.Label)+": "+f.Value)
+	}
+	if c.Note != "" {
+		lines = append(lines, c.Note)
+	}
+	return lines
+}
+
+func discordText(s string) string {
+	return strings.ReplaceAll(s, "[", `\[`)
 }
 
 func discordValue(f alertField) string {
 	if f.Code {
 		return "`" + strings.ReplaceAll(f.Value, "`", "'") + "`"
 	}
-	return timeLeft.ReplaceAllString(f.Value, "· **$1**")
+	return timeLeft.ReplaceAllString(discordText(f.Value), "· **$1**")
 }
 
 // discord's limits for an embed, in characters
@@ -832,13 +900,13 @@ type DiscordFooter struct {
 func (c alertCard) discordEmbed(color uint) DiscordEmbed {
 	description := ""
 	if c.Title != "" {
-		description = "**" + strings.ReplaceAll(c.Title, "**", "") + "**"
+		description = "**" + discordText(strings.ReplaceAll(c.Title, "**", "")) + "**"
 	}
 	if c.Note != "" {
 		if description != "" {
 			description += "\n"
 		}
-		description += timeLeft.ReplaceAllString(c.Note, "· **$1**")
+		description += timeLeft.ReplaceAllString(discordText(c.Note), "· **$1**")
 	}
 	embed := DiscordEmbed{Description: clipRunes(description, discordDescriptionLimit), Color: color}
 	if c.Extra != "" {
@@ -853,7 +921,7 @@ func (c alertCard) discordEmbed(color uint) DiscordEmbed {
 			break
 		}
 		df := DiscordField{
-			Name:   clipRunes(f.Icon+" "+f.Label, discordNameLimit),
+			Name:   clipRunes(strings.TrimSpace(f.Icon+" "+f.Label), discordNameLimit),
 			Value:  clipRunes(discordValue(f), discordValueLimit),
 			Inline: len([]rune(f.Value)) < inlineLimit,
 		}
@@ -884,7 +952,7 @@ func (c alertCard) slackFields() []SlackField {
 		if f.Code {
 			value = "`" + strings.ReplaceAll(value, "`", "'") + "`"
 		}
-		fields = append(fields, SlackField{Title: f.Icon + " " + f.Label, Value: value, Short: len([]rune(f.Value)) < inlineLimit})
+		fields = append(fields, SlackField{Title: strings.TrimSpace(f.Icon + " " + f.Label), Value: value, Short: len([]rune(f.Value)) < inlineLimit})
 	}
 	return fields
 }

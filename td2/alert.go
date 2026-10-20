@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -28,6 +29,7 @@ type alertMsg struct {
 	disc      bool
 	tg        bool
 	slk       bool
+	gotify    bool
 
 	severity string
 	resolved bool
@@ -42,6 +44,9 @@ type alertMsg struct {
 	quiet bool
 	// several nodes of one server, see group_alerts.go
 	group *groupCard
+	// unresolved alarm sent to the escalation destination, escalatedAt is when it started, see escalation.go
+	escalated   bool
+	escalatedAt time.Time
 
 	tgChannel  string
 	tgKey      string
@@ -53,6 +58,9 @@ type alertMsg struct {
 
 	slkHook     string
 	slkMentions string
+
+	gotifyURL   string
+	gotifyToken string
 }
 
 // heading is the chain, or the server for a group.
@@ -65,6 +73,19 @@ func (msg *alertMsg) heading() string {
 
 // summary removes the severity line already shown in the header.
 func (msg *alertMsg) summary() string {
+	body := msg.rawSummary()
+	if nodeURL, _, ok := nodeDownParts(msg.message); ok {
+		return strings.ReplaceAll(body, nodeURL, td.nodeDisplay(msg.chain, nodeURL))
+	}
+	return body
+}
+
+// rawSummary keeps node URLs parseable until card fields are built.
+func (msg *alertMsg) rawSummary() string {
+	return localAlertTimes(msg.summaryText())
+}
+
+func (msg *alertMsg) summaryText() string {
 	if msg.group != nil {
 		return msg.group.summary(msg)
 	}
@@ -164,6 +185,9 @@ func (msg *alertMsg) header() (icon, state string) {
 			return r.icon, r.label
 		}
 	}
+	if title := validatorChangeTitle(msg.message); msg.transient && title != "" {
+		return "ℹ️", title
+	}
 	if msg.transient && strings.HasPrefix(msg.message, "Proposals already in voting\n") {
 		return "🗳", "Proposals already in voting"
 	}
@@ -262,6 +286,7 @@ const (
 	tg
 	di
 	slk
+	gt
 )
 
 type alarmCache struct {
@@ -273,6 +298,9 @@ type alarmCache struct {
 	SentTgAlarms      map[string]time.Time            `json:"sent_tg_alarms"`
 	SentDiAlarms      map[string]time.Time            `json:"sent_di_alarms"`
 	SentSlkAlarms     map[string]time.Time            `json:"sent_slk_alarms"`
+	SentGtAlarms      map[string]time.Time            `json:"sent_gt_alarms"`
+	Escalated         map[string]time.Time            `json:"escalated,omitempty"`        // the start of the alarm that was escalated
+	EscalationsSent   map[string]time.Time            `json:"escalations_sent,omitempty"` // delivered, apart from the plain raise
 	AllAlarms         map[string]map[string]time.Time `json:"sent_all_alarms"`
 	PendingRecoveries map[string]*pendingRecovery     `json:"pending_recoveries,omitempty"`
 	Outbox            []queuedNotification            `json:"outbox,omitempty"`
@@ -310,6 +338,7 @@ func newAlarmCache() *alarmCache {
 		SentTgAlarms:      make(map[string]time.Time),
 		SentDiAlarms:      make(map[string]time.Time),
 		SentSlkAlarms:     make(map[string]time.Time),
+		SentGtAlarms:      make(map[string]time.Time),
 		AllAlarms:         make(map[string]map[string]time.Time),
 		PendingRecoveries: make(map[string]*pendingRecovery),
 		flappingAlarms:    make(map[string]map[string]time.Time),
@@ -336,6 +365,8 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 		whichMap = alarms.SentDiAlarms
 	case slk:
 		whichMap = alarms.SentSlkAlarms
+	case gt:
+		whichMap = alarms.SentGtAlarms
 	}
 	key := msg.chain + "\x00" + msg.message
 	if alarms.inFlight == nil {
@@ -347,8 +378,11 @@ func shouldNotify(msg *alertMsg, dest notifyDest) (bool, error) {
 	if alarms.inFlight[dest][key] {
 		return false, errNotificationBusy
 	}
-	// Old state files used the message alone as the key.
+	// Old state files used the message alone as the key. An escalation repeats a raise that may have been sent.
 	sent := !whichMap[key].IsZero() || !whichMap[msg.message].IsZero()
+	if msg.escalated && !msg.resolved {
+		sent = !alarms.EscalationsSent[key].IsZero()
+	}
 	if !msg.ordered && !msg.resolved && sent && alarms.PendingRecoveries[key] != nil {
 		return false, errNotificationBusy
 	}
@@ -379,7 +413,7 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 			if msg.resolved {
 				state = "💜 Resolved delivered"
 			}
-			l(state, msg.chain, "to", []string{"pagerduty", "telegram", "discord", "slack"}[dest])
+			l(state, msg.chain, "to", []string{"pagerduty", "telegram", "discord", "slack", "gotify"}[dest])
 		}
 	}()
 	key := msg.chain + "\x00" + msg.message
@@ -397,16 +431,25 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 		whichMap = alarms.SentDiAlarms
 	case slk:
 		whichMap = alarms.SentSlkAlarms
+	case gt:
+		whichMap = alarms.SentGtAlarms
 	}
 	if msg.resolved {
 		delete(whichMap, key)
 		delete(whichMap, msg.message)
+		delete(alarms.EscalationsSent, key)
 		if !alarms.sentAnywhere(key, msg.message) {
 			delete(alarms.PendingRecoveries, key)
 		}
 		return
 	}
 	whichMap[key] = time.Now()
+	if msg.escalated {
+		if alarms.EscalationsSent == nil {
+			alarms.EscalationsSent = make(map[string]time.Time)
+		}
+		alarms.EscalationsSent[key] = time.Now()
+	}
 	// re-sent alarm leaves its old group
 	alarms.forgetMember(dest, key)
 	if dest == pd {
@@ -419,7 +462,7 @@ func completeNotify(msg *alertMsg, dest notifyDest, err error) {
 
 // sentAnywhere is called while notifyMux is held.
 func (a *alarmCache) sentAnywhere(key, legacy string) bool {
-	for _, sent := range []map[string]time.Time{a.SentPdAlarms, a.SentTgAlarms, a.SentDiAlarms, a.SentSlkAlarms} {
+	for _, sent := range []map[string]time.Time{a.SentPdAlarms, a.SentTgAlarms, a.SentDiAlarms, a.SentSlkAlarms, a.SentGtAlarms} {
 		if !sent[key].IsZero() || !sent[legacy].IsZero() {
 			return true
 		}
@@ -436,27 +479,10 @@ func (a *alarmCache) inFlightAnywhere(key string) bool {
 	return false
 }
 
-func alarmActive(msg *alertMsg) bool {
-	alarms.notifyMux.RLock()
-	defer alarms.notifyMux.RUnlock()
-	return !alarms.AllAlarms[msg.chain][msg.message].IsZero()
-}
-
 func alarmIsActive(chain, message string) bool {
 	alarms.notifyMux.RLock()
 	defer alarms.notifyMux.RUnlock()
 	return !alarms.AllAlarms[chain][message].IsZero()
-}
-
-func activeMessage(chain, contains string) string {
-	alarms.notifyMux.RLock()
-	defer alarms.notifyMux.RUnlock()
-	for message := range alarms.AllAlarms[chain] {
-		if strings.Contains(message, contains) {
-			return message
-		}
-	}
-	return ""
 }
 
 func hasPendingRecovery(key string) bool {
@@ -486,6 +512,93 @@ func notifySlack(msg *alertMsg) (err error) {
 		return nil
 	}
 	return postSlack(msg)
+}
+
+func notifyGotify(msg *alertMsg) (err error) {
+	if !msg.gotify {
+		return
+	}
+	if send, e := shouldNotify(msg, gt); !send {
+		return e
+	}
+	defer func() { completeNotify(msg, gt, err) }()
+	// another alarm announces this recovery
+	if msg.quiet {
+		return nil
+	}
+	return postGotify(msg)
+}
+
+// postGotify skips sent tracking for grouped messages.
+func postGotify(msg *alertMsg) (err error) {
+	data, err := json.Marshal(buildGotifyMessage(msg))
+	if err != nil {
+		return
+	}
+
+	// the token goes in a header, never the URL, so it stays out of logs
+	// a url copied with Gotify's /message endpoint still works
+	base := strings.TrimSuffix(strings.TrimRight(msg.gotifyURL, "/"), "/message")
+	req, err := http.NewRequestWithContext(msg.context(), "POST", base+"/message", bytes.NewBuffer(data))
+	if err != nil {
+		return scrubURLError(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gotify-Key", msg.gotifyToken)
+
+	resp, err := newNotificationClient(msg.context(), 10*time.Second).Do(req)
+	if err != nil {
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		detail := strings.TrimSpace(string(body))
+		if msg.gotifyToken != "" {
+			detail = strings.ReplaceAll(detail, msg.gotifyToken, "***")
+		}
+		return fmt.Errorf("could not notify gotify for %s got %d response: %s", msg.chain, resp.StatusCode, clipRunes(detail, 200))
+	}
+
+	return
+}
+
+// GotifyMessage is the body of Gotify's POST /message.
+type GotifyMessage struct {
+	Title    string `json:"title"`
+	Message  string `json:"message"`
+	Priority int    `json:"priority"`
+}
+
+// gotifyPriority maps severity to Gotify's 0-10 scale, resolved alerts are quiet.
+func gotifyPriority(msg *alertMsg) int {
+	switch {
+	case msg.resolved:
+		return 2
+	case msg.escalated:
+		return 10
+	case msg.severity == "warning":
+		return 5
+	case msg.severity == "error":
+		return 7
+	case msg.severity == "info" || msg.severity == "":
+		return 2
+	}
+	return 8
+}
+
+func buildGotifyMessage(msg *alertMsg) *GotifyMessage {
+	card := msg.card()
+	title := strings.TrimSpace(fmt.Sprintf("%s %s · %s", card.Icon, msg.heading(), card.State))
+	if msg.heading() == "" {
+		title = card.Icon + " " + card.State
+	}
+	lines := card.plainLines()
+	if card.Extra != "" {
+		lines = append(lines, card.Extra)
+	}
+	return &GotifyMessage{Title: title, Message: strings.Join(lines, "\n"), Priority: gotifyPriority(msg)}
 }
 
 // postSlack skips sent tracking for grouped messages.
@@ -555,11 +668,15 @@ func buildSlackMessage(msg *alertMsg) *SlackMessage {
 		message = "OK: " + message
 	}
 	color := map[string]string{"good": "good", "warning": "warning", "danger": "danger"}[msg.tone()]
+	title := strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.heading(), state, msg.slkMentions))
+	if msg.heading() == "" {
+		title = strings.TrimSpace(icon + " " + state + " " + msg.slkMentions)
+	}
 	return &SlackMessage{
 		Text: slackText(message),
 		Attachments: []Attachment{
 			{
-				Title:    strings.TrimSpace(fmt.Sprintf("%s %s · %s %s", icon, msg.heading(), state, msg.slkMentions)),
+				Title:    title,
 				Color:    color,
 				Text:     slackTitle(card),
 				Fields:   card.slackFields(),
@@ -589,27 +706,22 @@ func postDiscord(msg *alertMsg) (err error) {
 	client := newNotificationClient(msg.context(), 10*time.Second)
 	data, err := json.MarshalIndent(discPost, "", "  ")
 	if err != nil {
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, err)
 	}
 
 	req, err := http.NewRequestWithContext(msg.context(), "POST", msg.discHook, bytes.NewBuffer(data))
 	if err != nil {
-		err = scrubURLError(err)
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, scrubURLError(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		l("⚠️ Could not notify discord!", err)
-		return err
+		return fmt.Errorf("could not notify discord for %s: %w", msg.chain, err)
 	}
 	_ = resp.Body.Close()
 
 	if resp.StatusCode != 204 {
-		l("⚠️ Could not notify discord! Returned", resp.StatusCode)
 		return fmt.Errorf("could not notify discord for %s: status %d", msg.chain, resp.StatusCode)
 	}
 	return nil
@@ -672,6 +784,9 @@ type DiscordEmbed struct {
 func buildDiscordMessage(msg *alertMsg) *DiscordMessage {
 	card := msg.card()
 	header := strings.TrimSpace(fmt.Sprintf("%s **%s** · %s %s", card.Icon, msg.heading(), card.State, msg.discMentions))
+	if msg.heading() == "" {
+		header = strings.TrimSpace(card.Icon + " **" + card.State + "** " + msg.discMentions)
+	}
 	// plain is one message with no embed, the blank line separates header and alert
 	if msg.discStyle == "plain" {
 		lines := card.markdownLines()
@@ -708,18 +823,16 @@ func notifyTg(msg *alertMsg) (err error) {
 func postTg(msg *alertMsg) (err error) {
 	bot, err := tgbotapi.NewBotAPIWithClient(msg.tgKey, tgbotapi.APIEndpoint, newNotificationClient(msg.context(), 10*time.Second))
 	if err != nil {
-		l("notify telegram:", err)
-		return
+		return fmt.Errorf("could not notify telegram for %s: %w", msg.chain, err)
 	}
 
 	mc := tgbotapi.NewMessageToChannel(msg.tgChannel, buildTelegramMessage(msg))
 	mc.ParseMode = tgbotapi.ModeHTML
 	mc.DisableWebPagePreview = true
-	_, err = bot.Send(mc)
-	if err != nil {
-		l("telegram send:", err)
+	if _, err = bot.Send(mc); err != nil {
+		return fmt.Errorf("could not notify telegram for %s: %w", msg.chain, err)
 	}
-	return err
+	return nil
 }
 
 // timeLeft matches the time left shown in governance and upgrade messages.
@@ -729,6 +842,9 @@ var timeLeft = regexp.MustCompile(`· ((?:\d+[dhm] )*\d+[dhms] left)`)
 func buildTelegramMessage(msg *alertMsg) string {
 	card := msg.card()
 	text := fmt.Sprintf("%s <b>%s</b> · %s\n\n%s", card.Icon, html.EscapeString(msg.heading()), html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
+	if msg.heading() == "" {
+		text = fmt.Sprintf("%s <b>%s</b>\n\n%s", card.Icon, html.EscapeString(card.State), strings.Join(card.telegramLines(), "\n"))
+	}
 	if msg.extra != "" {
 		text += "\n<i>" + html.EscapeString(msg.extra) + "</i>"
 	}
@@ -755,9 +871,13 @@ func notifyPagerduty(msg *alertMsg) (err error) {
 	if msg.resolved {
 		action = "resolve"
 	}
+	source := msg.uniqueId
+	if nodeURL, _, ok := nodeDownParts(msg.message); ok {
+		source = td.nodeDisplay(msg.chain, nodeURL)
+	}
 	payload := &pagerduty.V2Payload{
 		Summary:  strings.ReplaceAll(msg.summary(), "\n", " · "), // pagerduty shows one line
-		Source:   msg.uniqueId,
+		Source:   source,
 		Severity: msg.severity,
 	}
 	if msg.extra != "" {
@@ -826,13 +946,16 @@ func (c *Config) makeAlert(chainName, message, severity string, resolved bool, i
 		discStyle:    alerts.Discord.Style,
 		slkHook:      alerts.Slack.Webhook,
 		slkMentions:  strings.Join(alerts.Slack.Mentions, " "),
+		gotify:       enabledFor(c.settings().Gotify.Enabled, alerts.Gotify.Enabled) && routed(alerts.Gotify.MinSeverity),
+		gotifyURL:    alerts.Gotify.URL,
+		gotifyToken:  alerts.Gotify.Token,
 	}
 	return a
 }
 
-// severityRank ranks unknown severities as critical to retain their alerts.
+// severityRank ranks unknown severities as critical to retain their alerts; "Warning" in a config is warning.
 func severityRank(severity string) int {
-	switch severity {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "":
 		return 0
 	case "info":
@@ -841,6 +964,8 @@ func severityRank(severity string) int {
 		return 2
 	case "error":
 		return 3
+	case "escalation":
+		return 5 // a destination's min_severity: only escalations reach it
 	default:
 		return 4
 	}
@@ -1222,6 +1347,11 @@ func (cc *ChainConfig) watch() {
 					return
 				}
 			}
+		}
+		if reconcile {
+			cc.stateMux.Lock()
+			cc.restoredChecked = true
+			cc.stateMux.Unlock()
 		}
 		reconcile = false
 	}

@@ -517,6 +517,12 @@ func TestFibreMetricsChainMapping(t *testing.T) {
 	if got := c.fibreChainFor("anything"); got != "" {
 		t.Fatalf("unchecked chains still compete, got %q", got)
 	}
+	// Akash RPC down: never checked, but its address isn't Celestia's
+	c.Chains["Akash"].ValAddress = "akashvaloper1x"
+	if got := c.fibreChainFor("anything"); got != "Mocha" {
+		t.Fatalf("mapped to %q, want Mocha", got)
+	}
+	c.Chains["Akash"].ValAddress = ""
 	c.Chains["Akash"].fibreUnsupported = true
 	if got := c.fibreChainFor("anything"); got != "Mocha" {
 		t.Fatalf("mapped to %q, want Mocha", got)
@@ -963,7 +969,7 @@ func TestNoMetricsAlarmsOnAChainWithoutFibre(t *testing.T) {
 	if len(sent) != 1 || !sent[0].resolved || sent[0].message != r.msg(kindSignFailed) {
 		t.Fatalf("a chain without Fibre sent %s", describe(sent))
 	}
-	if _, label := sent[0].header(); label != "No longer watched" {
+	if _, label := sent[0].header(); label != "Alert stopped" {
 		t.Fatalf("the restored alarm cleared as %q", label)
 	}
 	r.quiet(r.alarms(), "nothing more for a chain without Fibre")
@@ -1033,7 +1039,7 @@ func TestFibreStorageIsOffByDefault(t *testing.T) {
 	if len(sent) != 1 || !sent[0].resolved || sent[0].message != r.msg(kindStorage) {
 		t.Fatalf("turning the alert off sent %s", describe(sent))
 	}
-	if _, label := sent[0].header(); label != "No longer watched" {
+	if _, label := sent[0].header(); label != "Alert stopped" {
 		t.Fatalf("the alarm cleared as %q", label)
 	}
 }
@@ -1771,7 +1777,7 @@ func TestFibreMetricsOrphans(t *testing.T) {
 			}
 			for _, a := range sent {
 				icon, label := a.header()
-				if !a.resolved || a.uniqueId != restored[a.message] || icon != "ℹ️" || label != "No longer watched" ||
+				if !a.resolved || a.uniqueId != restored[a.message] || icon != "ℹ️" || label != "Alert stopped" ||
 					!strings.HasSuffix(a.summary(), "\nThe alert was turned off or its settings changed") {
 					t.Errorf("%q went out as %s %s %q id %q", a.message, icon, label, a.summary(), a.uniqueId)
 				}
@@ -1943,6 +1949,21 @@ func TestValidateFibreMetrics(t *testing.T) {
 	})
 }
 
+func TestValidateOtelMetricsBridgeOnly(t *testing.T) {
+	c := &Config{FibreMetrics: FibreMetricsConfig{Listen: "127.0.0.1:4318"}, Chains: map[string]*ChainConfig{"A": {}}}
+	unused := func() bool {
+		_, problems := validateFibreMetrics(c)
+		return strings.Contains(strings.Join(problems, "\n"), "nothing will use the metrics")
+	}
+	if !unused() {
+		t.Fatal("no warning without Fibre or bridge")
+	}
+	c.Chains["A"].Bridge.URL = "http://127.0.0.1:26658"
+	if unused() {
+		t.Fatal("bridge-only setup warned that nothing uses the metrics")
+	}
+}
+
 func TestValidateFibreMetricsAllowWithoutToken(t *testing.T) {
 	for _, listen := range []string{"0.0.0.0:4318", "10.0.0.5:4318", ":4318", "[::]:4318", "example.com:4318", "127.0.0.1:4318"} {
 		for _, token := range []string{"", "secret"} {
@@ -1953,7 +1974,7 @@ func TestValidateFibreMetricsAllowWithoutToken(t *testing.T) {
 				if fatal {
 					t.Fatalf("fatal: %v", problems)
 				}
-				want := "warning: fibre_metrics listens on " + listen + " without a token; make sure a firewall lets only Fibre's IP reach it"
+				want := "warning: otel_metrics listens on " + listen + " without a token; make sure a firewall lets only Fibre's IP reach it"
 				found := false
 				for _, problem := range problems {
 					if problem == want {
@@ -1975,7 +1996,7 @@ func TestValidateFibreMetricsAllowWithoutToken(t *testing.T) {
 
 func TestFibreMetricsConfigLoads(t *testing.T) {
 	c := &Config{}
-	yaml := "fibre_metrics:\n  listen: 127.0.0.1:4318\n  token: abc\n  allow_without_token: yes\n  tls_cert: /c.pem\n  tls_key: /k.pem\nalert_defaults:\n  fibre_instance: host\n  fibre_storage_percent: 80\n  fibre_idle_minutes: 15\n"
+	yaml := "otel_metrics:\n  listen: 127.0.0.1:4318\n  token: abc\n  allow_without_token: yes\n  tls_cert: /c.pem\n  tls_key: /k.pem\nalert_defaults:\n  fibre_instance: host\n  fibre_storage_percent: 80\n  fibre_idle_minutes: 15\n"
 	if err := unmarshalConfig("test", []byte(yaml), c, &Config{}); err != nil {
 		t.Fatal(err)
 	}
