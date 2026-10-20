@@ -182,6 +182,7 @@ func (c *Config) statusSummary() string {
 	for _, r := range rows {
 		lines = append(lines, r.line)
 	}
+	lines = append(lines, "tenderduty "+html.EscapeString(Version()))
 	return strings.Join(lines, "\n")
 }
 

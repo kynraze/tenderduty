@@ -41,6 +41,9 @@ func TestStatusCommand(t *testing.T) {
 	alarms.AllAlarms["AtomOne"] = map[string]time.Time{"Severity: critical\nRPC node http://b has been down for > 3 minutes on atomone-1": time.Now()}
 
 	summary := c.telegramCommand("status", "", time.Now(), tgMention{})
+	if !strings.HasSuffix(summary, "\ntenderduty "+Version()) {
+		t.Fatalf("summary lacks version: %q", summary)
+	}
 	if !strings.HasPrefix(summary, "📊 <b>Status</b> · 0 of 2 chains healthy") || strings.Index(summary, "Realio") > strings.Index(summary, "AtomOne") && !strings.Contains(summary, "🔴 <b>Realio</b> · jailed") {
 		t.Fatalf("summary %q", summary)
 	}
@@ -147,7 +150,7 @@ func TestOpCommandCapitalsGetHelpNotStatus(t *testing.T) {
 // Operator with no chains yet runs /status.
 func TestOpStatusWithZeroChains(t *testing.T) {
 	c := auditConfig(t)
-	if got := strings.TrimSpace(c.telegramCommand("status", "", time.Now(), tgMention{})); got != "📊 <b>Status</b> · 0 of 0 chains healthy" {
+	if got := strings.TrimSpace(c.telegramCommand("status", "", time.Now(), tgMention{})); got != "📊 <b>Status</b> · 0 of 0 chains healthy\n\ntenderduty "+Version() {
 		t.Fatalf("empty status %q", got)
 	}
 	if got := c.telegramCommand("status", "anything", time.Now(), tgMention{}); got != "No chain named anything" {

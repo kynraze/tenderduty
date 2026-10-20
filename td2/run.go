@@ -47,7 +47,7 @@ func runContext(ctx context.Context, configFile, stateFile, chainConfigDirectory
 	if fatal {
 		return errors.New("tenderduty configuration is invalid")
 	}
-	log.Println("tenderduty config is valid, starting with", plural(len(td.Chains), "chain"))
+	log.Println("tenderduty "+Version()+", config is valid, starting with", plural(len(td.Chains), "chain"))
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	if hup := reloadSignal(); hup != nil {

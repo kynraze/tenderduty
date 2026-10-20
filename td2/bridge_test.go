@@ -384,7 +384,7 @@ func TestBridgeStatusSummary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cc.bridge = tc.state
-			summary := td.telegramCommand("status", "", now, tgMention{})
+			summary := strings.TrimSuffix(td.telegramCommand("status", "", now, tgMention{}), "\ntenderduty "+Version())
 			want := " · missed 2/100" + tc.want
 			if !strings.HasSuffix(summary, want) {
 				t.Fatalf("summary %q, want %q", summary, want)

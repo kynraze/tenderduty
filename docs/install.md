@@ -84,6 +84,8 @@ cd tenderduty
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
+`tenderduty -version` prints the version.
+
 Set up and run:
 
 ```shell

@@ -38,6 +38,16 @@ func TestTopHelp(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	code, stdout, stderr := runCLI("-version")
+	if code != 0 || stderr != "" || stdout != "tenderduty "+td2.Version()+"\n" {
+		t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+	}
+	if !strings.Contains(topHelpText, "-version                   print the version and exit") {
+		t.Fatal("top help lacks -version")
+	}
+}
+
 func TestCommandHelp(t *testing.T) {
 	for _, tc := range []struct {
 		args []string

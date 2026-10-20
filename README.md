@@ -75,6 +75,7 @@ Available Commands:
   chain       Add, change, remove or list chains
   config      Show or change config.yml
   reload      Reload a running tenderduty
+  version     Print the version
   help        Help about any command
 
 Flags:
@@ -87,6 +88,7 @@ Flags:
   -example-config            print an example config.yml and exit
   -example-chain             print an example chains.d/<Chain>.yml and exit
   -example-celestia          print an example chains.d/Celestia.yml with Fibre and exit
+  -version                   print the version and exit
   -h, -help                  help for tenderduty
 
 Remote config (see docs/remote.md):

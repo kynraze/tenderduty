@@ -40,6 +40,7 @@ Available Commands:
   chain       Add, change, remove or list chains
   config      Show or change config.yml
   reload      Reload a running tenderduty
+  version     Print the version
   help        Help about any command
 
 Flags:
@@ -52,6 +53,7 @@ Flags:
   -example-config            print an example config.yml and exit
   -example-chain             print an example chains.d/<Chain>.yml and exit
   -example-celestia          print an example chains.d/Celestia.yml with Fibre and exit
+  -version                   print the version and exit
   -h, -help                  help for tenderduty
 
 Remote config (see docs/remote.md):
@@ -91,9 +93,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var addChain, node, name, registryChain string
 	var settings repeatedSettings
 	var publicFallback, force bool
+	var version bool
 	// usage is hand-written; flags only parse
 	flags := flag.NewFlagSet("tenderduty", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.BoolVar(&version, "version", false, "print the version and exit")
 	flags.StringVar(&home, "home", "", "directory for config.yml, chains.d and state (in /var/lib/tenderduty for /etc/tenderduty), can also be set with the ENV var 'TENDERDUTY_HOME'")
 	flags.StringVar(&configFile, "f", "", "configuration file to use, can also be set with the ENV var 'CONFIG'")
 	flags.StringVar(&encryptedFile, "encrypted-config", "config.yml.asc", "encrypted config file, only valid with -encrypt or -decrypt flag")
@@ -121,6 +125,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		fmt.Fprintln(stderr, "Run 'tenderduty -h' for usage.")
 		return 2
+	}
+
+	if version {
+		fmt.Fprintln(stdout, "tenderduty", td2.Version())
+		return 0
 	}
 
 	if dumpConfig {
@@ -210,6 +219,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			err = td2.ConfigCommand(context.Background(), commandOptions, rest[1:], stdin, stdout)
 		case "reload":
 			err = reloadCommand(home, configFile, stateFile, rest[1:], stdout)
+		case "version":
+			if len(rest) > 1 {
+				err = td2.TakesError("version", "no arguments", rest[1:])
+			} else {
+				fmt.Fprintln(stdout, "tenderduty", td2.Version())
+			}
 		case "help":
 			err = helpCommand(rest[1:], stdout)
 		default:
