@@ -1,7 +1,5 @@
 # Discord Configuration
 
-Configuring a Discord webhook is very easy. 
-
 * First create a channel:
 
 ![channel](img/di-channel.png)
@@ -17,4 +15,19 @@ Configuring a Discord webhook is very easy.
 ![name](img/di-name.png)
 ![save](img/di-save.png)
 
-* Now the webhook URL can be used in the config.yml for alerts.
+The webhook URL is a secret: anyone with it can post to the channel. Paste it when the command waits (`=-` reads it hidden):
+
+```shell
+tenderduty config set discord.enabled=yes discord.webhook=-
+```
+
+Or in `config.yml`:
+
+```yaml
+discord:
+  enabled: yes
+  webhook: "https://discord.com/api/webhooks/..."
+  style: embed   # or plain
+```
+
+`embed` is a block with a color down the side, `plain` an ordinary message. Set these in the shared part of `config.yml`, or per chain under `alerts.discord`.

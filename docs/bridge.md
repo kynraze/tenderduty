@@ -1,86 +1,68 @@
 # Celestia bridge
 
-Tenderduty checks one celestia-node bridge per chain every 30 seconds over JSON-RPC, with a 10-second timeout per call. `header.LocalHead` supplies the local height and time; `das.SamplingStats` supplies the sampled and network heights, catch-up status and whether sampling runs. Header lag is compared with the validator RPC's chain height. It is skipped when that height is unknown or the chain is down.
+Tenderduty checks one celestia-node bridge per chain every 30 seconds over its RPC, with read methods only: local head, sampling, and header lag against the chain. With the bridge's OTel metrics it also watches peers, serving errors and pruning.
 
-Create a read token on the bridge host:
+## Setup
 
-```sh
-celestia bridge auth read --p2p.network <network> --node.store <store>
-```
+1. On the bridge host, create a read token and save it in a file tenderduty can read:
 
-Save the token in a file readable by tenderduty. It is read and trimmed at startup and on reload. The token is never included in status, logs, saved state or metrics. An empty `token_file` sends no Authorization header, for bridges using `--rpc.skip-auth`.
+   ```shell
+   celestia bridge auth read --p2p.network <network> --node.store <store>
+   ```
 
-Start the bridge with `--rpc.addr 0.0.0.0` to accept remote RPC connections; the default listens only on localhost. Firewall port 26658 to tenderduty's IP. With plain HTTP, the token travels unencrypted.
+2. Start the bridge with `--rpc.addr 0.0.0.0` (the default is localhost only) and allow port 26658 from tenderduty's IP only. Over plain HTTP the token travels unencrypted.
 
-In the chain file, next to `public_fallback`:
+3. On tenderduty's machine, check the bridge and save it to `chains.d/<Name>.yml`:
+
+   ```shell
+   tenderduty chain bridge <Name> http://<bridge-ip>:26658 --token-file /etc/tenderduty/bridge.token --alert yes
+   ```
+
+`chain bridge` flags:
+
+| Flag | Use |
+| --- | --- |
+| `--token-file <path>` | The read token file. Leave out for a bridge with `--rpc.skip-auth`. |
+| `--alert yes\|no` | Sets `bridge_enabled`. |
+| `--force` | Save even if the check fails. |
+| `--endpoint <url>` | Address for the printed metrics flags, when it differs from `otel_metrics.listen` (NAT, proxy). |
+
+Or by hand in the chain file:
 
 ```yaml
 bridge:
-  url: http://203.0.113.10:26658
-  token_file: /etc/tenderduty/bridge-mocha.token
+  url: http://<bridge-ip>:26658
+  token_file: /etc/tenderduty/bridge.token
 alerts:
   bridge_enabled: yes
-  bridge_severity: warning
-  bridge_lag_blocks: 20
-  bridge_lag_minutes: 5
 ```
 
-Bridge alerts default off. With only `bridge.url` set, status, dashboard, reports and metrics still show the bridge; `bridge_enabled` turns on the alerts. The default lag threshold is 20 blocks for 5 continuous minutes; severity defaults to warning. Enabling alerts requires a URL. These alert keys also work in `alert_defaults`. URL, token file and token changes apply on reload.
+Notes:
 
-| Alert | Condition | Recovery |
-|---|---|---|
-| Unreachable | Three consecutive failed ticks | Bridge OK |
-| Token rejected | First HTTP 401 or 403, or a missing-permission reply; replaces unreachable | Bridge OK |
-| Behind | Header lag exceeds the threshold for the configured window | Bridge is back in sync |
-| Sampling stuck | Sampling is stopped, or sampling lag exceeds the threshold, for the configured window | Bridge sampling resumed |
+- With only `bridge.url`, status, the dashboard, reports and metrics show the bridge; `bridge_enabled` adds the alerts.
+- The token file is read on start and reload. The token never appears in status, logs, state or metrics.
 
-Failed ticks suspend lag checks. Alerts use the chain's routing, mentions and quiet hours. `/status` and the dashboard show a Bridge section with head, lag and sampled head, or reachability and token failures. Daily reports include bridge version, served bytes and peers when OTel metrics are available.
+### Metrics
 
-A bridge stopped and started again on Mocha:
+Optional. Needed for peers, serving errors, pruning and the Bridge tab. `chain bridge` prints these lines.
 
-![bridge down and OK in Telegram](img/bridge-alert.png)
+1. Add to `celestia bridge start`:
 
-Prometheus exports `tenderduty_bridge_up`, `tenderduty_bridge_head`, `tenderduty_bridge_lag_blocks` and `tenderduty_bridge_sampled_head`, with `name`, `chain_id` and `moniker` labels.
+   ```
+   --metrics --metrics.endpoint <tenderduty-ip>:4318 --metrics.tls=false
+   ```
 
-Version and peers come from OTel metrics. Tenderduty uses only read RPC methods.
+2. Put the token in the bridge's environment. With systemd, under `[Service]`, then reload systemd and restart the bridge:
 
-## Metrics (OTel)
+   ```ini
+   Environment="OTEL_EXPORTER_OTLP_METRICS_HEADERS=Authorization=Bearer <token>"
+   ```
 
-Add `--metrics --metrics.endpoint <tenderduty-ip>:4318 --metrics.tls=false` to `celestia bridge start`. In tenderduty's `config.yml`, set the shared Fibre/bridge listener and token:
+Behind Caddy or nginx with HTTPS, use the domain without a scheme and turn TLS on: `--metrics.endpoint otel.example.com --metrics.tls=true`. `chain bridge --endpoint https://otel.example.com` prints this.
 
-```yaml
-fibre_metrics:
-  listen: 0.0.0.0:4318
-  token: <token>
-```
+The bridge uses the same listener and token as Fibre, see [Fibre setup](fibre.md#setup). It labels its metrics with its network, which must match the chain's `chain_id`.
 
-In the bridge's systemd unit, under `[Service]`:
-
-```ini
-Environment="OTEL_EXPORTER_OTLP_METRICS_HEADERS=Authorization=Bearer <token>"
-```
-
-Reload systemd and restart the bridge. `service.namespace` must match the chain's `chain_id`, with `bridge.url` set.
-
-Fibre and bridges share this listener and its one token: with `token` set, every sender uses it. Without a token, allow only the senders' IPs to port 4318 and set `allow_without_token: yes`. Plain HTTP sends the token unencrypted. HTTPS, a reverse proxy and private networks work as in [Fibre setup](fibre.md#setup). Behind a proxy, a `listen` on 127.0.0.1 needs no token, so set one anyway or let only the senders' IPs through the proxy.
-
-`/status` and the dashboard show a Bridge section: head and sampled height, plus version, full/archival peers, served data (24h), pruning and uptime while metrics are fresh (within two minutes). Pruned or archival mode comes from the store metrics. Reports show served bytes. Prometheus adds `tenderduty_bridge_full_peers`, `tenderduty_bridge_archival_peers`, `tenderduty_bridge_start_time_seconds`, `tenderduty_bridge_info` with a `version` label, and when known `tenderduty_bridge_last_pruned`, `tenderduty_bridge_failed_prunes` and `tenderduty_bridge_archival`.
-
-With bridge alerts enabled and RPC up:
-
-| Alert | Condition | Recovery |
-|---|---|---|
-| Too few peers | Fewer than 2 full peers for `bridge_lag_minutes` | 2 or more full peers |
-| Serving errors | At least 20 responses in `bridge_lag_minutes`, half of them internal errors | Below a quarter |
-| Metrics stopped | No metrics for 5 minutes, after some arrived since tenderduty started | Metrics arrive |
-| Pruning stalled | Last pruned height unchanged for 1 hour while the head moves | Pruning advances |
-| Failing to prune | Failed prunes for 1 hour | No failed prunes |
-
-Internal errors are the bridge failing to read its own data: a disk error, a corrupt file or a disk too slow to answer. Bad requests and dropped connections come from peers or the network and don't count. All use `bridge_severity`. Except metrics stopped, they resolve quietly when metrics go stale or RPC is down.
-
-An archival bridge also runs the pruner, but only trims the Q4 file and keeps block data forever, so disk keeps growing. Tenderduty can't see disk space.
-
-To send to two backends, point the bridge at a Collector with `--metrics.endpoint localhost:4318 --metrics.tls=false`. Set the tenderduty token on the Collector exporter instead of the bridge. Example Collector config (older Collectors only know the exporter as `otlphttp`):
+**Already sending to Celestia's collector?** The bridge has only one `--metrics.endpoint`. Run a Collector on the bridge host, start the bridge with `--metrics --metrics.tls=false` (the endpoint defaults to `localhost:4318`), and let the Collector send to both. The tenderduty token goes on the Collector, not the bridge, so Celestia never sees it: drop the bridge's `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. Celestia's collector needs no token. Older Collectors name the exporter `otlphttp`.
 
 ```yaml
 receivers:
@@ -90,30 +72,63 @@ receivers:
         endpoint: 127.0.0.1:4318
 exporters:
   otlp_http/tenderduty:
-    endpoint: http://<tenderduty-ip>:4318
+    endpoint: https://otel.example.com   # behind Caddy/nginx; or http://<tenderduty-ip>:4318
     headers:
-      Authorization: Bearer <token>
-  otlp_http/backend:
-    endpoint: https://<other-backend>
+      Authorization: Bearer <token>   # otel_metrics.token, also through the proxy
+  otlp_http/celestia:
+    endpoint: https://<celestia-collector>
 service:
   pipelines:
     metrics:
       receivers: [otlp]
-      exporters: [otlp_http/tenderduty, otlp_http/backend]
+      exporters: [otlp_http/tenderduty, otlp_http/celestia]
 ```
 
+## Alerts
 
-## Bridge tab
+All use `bridge_severity` (default warning) and the chain's routing, mentions and quiet hours. Lag is `bridge_lag_blocks` (20) for `bridge_lag_minutes` (5). Settings are in [config.md](config.md#alerting-settings) and apply on reload.
 
-The dashboard Bridge tab shows sync and sampling lag, Core → DA lag, peers, data served, response outcomes, serving and disk write latency, pruning, memory and restarts with version changes. Latency is a sum/count average; celestia-node's histogram buckets are too coarse for percentiles. Pick a chain and range (1h, 24h, 7d, 30d). Customize panels changes visibility, order, width and count chart type. Memory and restarts are hidden by default. Blank intervals have no observation. History is kept for 30 days in the state file.
+With `bridge_enabled`:
 
-`GET /bridge?range=24h&chain=ChainName` returns the history as JSON; omit `chain` for all watched bridges.
+| Alert | Fires when |
+| --- | --- |
+| Unreachable | Three checks in a row fail. |
+| Token rejected | The bridge answers 401, 403 or missing permission. Replaces unreachable. |
+| Behind | The header lag stays over the threshold. Skipped while checks fail or the chain height is unknown. |
+| Sampling stuck | Sampling stops, or its lag stays over the threshold. |
 
-Prometheus adds the following metrics with `name`, `chain_id` and `moniker` labels. Counters accumulate while tenderduty runs; use `rate` or `increase`. Metrics are emitted while OTel exports are fresh, except sampling lag, which comes from RPC polls.
+With metrics too, while the RPC is up:
 
-- Counters: `tenderduty_bridge_served_bytes_total`, `tenderduty_bridge_responses_total{status}` (success, not_found, rate_limited, internal_err, peer_err, other), `tenderduty_bridge_serve_seconds_total`, `tenderduty_bridge_serve_requests_total`, `tenderduty_bridge_store_put_seconds_total`, `tenderduty_bridge_store_puts_total`, `tenderduty_bridge_store_put_failures_total`, `tenderduty_bridge_core_to_da_seconds_total`, `tenderduty_bridge_core_to_da_blocks_total`, `tenderduty_bridge_reclaimed_bytes_total`, `tenderduty_bridge_restarts_total`.
-- Gauges: `tenderduty_bridge_sampling_lag_blocks`, `tenderduty_bridge_retained_hours`, `tenderduty_bridge_memory_bytes`, `tenderduty_bridge_goroutines`.
+| Alert | Fires when |
+| --- | --- |
+| Too few peers | Fewer than 2 full peers for `bridge_lag_minutes`. |
+| Serving errors | Half of at least 20 responses in `bridge_lag_minutes` are internal errors. Peer and network errors don't count. |
+| Metrics stopped | No metrics for 5 minutes, after some arrived. |
+| Pruning stalled | The last pruned height hasn't moved for 1 hour while the head moves. |
+| Failing to prune | Prunes fail for 1 hour. |
 
-`fibre_metrics.export_raw` also forwards bridge OTLP metrics to Prometheus with the same limits and expiry as Fibre.
+Except metrics stopped, these clear quietly when metrics go stale or the RPC is down.
 
-Check and save a bridge, then print its metrics setup: `tenderduty chain bridge <Name> <url> [--token-file path] [--alert yes|no]`.
+![bridge down and OK in Telegram](img/bridge-alert.png)
+
+## /status and the dashboard
+
+`/status` and the dashboard show a Bridge section: head, lag and sampled head, or why the bridge can't be reached. With fresh metrics (under two minutes old) it adds version, full and archival peers, data served in 24 hours, pruning and uptime. Daily reports include version, served bytes and peers.
+
+The Bridge tab charts one chain over 1h, 24h, 7d or 30d: sync and sampling lag, Core → DA lag, peers, data served, responses, serving and disk write latency, pruning, memory and restarts. Customize panels shows, hides and reorders them. History is kept for 30 days.
+
+![Bridge tab](img/bridge-tab.jpg)
+
+`GET /bridge?range=24h&chain=ChainName` returns the history as JSON; omit `chain` for all bridges.
+
+## Prometheus
+
+Prefixed `tenderduty_bridge_` and labeled `name`, `chain_id` and `moniker`. Counters (`_total`) count while tenderduty runs, so use `rate` or `increase`.
+
+| Source | Metrics |
+| --- | --- |
+| RPC | `up`, `head`, `lag_blocks`, `sampled_head`, `sampling_lag_blocks` |
+| Metrics, while fresh | `info{version}`, `start_time_seconds`, `full_peers`, `archival_peers`, `retained_hours`, `memory_bytes`, `goroutines`, and when known `archival`, `last_pruned`, `failed_prunes` |
+| Metrics counters | `served_bytes_total`, `responses_total{status}`, `serve_seconds_total`, `serve_requests_total`, `store_put_seconds_total`, `store_puts_total`, `store_put_failures_total`, `core_to_da_seconds_total`, `core_to_da_blocks_total`, `reclaimed_bytes_total`, `restarts_total` |
+
+`status` is success, not_found, rate_limited, internal_err, peer_err or other. [`otel_metrics.export_raw`](fibre.md#raw-export) also serves the bridge's own metrics.

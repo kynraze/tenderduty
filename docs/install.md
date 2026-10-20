@@ -8,41 +8,46 @@
 
 ## Docker Container
 
-Opens the dashboard (8888) and metrics (28686) ports, see [dashboard and metrics access](#dashboard-and-metrics-access).
+Create the config and a chain file:
 
 ```shell
 mkdir tenderduty && cd tenderduty
 docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
-mkdir chains.d && docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
-# edit config.yml for the notification methods, and chains.d/Osmosis.yml for the chain
-docker run -d --name tenderduty -p "8888:8888" -p "28686:28686" --restart unless-stopped -v tenderduty-state:/var/lib/tenderduty -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml ghcr.io/kynraze/tenderduty:latest
+mkdir chains.d
+docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
+```
+
+Set the notification methods in `config.yml` and your validator in `chains.d/Osmosis.yml`, then start it. This opens the dashboard (8888) and keeps metrics (28686) on this machine, see [dashboard and metrics access](#dashboard-and-metrics-access).
+
+```shell
+docker run -d --name tenderduty --restart unless-stopped \
+  -p 8888:8888 -p 127.0.0.1:28686:28686 \
+  -v tenderduty-state:/var/lib/tenderduty \
+  -v $(pwd)/config.yml:/var/lib/tenderduty/config.yml \
+  -v $(pwd)/chains.d:/var/lib/tenderduty/chains.d \
+  ghcr.io/kynraze/tenderduty:latest
 docker logs -f --tail 20 tenderduty
 ```
 
-After editing the config, use `docker exec tenderduty tenderduty reload` or `docker kill -s HUP tenderduty`.
+After editing the config: `docker exec tenderduty tenderduty reload` or `docker kill -s HUP tenderduty`.
 
 ## Docker Compose
 
-```shell
-mkdir tenderduty && cd tenderduty
+Create `config.yml` and `chains.d` as for [Docker](#docker-container), then add `docker-compose.yml` next to them:
 
-cat > docker-compose.yml << EOF
----
-version: '3.2'
+```yaml
 services:
-
-  v2:
+  tenderduty:
     image: ghcr.io/kynraze/tenderduty:latest
-    command: ""
     ports:
-      - "8888:8888" # Dashboard
-      - "28686:28686" # Prometheus exporter
+      - "8888:8888"    # dashboard
+      - "127.0.0.1:28686:28686"  # prometheus exporter, no auth
     volumes:
       - home:/var/lib/tenderduty
       - ./config.yml:/var/lib/tenderduty/config.yml
-      - ./chains.d:/var/lib/tenderduty/chains.d/
+      - ./chains.d:/var/lib/tenderduty/chains.d
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
         max-size: "20m"
         max-file: "10"
@@ -50,14 +55,11 @@ services:
 
 volumes:
   home:
-EOF
+```
 
-docker compose pull
-docker run --rm ghcr.io/kynraze/tenderduty:latest -example-config >config.yml
-mkdir -p chains.d
-docker run --rm ghcr.io/kynraze/tenderduty:latest -example-chain >chains.d/Osmosis.yml
+Start it:
 
-# Edit config.yml and chains.d/Osmosis.yml, and then start the container
+```shell
 docker compose up -d
 docker compose logs -f --tail 20
 ```
@@ -74,46 +76,57 @@ sudo snap install go --classic
 brew install go
 ```
 
-Clone the repository before building because its dependencies use replace directives in `go.mod`.
+Clone and build. `go install` doesn't work because the dependencies use replace directives in `go.mod`.
 
-```
-git clone --branch main https://github.com/kynraze/tenderduty.git
+```shell
+git clone https://github.com/kynraze/tenderduty.git
 cd tenderduty
-cp examples/config.yml config.yml
-cp -r examples/chains.d chains.d
-# edit config.yml and chains.d/Osmosis.yml with your favorite editor
-go mod download
 go build -mod=readonly -ldflags '-s -w' -trimpath -o tenderduty .
 ```
 
-Run `./tenderduty` or the equivalent `./tenderduty start`. It reads `config.yml` and `chains.d` from the current directory, else (Linux and macOS) `/etc/tenderduty` with the state in `/var/lib/tenderduty`. Without a config it says where it looked and how to create one: `tenderduty -example-config > config.yml`. `-home`, `-f`, `-cc` and `-state` choose other paths, see `tenderduty -h`.
+Set up and run:
+
+```shell
+cp examples/config.yml config.yml    # set the notification methods
+mkdir chains.d
+./tenderduty chain add <valoper> --node <url>
+./tenderduty
+```
+
+Instead of `chain add`, you can copy `examples/chains.d/Osmosis.yml` to `chains.d` and edit it.
+
+`./tenderduty` (or `./tenderduty start`) reads `config.yml` and `chains.d` from the current directory, else `/etc/tenderduty` with the state in `/var/lib/tenderduty` (Linux and macOS). `-home`, `-f`, `-cc` and `-state` choose other paths, see `tenderduty -h`.
 
 ## Run as a systemd service on Ubuntu
 
-One process monitors all chains under its own user. Build the binary as above, then:
+One process monitors all chains under its own user. Build the binary as above, then install it and create the user (skipped if it exists):
 
 ```shell
 sudo install -m 0755 tenderduty /usr/local/bin/tenderduty
-# skip useradd if the tenderduty user already exists
 id tenderduty || sudo useradd --system --user-group --home-dir /var/lib/tenderduty --shell /usr/sbin/nologin tenderduty
+```
+
+Create the config, add a chain and let the service user read them:
+
+```shell
 sudo install -d -m 0750 -o root -g tenderduty /etc/tenderduty /etc/tenderduty/chains.d
-sudo cp examples/config.yml /etc/tenderduty/config.yml
-sudo cp examples/chains.d/Osmosis.yml /etc/tenderduty/chains.d/
-# edit both, then let the service user read them
+sudo cp examples/config.yml /etc/tenderduty/config.yml    # set the notification methods
+sudo tenderduty chain add <valoper> --node <url> --home /etc/tenderduty
 sudo chown -R root:tenderduty /etc/tenderduty
 sudo chmod -R u=rwX,g=rX,o= /etc/tenderduty
+```
+
+Install and start the service:
+
+```shell
 sudo install -m 0644 contrib/tenderduty.service /etc/systemd/system/tenderduty.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now tenderduty
 sudo journalctl -u tenderduty -f
 ```
 
-- `config.yml` holds notifications and `alert_defaults`. `chains.d/` has one file per chain, see `Realio.yml` for several validators on one chain.
-- [contrib/tenderduty.service](../contrib/tenderduty.service) runs `tenderduty -f /etc/tenderduty/config.yml -cc /etc/tenderduty/chains.d -state /var/lib/tenderduty/.tenderduty-state.json`, and its `ExecReload` sends SIGHUP.
-- State is kept in `/var/lib/tenderduty`.
-- `tenderduty chain ...` and `tenderduty reload` find `/etc/tenderduty` and `/var/lib/tenderduty` on their own.
-- `--home <dir>` (or `TENDERDUTY_HOME`) can replace `-f`, `-cc` and `-state` when they sit in one directory, for example `tenderduty --home $HOME/tenderduty`.
-- After editing config: `sudo systemctl reload tenderduty`. Listener and port changes need `sudo systemctl restart tenderduty`.
+- [contrib/tenderduty.service](../contrib/tenderduty.service) reads `/etc/tenderduty` and keeps the state in `/var/lib/tenderduty`. `tenderduty chain ...` and `tenderduty reload` find both on their own.
+- After editing the config: `sudo systemctl reload tenderduty`. Listener and port changes need `sudo systemctl restart tenderduty`.
 
 To update:
 
@@ -127,9 +140,10 @@ sudo systemctl restart tenderduty
 ## Dashboard and metrics access
 
 - Run tenderduty on its own small server, not on a validator, so it keeps alerting when a validator goes down.
-- The dashboard has no login. It only shows on-chain info, so it's fine to share, just set `hide_logs: yes` so node addresses don't show up in the log feed.
-- The prometheus metrics (28686) include node addresses, only open that port to your prometheus server.
-- Using ufw? Allow SSH first. Docker skips ufw rules, so bind private ports like `"127.0.0.1:28686:28686"` instead.
+- The dashboard has no login of its own. It only shows on-chain info, so sharing it is fine; set `hide_logs: yes` so node addresses stay out of the log feed. For a password, put a proxy in front, see [Private dashboard](#private-dashboard).
+- The prometheus metrics (28686) include node addresses. Open that port only to your prometheus server.
+
+With ufw, allow SSH first:
 
 ```shell
 sudo ufw allow OpenSSH
@@ -138,17 +152,21 @@ sudo ufw allow from YOUR_PROMETHEUS_IP to any port 28686 proto tcp
 sudo ufw enable
 ```
 
-For a domain with HTTPS, put a reverse proxy in front of `localhost:8888`. Caddy:
+Docker skips ufw rules, so publish private ports on loopback instead: `-p 127.0.0.1:28686:28686`.
 
-```
+### HTTPS
+
+Put a reverse proxy in front of `localhost:8888`. Caddy gets the certificate on its own:
+
+```caddy
 tenderduty.example.com {
     reverse_proxy localhost:8888
 }
 ```
 
-nginx (with certbot for the certificate). The dashboard uses a websocket, so pass the upgrade headers:
+nginx, with certbot for the certificate. The dashboard uses a websocket, so pass the upgrade headers:
 
-```
+```nginx
 server {
     server_name tenderduty.example.com;
     location / {
@@ -156,12 +174,34 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
     }
 }
 ```
 
-To keep it private, add `basic_auth` (Caddy) or `auth_basic` (nginx), or use an SSH tunnel and open `http://127.0.0.1:8888`:
+### Private dashboard
+
+Close the direct port with `listen_port: 127.0.0.1:8888` in `config.yml` and restart, so only the proxy reaches it. In Docker, keep `listen_port` as is and publish `-p 127.0.0.1:8888:8888` instead.
+
+Then add a password. Caddy, with the hash from `caddy hash-password`:
+
+```caddy
+tenderduty.example.com {
+    basic_auth {
+        admin $2a$14$...
+    }
+    reverse_proxy localhost:8888
+}
+```
+
+nginx, with the file from `sudo htpasswd -c /etc/nginx/.htpasswd admin` (package `apache2-utils`), inside `location /`:
+
+```nginx
+auth_basic "tenderduty";
+auth_basic_user_file /etc/nginx/.htpasswd;
+```
+
+Or skip the proxy and use an SSH tunnel, then open `http://127.0.0.1:8888`:
 
 ```shell
 ssh -L 8888:127.0.0.1:8888 YOUR_USER@YOUR_MONITOR_SERVER

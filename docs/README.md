@@ -7,11 +7,11 @@ This is a tool for validators running tendermint nodes. It sends notifications w
 ## Detailed Documentation Topics
 
 - [Installation](install.md)
-- [Shared Configuration File Settings](config.md)
-- [Settings for a chain](chains.md)
+- [Configuration](config.md)
 - [Setting up PagerDuty](pagerduty.md)
 - [Setting up Discord](discord.md)
 - [Setting up Telegram](telegram.md)
+- [Setting up Gotify](gotify.md)
 - [Prometheus Exports](prometheus.md)
 - [Celestia Fibre](fibre.md)
 - [Celestia bridge](bridge.md)
@@ -24,7 +24,8 @@ Monitors a validator's performance across multiple chains
 
 - Monitors consensus state with one alert that follows consecutive missed blocks through jail risk, then jailing or leaving the active set.
 - Alerting if jailed, tombstoned, or inactive; available slash amounts and double-sign evidence appear in the alert.
-- Governance proposals, scheduled upgrades and Celestia version signalling are on by default. Missed proposals and Celestia Fibre are optional.
+- Governance proposals, scheduled upgrades and Celestia version signalling are on by default. Missed proposals, Celestia bridge and Fibre are optional.
+- Optional escalation: an alert still active after a set time is sent once more to a louder destination.
 - Optional quiet hours: quieter alerts wait until morning.
 - Daily and weekly reports.
 - Alert destinations can be customized for each chain.
@@ -34,7 +35,7 @@ Monitors a validator's performance across multiple chains
 - If no nodes are alive it can fallback to using public RPC nodes.
 
 Provides a prometheus exporter for integration with other visualization systems.<br />
-Sends an alert to any of four destinations: Pagerduty, Discord, Telegram, or Slack.
+Sends alerts to Pagerduty, Discord, Telegram, Slack or Gotify.
 
 A dashboard for displaying status.
 
@@ -46,7 +47,7 @@ A dashboard for displaying status.
 - Four themes and custom colors under Customize in the dashboard. The browser saves these settings separately from `config.yml`.
 - Optionally shows a real-time stream of log messages with details about ongoing health checks.
 
-![dashboard screenshot](dash.png)
+![dashboard screenshot](img/dashboard.jpg)
 
 With the dashboard on, `/health` reports that the process is alive and `/ready` that monitoring works (HTTP 503 until a validator is monitored).
 
@@ -65,7 +66,7 @@ For each chain being monitored:
 
 * Sets up an RPC client
   - On the initial connection it will get the validators consensus key and convert to a valcons bech32 address.
-  - Occasionaly checks for validator state: active, jailed, tombstoned
+  - Occasionally checks for validator state: active, jailed, tombstoned
   - Checks for a count of missed blocks within the jailing window.
 * Uses a websocket to subscribe to NewBlock and Vote events.
   - The votes are used to determine if a pre-vote/pre-commit was sent by the validator.
@@ -87,7 +88,7 @@ Dashboard:
 
 Notifications:
 
-* For Discord, Telegram and Slack it will only send an alert on a new alarm and when the alarm clears. Pagerduty has a little more nuance.
+* For Discord, Telegram, Slack and Gotify it will only send an alert on a new alarm and when the alarm clears. Pagerduty has a little more nuance.
 * Each event appears as a card with the chain, what happened and a line per fact. Recovery cards show the duration. Pagerduty gets plain text.
 * Failed deliveries are retried and survive a restart. After a crash the last message may be sent twice.
 * A tombstone is sent once and never cleared in a chat.

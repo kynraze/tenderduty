@@ -4,6 +4,19 @@ Tenderduty can load a configuration file over HTTP/HTTPS, including in container
 
 The remote file is not polled. Fetch changes with `tenderduty reload` or a restart.
 
+Only `config.yml` is fetched. Where there is no local `chains.d`, as in a container, put the chains under `chains:` before encrypting:
+
+```yaml
+# config.yml
+chains:
+  Osmosis:
+    chain_id: osmosis-1
+    valoper_address: osmovaloper1xxxxxxx...
+    nodes:
+      - url: http://YOUR_OSMOSIS_NODE:26657
+        alert_if_down: yes
+```
+
 The [encryption](../td2/encryption.go) is AES-256 with an authenticated SHA-256 HMAC, and keys derived with Argon2id. Use a good password.
 
 ## Generating the Encrypted Config

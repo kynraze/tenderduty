@@ -1,6 +1,6 @@
 # Pagerduty configuration
 
-The Pagerduty application offers two types of keys that can access their API. Tenderduty uses an API key, not an OAuth key. It will detect that it has been provided an OAuth key at startup and refuse to start. Here is how to get the correct type of key:
+Use an Events API v2 integration key (32 characters). An OAuth token is rejected at startup.
 
 ## To generate your pagerduty integration key
 
@@ -12,5 +12,23 @@ The Pagerduty application offers two types of keys that can access their API. Te
 ![policy](img/pd-policy.png)
 - Select the PagerDuty Events API V2 Integration, hit Create Service
 ![integrations](img/pd-integrate.png)
-- Copy the 32 character `Integration Key` into the config.yml file
+- Copy the 32 character `Integration Key`
 ![key](img/pd-key.png)
+
+## Configuration
+
+Paste the key when the command waits (`=-` reads it hidden):
+
+```shell
+tenderduty config set pagerduty.enabled=yes pagerduty.api_key=-
+```
+
+Or in `config.yml`:
+
+```yaml
+pagerduty:
+  enabled: yes
+  api_key: "your-integration-key"
+```
+
+Set these in the shared part of `config.yml`, or per chain under `alerts.pagerduty`.
