@@ -203,12 +203,21 @@ func fibreCertificate(ctx context.Context, host string) (*x509.Certificate, erro
 	return certs[0], nil
 }
 
-func fibreHealth(ctx context.Context, host string) (known, ready bool, err error) {
+func fibreHealth(ctx context.Context, host string, consKey []byte, chainID string) (known, ready bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	conn, err := grpc.NewClient("passthrough:///"+host, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
 		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true, //#nosec G402 -- identity is verified against the validator's consensus key
+		InsecureSkipVerify: true, //#nosec G402 -- the health answer is only accepted from a certificate signed by the validator's consensus key
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(consKey) == 0 {
+				return nil
+			}
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("no certificate presented")
+			}
+			return verifyFibreIdentity(cs.PeerCertificates[0], consKey, chainID, time.Now())
+		},
 	})))
 	if err != nil {
 		return false, false, err
@@ -323,7 +332,7 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 				state.KeyKnown, state.IdentityOK, state.IdentityError = previous.KeyKnown, previous.IdentityOK, previous.IdentityError
 			}
 		} else {
-			known, ready, healthErr := fibreHealth(ctx, host)
+			known, ready, healthErr := fibreHealth(ctx, host, valInfo.ConsKey, cc.ChainId)
 			if healthErr != nil {
 				l(cc.ChainId, "could not read Fibre health at", host, ":", healthErr)
 			} else {

@@ -66,26 +66,77 @@ func TestFibreHealth(t *testing.T) {
 		healthpb.HealthCheckResponse_UNKNOWN,
 	} {
 		h.SetServingStatus("", serving)
-		known, ready, err := fibreHealth(context.Background(), host)
+		known, ready, err := fibreHealth(context.Background(), host, pub, "mocha-5")
 		if err != nil || !known || ready != (serving == healthpb.HealthCheckResponse_SERVING) {
 			t.Fatalf("%s: known %v, ready %v, err %v", serving, known, ready, err)
 		}
 	}
 	failing.Store(true)
-	if _, _, err := fibreHealth(context.Background(), host); status.Code(err) != codes.Unavailable {
+	if _, _, err := fibreHealth(context.Background(), host, pub, "mocha-5"); status.Code(err) != codes.Unavailable {
 		t.Fatalf("health failure: %v", err)
 	}
 	old, _, _, _ := serveFibreHealth(t, cert, false)
-	known, ready, err := fibreHealth(context.Background(), old)
+	known, ready, err := fibreHealth(context.Background(), old, pub, "mocha-5")
 	if err != nil || known || ready {
 		t.Fatalf("unimplemented: known %v, ready %v, err %v", known, ready, err)
 	}
 	// A TLS-only listener proves reachability but reports no readiness.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	known, ready, err = fibreHealth(ctx, serveFibre(t, cert))
+	known, ready, err = fibreHealth(ctx, serveFibre(t, cert), pub, "mocha-5")
 	if err == nil || known || ready {
 		t.Fatalf("TLS-only: known %v, ready %v, err %v", known, ready, err)
+	}
+}
+
+func TestFibreHealthIdentity(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _, _, _ := serveFibreHealth(t, fibreCertificateFor(t, otherPriv, "mocha-5", true), true)
+	known, ready, err := fibreHealth(context.Background(), host, pub, "mocha-5")
+	if err == nil || !strings.Contains(err.Error(), "not signed by this validator") || known || ready {
+		t.Fatalf("another key: known %v, ready %v, err %v", known, ready, err)
+	}
+	known, ready, err = fibreHealth(context.Background(), host, nil, "mocha-5")
+	if err != nil || !known || !ready {
+		t.Fatalf("no key: known %v, ready %v, err %v", known, ready, err)
+	}
+}
+
+func TestRefreshFibreHealthIdentityFailure(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, h, _, _ := serveFibreHealth(t, fibreCertificateFor(t, otherPriv, "mocha-5", true), true)
+	for _, ready := range []bool{false, true} {
+		t.Run(map[bool]string{false: "not ready", true: "ready"}[ready], func(t *testing.T) {
+			cc := fibreChain()
+			cc.ChainId, cc.valInfo.ConsKey = "mocha-5", pub
+			since := time.Time{}
+			if ready {
+				h.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+			} else {
+				since = time.Now().Add(-10 * time.Minute)
+				h.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+			}
+			cc.fibre = fibreState{Registered: true, Host: host, HealthKnown: true, Ready: ready, NotReadySince: since}
+			queries := 0
+			cc.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(host), &queries))
+			if s := cc.fibre; !s.Reachable || !s.KeyKnown || s.IdentityOK || !s.HealthKnown || s.Ready != ready || !s.NotReadySince.Equal(since) {
+				t.Fatalf("identity failure changed the last health result: %+v", s)
+			}
+		})
 	}
 }
 
