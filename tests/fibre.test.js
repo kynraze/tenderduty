@@ -619,11 +619,11 @@ function detailFacts(fibre) {
     return { surfaces, context, labels: surfaces.get('detail-fibre-facts').children.map(f => f.children[0].text) }
 }
 
-test('Detail Fibre shows exactly nine facts and links to the selected chain', () => {
+test('Detail Fibre shows readiness beside identity and links to the selected chain', () => {
     const fibre = { registered: true, reachable: true, identity: 'verified', host: 'host', version: 'v10.4', metrics_received: true, metrics_at: 10, last_upload_at: 20, endorsing: { stopped: true } }
     const { surfaces, context, labels } = detailFacts(fibre)
-    assert.deepEqual(labels, ['Provider', 'Reachability', 'Identity', 'Fibre version', 'Share of rows', 'Shards', 'Endorsed (24h)', 'Last successful upload', 'Metrics received'])
-    assert.equal(surfaces.get('detail-fibre-facts').children[6].lastChild.style.color, 'var(--critical)')
+    assert.deepEqual(labels, ['Provider', 'Reachability', 'Identity', 'Ready', 'Fibre version', 'Share of rows', 'Shards', 'Endorsed (24h)', 'Last successful upload', 'Metrics received'])
+    assert.equal(surfaces.get('detail-fibre-facts').children[7].lastChild.style.color, 'var(--critical)')
     const note = surfaces.get('detail-fibre-note')
     assert.equal(note.textContent, '')
     assert.equal(note.children.length, 1)
@@ -662,19 +662,19 @@ test('Summary percentages use observed range history and retain outage and budge
     const points = [{ reachable: 1, metrics: { endorsements_endorsed: 8, endorsements_missed: 2, uploads_ok: 7, uploads_failed: 2, uploads_rejected: 1 } }, { reachable: null, metrics: {} }, { reachable: 0.5, metrics: { endorsements_endorsed: 9, endorsements_missed: 1 } }]
     const facts = summaryFacts({ reachable: true, occupancy_known: true, occupancy: 1024, chain_budget: 2048, last_upload_at: 880 }, points, '7d', 1000)
     assert.equal(facts[0].sub, '75% over 7d')
-    assert.equal(facts[1].value, '85.0%')
-    assert.equal(facts[1].sub, '3 missed of 20')
-    assert.equal(facts[2].value, '70%')
-    assert.equal(facts[2].failed, 2)
-    assert.equal(facts[3].value, '2m ago')
-    assert.equal(facts[4].value, '1 KiB')
-    assert.equal(facts[4].sub, 'of 2 KiB')
+    assert.equal(facts[2].value, '85.0%')
+    assert.equal(facts[2].sub, '3 missed of 20')
+    assert.equal(facts[3].value, '70%')
+    assert.equal(facts[3].failed, 2)
+    assert.equal(facts[4].value, '2m ago')
+    assert.equal(facts[5].value, '1 KiB')
+    assert.equal(facts[5].sub, 'of 2 KiB')
     const empty = summaryFacts({ reachable: false, down_since: 280, down_reason: 'timeout' }, [], '1h', 1000)
     assert.equal(empty[0].sub, 'down 12m · timeout')
-    assert.equal(empty[1].value, '—')
-    assert.equal(empty[1].sub, 'none seen')
     assert.equal(empty[2].value, '—')
-    assert.equal(empty[3].value, 'none yet')
+    assert.equal(empty[2].sub, 'none seen')
+    assert.equal(empty[3].value, '—')
+    assert.equal(empty[4].value, 'none yet')
     assert.equal(summaryFacts({ reachable: true }, [], '24h')[0].sub, '')
     assert.equal(summaryFacts({ pending: true }, [], '24h')[0].value, 'Checking…')
 })
@@ -746,4 +746,28 @@ test('Reachability renders full-height slots and interval tooltips including no 
     assert.ok(textOf(context.chart.children[1]).includes('No data'))
     assert.equal(nodes.some(n => n.tag === 'defs'), false)
     assert.ok(textOf(context.key).includes('Partly down'))
+})
+
+
+test('Readiness distinguishes yes, no and unknown beside reachability', () => {
+    for (const [ready, value, tone] of [['yes', 'Yes', 'good'], ['no', 'No', 'warning'], ['unknown', 'Unknown', ''], [undefined, 'Unknown', '']]) {
+        const facts = summaryFacts({ reachable: true, ready }, [], '24h')
+        assert.equal(facts[0].label, 'Reachable')
+        assert.equal(facts[1].label, 'Ready')
+        assert.equal(facts[1].value, value)
+        assert.equal(facts[1].tone, tone)
+        assert.equal(facts[1].sub, value === 'Unknown' ? 'not reported (Fibre before v10.5)' : '')
+    }
+    const pending = summaryFacts({ pending: true, ready: 'yes' }, [], '24h')[1]
+    assert.equal(pending.value, 'Checking…')
+    assert.equal(pending.tone, '')
+})
+
+
+test('Detail Fibre readiness has three states', () => {
+    for (const [ready, want] of [['yes', 'Yes'], ['no', 'No'], ['unknown', 'Not reported (Fibre before v10.5)']]) {
+        const { surfaces } = detailFacts({ registered: true, reachable: true, ready })
+        const fact = surfaces.get('detail-fibre-facts').children.find(f => f.children[0].text === 'Ready')
+        assert.equal(fact.lastChild.text, want)
+    }
 })

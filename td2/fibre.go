@@ -16,6 +16,11 @@ import (
 	"time"
 
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -29,6 +34,9 @@ type fibreState struct {
 	DownSince     time.Time // zero while the host answers
 	DownReason    string
 	NoKeyLogged   bool
+	HealthKnown   bool
+	Ready         bool
+	NotReadySince time.Time // zero while ready or unknown
 }
 
 func fibreDialReason(err error) string {
@@ -195,6 +203,27 @@ func fibreCertificate(ctx context.Context, host string) (*x509.Certificate, erro
 	return certs[0], nil
 }
 
+func fibreHealth(ctx context.Context, host string) (known, ready bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient("passthrough:///"+host, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, //#nosec G402 -- identity is verified against the validator's consensus key
+	})))
+	if err != nil {
+		return false, false, err
+	}
+	defer func() { _ = conn.Close() }()
+	response, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{Service: ""})
+	if status.Code(err) == codes.Unimplemented {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return true, response.Status == healthpb.HealthCheckResponse_SERVING, nil
+}
+
 // As Fibre's verifier (celestia-app fibre/internal/tlsid): a payload binding the TLS key to a validity window, signed by the consensus key.
 func verifyFibreIdentity(cert *x509.Certificate, consKey []byte, chainID string, now time.Time) error {
 	var value []byte
@@ -277,6 +306,9 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 	state.NoKeyLogged = previous.NoKeyLogged
 	if found && host != "" {
 		state.Registered, state.Host = true, host
+		if previous.Registered && previous.Host == host {
+			state.HealthKnown, state.Ready, state.NotReadySince = previous.HealthKnown, previous.Ready, previous.NotReadySince
+		}
 		cert, dialErr := fibreCertificate(ctx, host)
 		state.Reachable = dialErr == nil
 		if !state.Reachable {
@@ -291,6 +323,19 @@ func (cc *ChainConfig) refreshFibre(ctx context.Context, client *rpchttp.HTTP) {
 				state.KeyKnown, state.IdentityOK, state.IdentityError = previous.KeyKnown, previous.IdentityOK, previous.IdentityError
 			}
 		} else {
+			known, ready, healthErr := fibreHealth(ctx, host)
+			if healthErr != nil {
+				l(cc.ChainId, "could not read Fibre health at", host, ":", healthErr)
+			} else {
+				state.HealthKnown, state.Ready = known, ready
+				if known && !ready {
+					if state.NotReadySince.IsZero() {
+						state.NotReadySince = time.Now()
+					}
+				} else {
+					state.NotReadySince = time.Time{}
+				}
+			}
 			state.KeyKnown = len(valInfo.ConsKey) > 0
 			state.IdentityOK = true
 			if state.KeyKnown {
@@ -315,6 +360,7 @@ const (
 	fibreNotRegisteredPrefix = "Validator is not a registered Fibre provider on "
 	fibreHostPrefix          = "Fibre at "
 	fibreDownSuffix          = " is unreachable on "
+	fibreNotReadyInfix       = " is not ready on "
 	fibreIdentityInfix       = " does not prove it belongs to this validator on "
 )
 
@@ -331,9 +377,17 @@ func fibreIdentityMessage(host, chainID string) string {
 	return fibreHostPrefix + host + fibreIdentityInfix + chainID
 }
 
+func fibreNotReadyMessage(host, chainID string) string {
+	return fibreHostPrefix + host + fibreNotReadyInfix + chainID
+}
+
+func isFibreNotReady(message string) bool {
+	return strings.HasPrefix(message, fibreHostPrefix) && strings.Contains(message, fibreNotReadyInfix)
+}
+
 func isFibreMessage(message string) bool {
 	return strings.HasPrefix(message, fibreNotRegisteredPrefix) ||
-		strings.HasPrefix(message, fibreHostPrefix) && (strings.Contains(message, fibreDownSuffix) || strings.Contains(message, fibreIdentityInfix))
+		strings.HasPrefix(message, fibreHostPrefix) && (strings.Contains(message, fibreDownSuffix) || strings.Contains(message, fibreIdentityInfix) || isFibreNotReady(message))
 }
 
 func isFibreIdentity(message string) bool {
@@ -345,6 +399,8 @@ func fibreAlarmId(valInfo *ValInfo, message string) string {
 	switch {
 	case strings.HasPrefix(message, fibreNotRegisteredPrefix):
 		return valInfo.Valcons + "fibrenotregistered"
+	case isFibreNotReady(message):
+		return valInfo.Valcons + "fibrenotready" + fibreMessageHost(message)
 	case isFibreIdentity(message):
 		return valInfo.Valcons + "fibreidentity" + fibreMessageHost(message)
 	}
@@ -353,6 +409,10 @@ func fibreAlarmId(valInfo *ValInfo, message string) string {
 
 func fibreMessageHost(message string) string {
 	host := strings.TrimPrefix(message, fibreHostPrefix)
+	if isFibreNotReady(message) {
+		host, _, _ = strings.Cut(host, fibreNotReadyInfix)
+		return host
+	}
 	if isFibreIdentity(message) {
 		host, _, _ = strings.Cut(host, fibreIdentityInfix)
 		return host
@@ -371,6 +431,8 @@ func (cc *ChainConfig) fibreResolution(message string, state fibreState, moniker
 		return resolution{"ℹ️", "No longer registered", fmt.Sprintf("Fibre at %s is no longer registered on %s", host, cc.ChainId)}
 	case host != state.Host:
 		return resolution{"🔁", "Host changed", fmt.Sprintf("Fibre moved from %s to %s on %s", host, state.Host, cc.ChainId)}
+	case isFibreNotReady(message):
+		return resolution{"✅", "Fibre ready", fmt.Sprintf("Fibre at %s is ready again on %s", host, cc.ChainId)}
 	case !isFibreIdentity(message):
 		return resolution{"✅", "Fibre up", fmt.Sprintf("Fibre at %s answers again on %s", host, cc.ChainId)}
 	case state.KeyKnown && state.IdentityOK:
@@ -386,6 +448,11 @@ func fibreLabel(msg *alertMsg) (icon, state string) {
 			return "✅", "Fibre registered"
 		}
 		return "⚠️", "Fibre not registered"
+	case isFibreNotReady(msg.message):
+		if msg.resolved {
+			return "✅", "Fibre ready"
+		}
+		return "⚠️", "Fibre not ready"
 	case isFibreIdentity(msg.message):
 		if msg.resolved {
 			return "✅", "Fibre verified"
@@ -400,6 +467,9 @@ func fibreLabel(msg *alertMsg) (icon, state string) {
 
 // Second line of a down or identity alert.
 func fibreDetail(chain, message string) string {
+	if isFibreNotReady(message) {
+		return "the Fibre log names the failing check"
+	}
 	td.chainsMux.RLock()
 	cc := td.Chains[chain]
 	td.chainsMux.RUnlock()
@@ -440,6 +510,10 @@ func (cc *ChainConfig) fibreAlarms(valInfo *ValInfo, reconcile bool) {
 		down, identity := fibreDownMessage(state.Host, cc.ChainId), fibreIdentityMessage(state.Host, cc.ChainId)
 		if !state.Reachable && (active[down] || !state.DownSince.IsZero() && time.Since(state.DownSince) >= time.Duration(td.settings().NodeDownMin)*time.Minute) {
 			want(down)
+		}
+		notReady := fibreNotReadyMessage(state.Host, cc.ChainId)
+		if state.Reachable && state.HealthKnown && !state.Ready && (active[notReady] || !state.NotReadySince.IsZero() && time.Since(state.NotReadySince) >= time.Duration(td.settings().NodeDownMin)*time.Minute) || !state.Reachable && active[notReady] {
+			want(notReady)
 		}
 		// retain the identity alarm during downtime, including after a restart
 		if state.KeyKnown && !state.IdentityOK || !state.Reachable && active[identity] {

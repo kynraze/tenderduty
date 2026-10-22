@@ -101,6 +101,16 @@ func (s fibreState) identity() string {
 	return "verified"
 }
 
+func (s fibreState) readiness() string {
+	if !s.HealthKnown {
+		return "unknown"
+	}
+	if s.Ready {
+		return "yes"
+	}
+	return "no"
+}
+
 func (r *fibreReport) telegramLines() []string {
 	endorsed := "<b>Endorsed (24h):</b> " + endorsementText(r.Endorsements.Endorsed, r.Endorsements.Missed)
 	if r.Endorsing.Stopped {
@@ -132,6 +142,16 @@ func (r *fibreReport) telegramLines() []string {
 		lines = append(lines, statusField("📡", "Reachable", reach))
 		identity := map[string]string{"verified": "🟢 verified", "failed": "🔴 NOT verified", "unchecked": "⚪ not checked"}[s.identity()]
 		lines = append(lines, statusField("🔐", "Identity", identity))
+		if s.Reachable || s.HealthKnown {
+			ready := "⚪ not reported (Fibre before v10.5)"
+			if s.HealthKnown {
+				ready = "🟢 yes"
+				if !s.Ready {
+					ready = "🟡 no, for " + shortDuration(max(r.Now.Sub(s.NotReadySince), 0))
+				}
+			}
+			lines = append(lines, statusField("🩺", "Ready", ready))
+		}
 	}
 
 	switch {
@@ -265,6 +285,7 @@ func (r *fibreReport) dashboard() *dash.FibreStatus {
 		Endorsing:      r.Endorsing,
 		Pending:        r.Pending,
 		Registered:     s.Registered, Host: s.Host, Reachable: s.Reachable, DownReason: s.DownReason,
+		Ready:     s.readiness(),
 		Resources: m.Resources,
 		Identity:  s.identity(), IdentityError: s.IdentityError, Version: m.Version,
 		InActiveSet: r.InActiveSet, Rows: r.Rows, TotalRows: fibreOriginalRows, MinimumApplies: r.Minimum, ChainBudget: r.Budget,

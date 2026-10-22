@@ -43,6 +43,7 @@ var fibrePromLabels = map[string]string{
 	"occupancy_bytes":                "",
 	"registered":                     "",
 	"reachable":                      "",
+	"ready":                          "",
 	"identity_verified":              "",
 	"metrics_age_seconds":            "",
 	"uploads_in_flight":              "",
@@ -109,6 +110,9 @@ func (fc *fibreCollector) Collect(ch chan<- prometheus.Metric) {
 		if !r.Pending {
 			boolean("registered", r.State.Registered)
 			boolean("reachable", r.State.Reachable)
+			if r.State.HealthKnown {
+				boolean("ready", r.State.Ready)
+			}
 			if r.State.KeyKnown {
 				boolean("identity_verified", r.State.IdentityOK)
 			}

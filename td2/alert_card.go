@@ -141,6 +141,7 @@ var (
 	cardSignalThreshold = regexp.MustCompile(`^Version (\d+) reached the upgrade threshold$`)
 	cardNotRegistered   = regexp.MustCompile(`^Validator is not a registered Fibre provider on (\S+)$`)
 	cardFibreDown       = regexp.MustCompile(`^Fibre at (\S+) is unreachable on (\S+)$`)
+	cardFibreNotReady   = regexp.MustCompile(`^Fibre at (\S+) is not ready on (\S+)$`)
 	cardFibreIdentity   = regexp.MustCompile(`^Fibre at (\S+) does not prove it belongs to this validator on (\S+)$`)
 	cardSilent          = regexp.MustCompile(`^Fibre has sent no metrics for over (.+) on (\S+)$`)
 	cardStorageFull     = regexp.MustCompile(`^Fibre (?:shard budget|storage) is nearly full on (\S+?)(?:,.*)?$`)
@@ -168,6 +169,7 @@ var (
 	backRegistered   = regexp.MustCompile(`^(.+) is a registered Fibre provider on (\S+) at (\S+)$`)
 	backUnregistered = regexp.MustCompile(`^Fibre at (\S+) is no longer registered on (\S+)$`)
 	backMoved        = regexp.MustCompile(`^Fibre moved from (\S+) to (\S+) on (\S+)$`)
+	backFibreReady   = regexp.MustCompile(`^Fibre at (\S+) is ready again on (\S+)$`)
 	backFibreUp      = regexp.MustCompile(`^Fibre at (\S+) answers again on (\S+)$`)
 	backVerified     = regexp.MustCompile(`^Fibre at (\S+) proves it belongs to (.+) on (\S+)$`)
 	backUnchecked    = regexp.MustCompile(`^Fibre at (\S+) is no longer checked, the validator's consensus key isn't known$`)
@@ -341,6 +343,10 @@ var raisedRules = []cardRule{
 		}
 		return cardParts{ident: []alertField{codeField("🌐", "Host", m[1]), chainField(m[2])}, state: append([]alertField{row("📡", "Reachable", reach)}, whyFields(rest)...), used: true}
 	}},
+	{cardFibreNotReady, func(_ *alertMsg, m, rest []string) cardParts {
+		return cardParts{ident: []alertField{codeField("🌐", "Host", m[1]), chainField(m[2])},
+			state: append([]alertField{row("🩺", "Ready", dotYellow+" no")}, whyFields(rest)...), used: true}
+	}},
 	{cardFibreIdentity, func(msg *alertMsg, m, rest []string) cardParts {
 		return cardParts{ident: []alertField{codeField("🌐", "Host", m[1]), chainField(m[2])},
 			state: append([]alertField{row("🔐", "Identity", dotRed+" NOT verified")}, whyFields(rest)...), used: true}
@@ -501,6 +507,9 @@ var resolvedRules = []cardRule{
 	}},
 	{backMoved, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{codeField("🌐", "Host", m[2]), chainField(m[3])}, state: []alertField{codeField("↩️", "Was", m[1])}}
+	}},
+	{backFibreReady, func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{codeField("🌐", "Host", m[1]), chainField(m[2])}, state: []alertField{row("🩺", "Ready", dotGreen+" yes")}}
 	}},
 	{backFibreUp, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{codeField("🌐", "Host", m[1]), chainField(m[2])}, state: []alertField{row("📡", "Reachable", dotGreen+" yes")}}

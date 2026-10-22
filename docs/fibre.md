@@ -164,6 +164,7 @@ With `fibre_enabled`:
 | --- | --- |
 | Validator is not a registered Fibre provider | The chain has no Fibre host for this validator. |
 | Fibre at `host` is unreachable | The host fails a TLS handshake for `node_down_alert_minutes`. The alert says why. |
+| Fibre at `host` is not ready | Its gRPC health service reports not serving for `node_down_alert_minutes`: the app node, signer, registration or store check fails. Needs Fibre v10.5; older servers are not checked. |
 | Fibre at `host` does not prove it belongs to this validator | Its certificate isn't signed by this validator's consensus key. |
 
 When the registered host changes, these clear as Host changed:
@@ -209,7 +210,7 @@ The dashboard shows Endorsing, `/status` shows it when stopped, and daily and we
 
 ## /status and the dashboard
 
-`/status <chain>` in Telegram and the dashboard's validator detail show Fibre's host, reachability, identity, version, row share, shards against the budget with the storage backends, endorsements over 24 hours, last successful upload and metrics age. Host, endorsements, share and budget come from the chain, the rest from Fibre's metrics.
+`/status <chain>` in Telegram and the dashboard's validator detail show Fibre's host, reachability, identity, readiness, version, row share, shards against the budget with the storage backends, endorsements over 24 hours, last successful upload and metrics age. Host, endorsements, share and budget come from the chain; reachability, identity and readiness are probed directly; the rest comes from Fibre's metrics.
 
 ![/status with bridge and Fibre](img/telegram-status-chain.png)
 
@@ -225,7 +226,7 @@ With `prometheus_enabled: yes`, `/metrics` adds these, prefixed `tenderduty_fibr
 
 | Group | Metrics |
 | --- | --- |
-| Status | `registered`, `reachable`, `identity_verified`, `metrics_age_seconds` |
+| Status | `registered`, `reachable`, `identity_verified`, `ready` (when reported), `metrics_age_seconds` |
 | Share and budget | `rows`, `rows_total`, `row_share` (0 to 1), `chain_budget_bytes`, `budget_bytes` (0 is unlimited), `occupancy_bytes` |
 | Endorsements | `endorsements_total{result="endorsed\|missed\|unknown"}` |
 | Uploads | `uploads_total{result="ok\|failed\|rejected"}`, `upload_bytes_total`, `upload_seconds`, `uploads_in_flight`, `last_upload_timestamp_seconds` |
