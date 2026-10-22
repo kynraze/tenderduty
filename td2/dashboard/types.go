@@ -117,6 +117,7 @@ type FibreStatus struct {
 	Pending       bool               `json:"pending,omitempty"` // provider not checked yet
 	Registered    bool               `json:"registered"`
 	Host          string             `json:"host,omitempty"`
+	Ready         string             `json:"ready"` // yes, no or unknown
 	Reachable     bool               `json:"reachable"`
 	DownSince     int64              `json:"down_since,omitempty"` // unix seconds
 	DownReason    string             `json:"down_reason,omitempty"`

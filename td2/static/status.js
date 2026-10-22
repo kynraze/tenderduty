@@ -454,6 +454,7 @@ function fibreProviderFacts(chain) {
         rows.push(['Reachability', reach])
         const identity = { verified: 'Verified', failed: `Not verified${fibre.identity_error ? ` · ${fibre.identity_error}` : ''}` }
         rows.push(['Identity', identity[fibre.identity] || 'Not checked'])
+        rows.push(['Ready', fibre.ready === 'yes' ? 'Yes' : fibre.ready === 'no' ? 'No' : 'Not reported (Fibre before v10.5)'])
     }
     if (fibre.version) rows.push(['Fibre version', fibre.version])
     let share = 'Unavailable'

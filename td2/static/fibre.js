@@ -100,6 +100,7 @@
         else if (f.budget_reported && !f.unlimited && f.fibre_budget !== f.chain_budget) budget += ` · Fibre reports ${compact(f.fibre_budget, true)}`
         return [
             f.pending ? { label: 'Reachable', value: 'Checking…', tone: '', sub: '' } : { label: 'Reachable', value: f.reachable ? 'Yes' : 'No', tone: f.reachable ? 'good' : 'critical', sub: !f.reachable ? [f.down_since ? `down ${ageText(f.down_since, now)}` : 'down', f.down_reason].filter(Boolean).join(' · ') : observed.length ? `${Math.round(100 * observed.reduce((a, b) => a + b, 0) / observed.length)}% over ${range}` : '' },
+            { label: 'Ready', value: f.pending ? 'Checking…' : f.ready === 'yes' ? 'Yes' : f.ready === 'no' ? 'No' : 'Unknown', tone: !f.pending && f.ready === 'yes' ? 'good' : !f.pending && f.ready === 'no' ? 'warning' : '', sub: !f.pending && (!f.ready || f.ready === 'unknown') ? 'not reported (Fibre before v10.5)' : '' },
             { label: 'Endorsed', value: endorsed + missed ? `${(100 * endorsed / (endorsed + missed)).toFixed(1)}%` : '—', sub: endorsed + missed ? `${n(missed)} missed of ${n(endorsed + missed)}` : 'none seen' },
             { label: 'Uploads ok', value: ok + failed + rejected ? `${Math.round(100 * ok / (ok + failed + rejected))}%` : '—', sub: `${n(failed)} failed · ${n(rejected)} rejected`, failed },
             { label: 'Last upload', value: f.last_upload_at ? `${ageText(f.last_upload_at, now)} ago` : 'none yet', sub: f.last_upload_at ? new Date(f.last_upload_at * 1000).toLocaleString() : '' },

@@ -304,7 +304,7 @@ func TestRefreshFibre(t *testing.T) {
 	chain.ChainId = "mocha-5"
 	chain.valInfo.ConsKey = consPub
 	chain.refreshFibre(context.Background(), fibreNode(t, fibreRegistration(good), &queries))
-	if s := chain.fibre; !chain.fibreLoaded || !s.Registered || s.Host != good || !s.Reachable || !s.KeyKnown || !s.IdentityOK || s.IdentityError != "" || !s.DownSince.IsZero() {
+	if s := chain.fibre; !chain.fibreLoaded || !s.Registered || s.Host != good || !s.Reachable || !s.KeyKnown || !s.IdentityOK || s.IdentityError != "" || !s.DownSince.IsZero() || s.HealthKnown || s.Ready || !s.NotReadySince.IsZero() {
 		t.Fatalf("a healthy host gave %+v", s)
 	}
 
@@ -424,6 +424,7 @@ func TestFibreAlarmIds(t *testing.T) {
 	seen := make(map[string]string)
 	for _, message := range []string{
 		fibreNotRegisteredMessage("mocha-5"),
+		fibreNotReadyMessage("1.2.3.4:7980", "mocha-5"), fibreNotReadyMessage("5.6.7.8:7980", "mocha-5"),
 		fibreDownMessage("1.2.3.4:7980", "mocha-5"), fibreDownMessage("5.6.7.8:7980", "mocha-5"),
 		fibreIdentityMessage("1.2.3.4:7980", "mocha-5"), fibreIdentityMessage("5.6.7.8:7980", "mocha-5"),
 	} {
@@ -452,6 +453,7 @@ func TestChangedFibreHostKeepsItsIncident(t *testing.T) {
 		state fibreState
 	}{
 		{"unreachable", fibreDownMessage, fibreState{Registered: true, Host: "5.6.7.8:7980", DownSince: time.Now().Add(-time.Hour)}},
+		{"not ready", fibreNotReadyMessage, fibreState{Registered: true, Host: "5.6.7.8:7980", Reachable: true, HealthKnown: true, NotReadySince: time.Now().Add(-time.Hour)}},
 		{"identity", fibreIdentityMessage, fibreState{Registered: true, Host: "5.6.7.8:7980", Reachable: true, KeyKnown: true, IdentityError: "x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -523,6 +525,7 @@ func TestRestartKeepsFibreAlarmsWhileTheHostIsDown(t *testing.T) {
 	}{
 		{"down", fibreDownMessage(dead, "mocha-5"), dead},
 		{"identity", fibreIdentityMessage(dead, "mocha-5"), dead},
+		{"not ready", fibreNotReadyMessage(dead, "mocha-5"), dead},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := auditConfig(t)
@@ -705,6 +708,8 @@ func TestFibreLabels(t *testing.T) {
 		{fibreNotRegisteredMessage("mocha-5"), "✅", "Fibre registered", true},
 		{fibreDownMessage("h:1", "mocha-5"), "🚨", "Fibre down", false},
 		{fibreDownMessage("h:1", "mocha-5"), "✅", "Fibre up", true},
+		{fibreNotReadyMessage("h:1", "mocha-5"), "⚠️", "Fibre not ready", false},
+		{fibreNotReadyMessage("h:1", "mocha-5"), "✅", "Fibre ready", true},
 		{fibreIdentityMessage("h:1", "mocha-5"), "⚠️", "Fibre identity", false},
 		{fibreIdentityMessage("h:1", "mocha-5"), "✅", "Fibre verified", true},
 	} {

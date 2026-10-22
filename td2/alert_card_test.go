@@ -392,6 +392,9 @@ func TestTelegramCards(t *testing.T) {
 		msg  *alertMsg
 		want string
 	}{
+		{"fibre not ready", &alertMsg{chain: "Devnet1", severity: "warning", message: fibreNotReadyMessage(cardHost, "devnet-1")},
+			"⚠️ <b>Devnet1</b> · Fibre not ready\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n🩺 <b>Ready:</b> 🟡 no\n" +
+				"❓ <b>Why:</b> the Fibre log names the failing check\n⚠️ <b>Severity:</b> warning"},
 		{"fibre down", &alertMsg{chain: "Devnet1", severity: "critical", message: fibreDownMessage(cardHost, "devnet-1")},
 			"🚨 <b>Devnet1</b> · Fibre down\n\n🌐 <b>Host:</b> <code>localhost:7980</code>\n⛓ <b>Chain:</b> <code>devnet-1</code>\n📡 <b>Reachable:</b> 🔴 no, for 2m\n" +
 				"❓ <b>Why:</b> connection refused: Fibre is not listening on that port\n⚠️ <b>Severity:</b> critical"},

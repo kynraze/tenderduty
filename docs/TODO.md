@@ -12,5 +12,6 @@
 - Alert when the Fibre shard budget changes.
 - Support several Fibre hosts per validator.
 - Alert on blobs most validators endorsed but ours missed.
+- Upgrade cosmos-sdk past v0.45 to clear the Dependabot alerts.
 - Watch oracle misses and double-sign evidence.
 - Split td2 into packages.

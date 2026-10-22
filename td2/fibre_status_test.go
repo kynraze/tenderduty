@@ -115,6 +115,16 @@ func TestFibreStatusText(t *testing.T) {
 			if tc.chain != nil {
 				tc.chain(r.cc)
 			}
+			if r.cc.fibre.Registered && r.cc.fibre.Reachable {
+				for i, line := range tc.want {
+					if strings.Contains(line, "<b>Identity:</b>") {
+						want := append([]string(nil), tc.want[:i+1]...)
+						want = append(want, "🩺 <b>Ready:</b> ⚪ not reported (Fibre before v10.5)")
+						tc.want = append(want, tc.want[i+1:]...)
+						break
+					}
+				}
+			}
 			want := append([]string{tc.want[0], "<b>Endorsed (24h):</b> none seen yet"}, tc.want[1:]...)
 			if got := r.status(); got != strings.Join(want, "\n") {
 				t.Fatalf("got\n%s\nwant\n%s", got, strings.Join(want, "\n"))
