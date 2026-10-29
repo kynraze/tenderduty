@@ -391,6 +391,7 @@ type NodeConfig struct {
 	lastMsg         string
 	downSince       time.Time
 	downHeight      int64
+	stuckDetail     string
 	binaryVersion   string
 	binaryReadable  bool
 	binaryCheckedAt time.Time

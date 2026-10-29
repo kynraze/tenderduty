@@ -1,6 +1,5 @@
 # TODO
 
-- Alert when a node answers RPC but its height stops.
 - Notify when a node runs an older version than the latest release.
 - Alert when the bridge version is behind a scheduled upgrade.
 - Add a generic webhook, ntfy and SMTP destinations.

@@ -30,11 +30,11 @@ func (cc *ChainConfig) hasOwnNodes() bool {
 	return false
 }
 
-func (cc *ChainConfig) markNodeDown(node *NodeConfig, message string, syncing bool) nodeStatus {
+func (cc *ChainConfig) markNodeDown(node *NodeConfig, message string, syncing bool, stuck ...string) nodeStatus {
 	cc.stateMux.RLock()
 	height := cc.lastBlockNum
 	cc.stateMux.RUnlock()
-	return node.markDownAt(message, syncing, height)
+	return node.markDownAt(message, syncing, height, stuck...)
 }
 
 func (node *NodeConfig) binaryPollDue(now time.Time, scheduled bool) bool {
@@ -184,6 +184,9 @@ func ownNodeDownDetail(chain, nodeURL string) string {
 		}
 		if status.down && !status.syncing && watch.Height > 0 && downHeight >= watch.Height-signalStopMargin && known && major < watch.Version {
 			return fmt.Sprintf("stopped at the version %d upgrade height %s: runs celestia-app %s, upgrade to v%d", watch.Version, thousands(watch.Height), strings.TrimPrefix(strings.TrimSpace(status.binaryVersion), "v"), watch.Version)
+		}
+		if status.down {
+			return status.stuckDetail
 		}
 	}
 	return ""

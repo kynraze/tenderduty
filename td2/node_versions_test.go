@@ -11,6 +11,40 @@ import (
 	"time"
 )
 
+func TestOwnNodeStuckDetail(t *testing.T) {
+	c := auditConfig(t)
+	node := &NodeConfig{Url: "http://localhost:26657", AlertIfDown: true}
+	cc := &ChainConfig{name: "Chain", ChainId: "chain-1", Nodes: []*NodeConfig{node}, lastBlockNum: 3000}
+	c.Chains[cc.name] = cc
+	detail := "stuck at height 1,000, 2,000 blocks behind"
+	status := cc.markNodeDown(node, detail, false, detail)
+	if !status.down || status.syncing || status.stuckDetail != detail || node.snapshot().stuckDetail != detail {
+		t.Fatalf("stuck state %+v", status)
+	}
+	message := nodeDownMessage(node.Url, cc.ChainId)
+	if got := nodeDownDetail(cc.name, message); got != detail {
+		t.Fatalf("stuck detail %q", got)
+	}
+	if got := (&alertMsg{chain: cc.name, message: message}).summary(); !strings.HasSuffix(got, "\n"+detail) {
+		t.Fatalf("node down summary %q", got)
+	}
+	cc.signal = signalState{UpgradeVersion: 11, UpgradeHeight: 3000}
+	node.recordBinary("10.4.0", true)
+	if got := ownNodeDownDetail(cc.name, node.Url); !strings.HasPrefix(got, "stopped at the version 11 upgrade height") {
+		t.Fatalf("upgrade detail lost priority: %q", got)
+	}
+	cc.signal = signalState{}
+	node.markHealthy()
+	if node.snapshot().stuckDetail != "" || ownNodeDownDetail(cc.name, node.Url) != "" {
+		t.Fatal("healthy node kept stuck detail")
+	}
+	cc.markNodeDown(node, detail, false, detail)
+	node.markDownAt("down", false, 3000)
+	if node.snapshot().stuckDetail != "" || ownNodeDownDetail(cc.name, node.Url) != "" {
+		t.Fatal("other downtime kept stuck detail")
+	}
+}
+
 func TestSignalOwnNodeVersions(t *testing.T) {
 	c := auditConfig(t)
 	a := &NodeConfig{Url: "http://user:secret@localhost:26657/path?token=secret", AlertIfDown: true}

@@ -20,7 +20,7 @@ It listens on all interfaces unless given a host, e.g. `127.0.0.1:28686`. It has
 | --- | --- |
 | `tenderduty_consecutive_missed_blocks` | Consecutive missed blocks, regardless of precommit or prevote. |
 | `tenderduty_endpoint_down_seconds` | Seconds a node has been unhealthy (node). |
-| `tenderduty_endpoint_syncing_seconds_behind` | Seconds a node is behind the head of the chain (node). |
+| `tenderduty_endpoint_syncing_seconds_behind` | Node's lag behind the head in seconds, 0 when caught up (node). |
 | `tenderduty_missed_block_window` | The missed block (slashing) window. |
 | `tenderduty_missed_blocks` | Blocks missed without a precommit or prevote seen, since start. |
 | `tenderduty_missed_blocks_for_window` | Missed blocks in the slashing window, regardless of precommit or prevote. |
