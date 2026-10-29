@@ -159,6 +159,12 @@ func (cc *ChainConfig) refreshUpgrade(ctx context.Context, client *rpchttp.HTTP)
 	failed := cc.upgradeReadFailed
 	cc.upgradeReadFailed = false
 	cc.upgrade, cc.upgradeLoaded = plan, true
+	if previous != nil && (plan == nil || *plan != *previous) {
+		cc.haltPlan = previous
+	}
+	if cc.haltPlan != nil && height > cc.haltPlan.Height {
+		cc.haltPlan = nil
+	}
 	cc.stateMux.Unlock()
 	if failed {
 		l(cc.ChainId, "upgrade plan readable again")

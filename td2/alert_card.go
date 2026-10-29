@@ -266,12 +266,21 @@ var raisedRules = []cardRule{
 	{percentageMissed, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: who(m[1], m[3]), state: []alertField{row("📉", "Window", "> "+m[2]+"% missed")}}
 	}},
-	{cardStalled, func(_ *alertMsg, m, _ []string) cardParts {
+	{upgradeStalled, func(_ *alertMsg, m, _ []string) cardParts {
+		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("⬆️", "Upgrade", m[2]+" at height "+m[3]), row("🧱", "Status", m[4])}}
+	}},
+	{cardStalled, func(_ *alertMsg, m, rest []string) cardParts {
 		minutes := m[2] + " minutes"
 		if m[2] == "1" {
 			minutes = "1 minute"
 		}
-		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🧱", "Blocks", dotRed+" no new block in "+minutes)}}
+		p := cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🧱", "Blocks", dotRed+" no new block in "+minutes)}}
+		if len(rest) > 0 && strings.Contains(rest[0], " is the only source, so either it or the chain stopped") {
+			p.state = append(p.state, row("🔌", "Source", rest[0]))
+			p.state = append(p.state, noteFields(rest[1:])...)
+			p.used = true
+		}
+		return p
 	}},
 	{noRpcNodes, func(_ *alertMsg, m, _ []string) cardParts {
 		return cardParts{ident: []alertField{chainField(m[1])}, state: []alertField{row("🔌", "RPC", dotRed+" no endpoint working")}}

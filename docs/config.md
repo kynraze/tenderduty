@@ -152,6 +152,8 @@ Set any alert switch to `no` to turn it off. Missed block proposals, bridge and 
 | `stalled_minutes` | Minutes without a block before that alert. Default 10. |
 | `alert_if_no_servers` | Alert when none of the RPC nodes respond for `node_down_alert_minutes`. Default on. |
 
+With one node and no public fallback, the stalled alert says it can't tell a stuck node from a halted chain. At a gov upgrade height it names own nodes still on the old binary, or says they upgraded and wait for the network.
+
 **Missed proposals**
 
 | Setting | Description |

@@ -205,9 +205,16 @@ func TestOwnNodeBinaryPolling(t *testing.T) {
 	if status := node.snapshot(); status.binaryVersion != "v10.4.0-corto" || status.binaryReadable {
 		t.Fatalf("failed read lost last known version: %+v", status)
 	}
+	cc.signal = signalState{}
+	cc.haltPlan = &upgradePlan{Name: "v2", Height: 1001}
+	cc.refreshNodeBinary(context.Background(), node, client, now.Add(8*time.Minute))
+	cc.refreshNodeBinary(context.Background(), node, client, now.Add(9*time.Minute))
+	if reads != 6 {
+		t.Fatalf("halt cadence: %d reads", reads)
+	}
 	node.AlertIfDown = false
 	cc.refreshNodeBinary(context.Background(), node, client, now.Add(20*time.Minute))
-	if reads != 4 {
+	if reads != 6 {
 		t.Fatalf("public node polled: %d reads", reads)
 	}
 }

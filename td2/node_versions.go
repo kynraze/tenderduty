@@ -65,8 +65,10 @@ func (node *NodeConfig) recordBinary(binary string, readable bool) {
 
 func (cc *ChainConfig) refreshNodeBinary(ctx context.Context, node *NodeConfig, client *rpchttp.HTTP, now time.Time) {
 	cc.stateMux.RLock()
-	scheduled := cc.signal.UpgradeHeight > cc.lastBlockNum && cc.signal.UpgradeHeight > 0 || cc.upgrade != nil && cc.upgrade.Height > cc.lastBlockNum
+	plan, halt, height := cc.upgrade, cc.haltPlan, cc.lastBlockNum
+	scheduled := cc.signal.UpgradeHeight > height && cc.signal.UpgradeHeight > 0 || plan != nil && plan.Height > height || atHaltPlan(plan, height) || atHaltPlan(halt, height)
 	cc.stateMux.RUnlock()
+	node.recordPreUpgrade("", false, plan, halt, height)
 	if !node.binaryPollDue(now, scheduled) {
 		return
 	}
@@ -78,6 +80,7 @@ func (cc *ChainConfig) refreshNodeBinary(ctx context.Context, node *NodeConfig, 
 		return
 	}
 	node.recordBinary(info.Response.Version, true)
+	node.recordPreUpgrade(info.Response.Version, true, plan, halt, height)
 }
 
 func ownNodeReady(status nodeStatus, version uint64) bool {
@@ -197,4 +200,15 @@ func nodeBinaryLabel(status nodeStatus) string {
 		return "v" + strings.TrimPrefix(strings.TrimSpace(status.binaryVersion), "v")
 	}
 	return "version unknown"
+}
+
+func (node *NodeConfig) recordPreUpgrade(binary string, readable bool, plan, halt *upgradePlan, height int64) {
+	node.stateMux.Lock()
+	defer node.stateMux.Unlock()
+	if plan == nil && halt == nil {
+		node.preUpgradeVersion, node.preUpgradeHeight = "", 0
+	} else if node.AlertIfDown && readable && plan != nil && height < plan.Height && node.preUpgradeHeight != plan.Height {
+		// the first version seen for this plan, a binary swapped in early must not become the baseline
+		node.preUpgradeVersion, node.preUpgradeHeight = strings.TrimSpace(binary), plan.Height
+	}
 }
