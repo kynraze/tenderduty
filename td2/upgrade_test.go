@@ -1,12 +1,65 @@
 package tenderduty
 
 import (
+	"context"
+	"encoding/hex"
 	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"time"
 )
+
+func TestGetAppliedPlanHeight(t *testing.T) {
+	const path = "/cosmos.upgrade.v1beta1.Query/AppliedPlan"
+	// QueryAppliedPlanRequest{name: 1}.
+	request := field(nil, 1, []byte("v2.20.0"))
+	for _, tc := range []struct {
+		name    string
+		value   []byte
+		want    int64
+		wantErr bool
+	}{
+		{"applied", varintField(nil, 1, 31_812_210), 31_812_210, false},
+		{"absent", nil, 0, false},
+		{"unknown field", varintField(nil, 2, 123), 0, false},
+		{"malformed", []byte{0x08}, 0, true},
+		{"out of range", varintField(nil, 1, 1<<63), 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := govStoreNode(t, map[string][]byte{path + " " + hex.EncodeToString(request): tc.value}, "")
+			got, err := getAppliedPlanHeight(context.Background(), client, "v2.20.0")
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("height %d, %v; want %d, error %v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+	client := govStoreNode(t, nil, "")
+	if _, err := getAppliedPlanHeight(context.Background(), client, "v2.20.0"); err == nil {
+		t.Fatal("expected an error for a failed ABCI query")
+	}
+}
+
+func TestUpgradeOutcome(t *testing.T) {
+	previous := &upgradePlan{Name: "v2.20.0", Height: 31_812_210}
+	for _, tc := range []struct {
+		name    string
+		height  int64
+		applied int64
+		want    string
+	}{
+		{"replayed block", previous.Height - 1, previous.Height, "Upgraded"},
+		{"cancelled or rescheduled", previous.Height - 1, 0, "Cancelled"},
+		{"reached height", previous.Height, 0, "Upgraded"},
+		{"past height, next plan already set", previous.Height + 1, 0, "Upgraded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := upgradeOutcome(previous, tc.height, tc.applied); got != tc.want {
+				t.Fatalf("outcome %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestParsePlan(t *testing.T) {
 	plan := field(nil, 1, []byte("v4.0.0"))

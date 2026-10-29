@@ -177,6 +177,7 @@ type ChainConfig struct {
 	lastBlockNum    int64
 	observedBlock   bool
 
+	lastBlockAlarmMsg   string
 	statTotalSigns      float64
 	statTotalProps      float64
 	statTotalMiss       float64
@@ -190,6 +191,7 @@ type ChainConfig struct {
 	proposalsLoaded     bool
 	publicNode          string       // the public fallback node that worked last
 	upgrade             *upgradePlan // nil when none is scheduled
+	haltPlan            *upgradePlan
 	upgradeLoaded       bool
 	signal              signalState // x/signal's tally for the next app version
 	signalReadFailed    bool
@@ -384,16 +386,19 @@ type NodeConfig struct {
 	// Server groups alerts for nodes on the same machine.
 	Server string `yaml:"server"`
 
-	down            bool
-	wasDown         bool
-	syncing         bool
-	checked         bool
-	lastMsg         string
-	downSince       time.Time
-	downHeight      int64
-	binaryVersion   string
-	binaryReadable  bool
-	binaryCheckedAt time.Time
+	down              bool
+	wasDown           bool
+	syncing           bool
+	checked           bool
+	lastMsg           string
+	downSince         time.Time
+	downHeight        int64
+	stuckDetail       string
+	binaryVersion     string
+	preUpgradeVersion string
+	preUpgradeHeight  int64
+	binaryReadable    bool
+	binaryCheckedAt   time.Time
 }
 
 // PDConfig is the information required to send alerts to PagerDuty

@@ -31,6 +31,28 @@ func getUpgradePlan(ctx context.Context, client *rpchttp.HTTP) (*upgradePlan, er
 	return parsePlan(resp.Response.Value)
 }
 
+func getAppliedPlanHeight(ctx context.Context, client *rpchttp.HTTP, name string) (int64, error) {
+	request := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), name)
+	resp, err := client.ABCIQuery(ctx, "/cosmos.upgrade.v1beta1.Query/AppliedPlan", request)
+	if err != nil {
+		return 0, err
+	}
+	if resp.Response.Code != 0 {
+		return 0, fmt.Errorf("applied plan: %s", resp.Response.Log)
+	}
+	var height int64
+	err = eachField(resp.Response.Value, func(num protowire.Number, typ protowire.Type, _ []byte, varint uint64) error {
+		if num == 1 && typ == protowire.VarintType {
+			if varint > math.MaxInt64 {
+				return fmt.Errorf("applied upgrade height %d is out of range", varint)
+			}
+			height = int64(varint)
+		}
+		return nil
+	})
+	return height, err
+}
+
 // parsePlan reads QueryCurrentPlanResponse{plan: {name: 1, height: 3}} by field number.
 func parsePlan(b []byte) (*upgradePlan, error) {
 	var plan *upgradePlan
@@ -112,6 +134,14 @@ func upgradeResolvedLabel(chain, message string) (icon, label string) {
 	return "✅", "Upgraded"
 }
 
+// a replayed upgrade block never reaches the websocket, so ask the chain whether the plan ran
+func upgradeOutcome(previous *upgradePlan, height, applied int64) string {
+	if height >= previous.Height || applied > 0 {
+		return "Upgraded"
+	}
+	return "Cancelled"
+}
+
 func (cc *ChainConfig) refreshUpgrade(ctx context.Context, client *rpchttp.HTTP) {
 	plan, err := getUpgradePlan(ctx, client)
 	if err != nil {
@@ -129,16 +159,26 @@ func (cc *ChainConfig) refreshUpgrade(ctx context.Context, client *rpchttp.HTTP)
 	failed := cc.upgradeReadFailed
 	cc.upgradeReadFailed = false
 	cc.upgrade, cc.upgradeLoaded = plan, true
+	if previous != nil && (plan == nil || *plan != *previous) {
+		cc.haltPlan = previous
+	}
+	if cc.haltPlan != nil && height > cc.haltPlan.Height {
+		cc.haltPlan = nil
+	}
 	cc.stateMux.Unlock()
 	if failed {
 		l(cc.ChainId, "upgrade plan readable again")
 	}
 	if previous != nil && (plan == nil || plan.Height != previous.Height) {
-		outcome := "Cancelled"
-		if height >= previous.Height {
-			outcome = "Upgraded"
+		var applied int64
+		if height < previous.Height {
+			applied, err = getAppliedPlanHeight(ctx, client, previous.Name)
+			if err != nil {
+				l(cc.ChainId, "could not read the applied upgrade plan:", err)
+				applied = 0
+			}
 		}
-		upgradeOutcomes.Store(fmt.Sprintf("%s@%d", cc.name, previous.Height), outcome)
+		upgradeOutcomes.Store(fmt.Sprintf("%s@%d", cc.name, previous.Height), upgradeOutcome(previous, height, applied))
 	}
 	if plan != nil && blockTime > 0 && height > 0 && plan.Height > height {
 		upgradeETAs.Store(fmt.Sprintf("%s@%d", cc.name, plan.Height), time.Now().Add(time.Duration(plan.Height-height)*blockTime).UTC())

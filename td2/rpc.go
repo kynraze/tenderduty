@@ -14,6 +14,21 @@ import (
 
 var rpcEndpointTimeout = 10 * time.Second
 
+const nodeStuckAfter = 2 * time.Minute
+
+func nodeLag(headHeight int64, headSeen time.Time, nodeHeight int64, nodeBlock time.Time, now time.Time) (behind int64, lag time.Duration, stuck bool) {
+	if headHeight <= nodeHeight {
+		return
+	}
+	behind = headHeight - nodeHeight
+	lag = now.Sub(nodeBlock)
+	if lag < 0 {
+		lag = 0
+	}
+	stuck = headHeight > 0 && !headSeen.IsZero() && now.Sub(headSeen) <= nodeStuckAfter && lag > nodeStuckAfter
+	return
+}
+
 // newRpc sets up the rpc client used for monitoring. It will try nodes in order until a working node is found.
 // it will also get some initial info on the validator's status.
 func (cc *ChainConfig) newRpc() error {
@@ -136,8 +151,9 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 				checks.Add(1)
 				go func(node *NodeConfig) {
 					defer checks.Done()
+					stuckDetail := ""
 					alert := func(msg string) {
-						status := cc.markNodeDown(node, fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced")
+						status := cc.markNodeDown(node, fmt.Sprintf("%-12s node %s is %s", chainName, node.Url, msg), msg == "not synced", stuckDetail)
 						if !node.AlertIfDown {
 							// even if we aren't alerting, we want to display the status in the dashboard.
 							return
@@ -164,6 +180,13 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 						alert("on the wrong network")
 						return
 					}
+					cc.stateMux.RLock()
+					headHeight, headSeen := cc.lastBlockNum, cc.lastBlockTime
+					cc.stateMux.RUnlock()
+					behind, lag, stuck := nodeLag(headHeight, headSeen, status.SyncInfo.LatestBlockHeight, status.SyncInfo.LatestBlockTime, time.Now())
+					if td.Prom {
+						td.sendStat(cc.mkUpdate(metricNodeLagSeconds, lag.Seconds(), node.Url))
+					}
 					if status.SyncInfo.CatchingUp {
 						alert("not synced")
 						return
@@ -171,6 +194,11 @@ func (cc *ChainConfig) monitorHealth(ctx context.Context, chainName string) {
 
 					if !websocketWorks(ctx, node.Url) {
 						alert("refusing websocket connections")
+						return
+					}
+					if stuck {
+						stuckDetail = fmt.Sprintf("stuck at height %s, %s blocks behind", thousands(status.SyncInfo.LatestBlockHeight), thousands(behind))
+						alert(stuckDetail)
 						return
 					}
 

@@ -47,7 +47,7 @@ Booleans take yes/no or true/false. Omitted settings use the defaults below. Unk
 | `enable_dashboard` | Enable the dashboard. Chain logos come from the chain registry (PNG, GitHub chain-registry only), with initials as fallback. |
 | `listen_port` | TCP port of the dashboard, or host:port such as 127.0.0.1:8888 to listen only there (behind a reverse proxy or SSH tunnel). A bare port listens on all interfaces. |
 | `hide_logs` | Disable the log feed and hide the RPC node list (with node versions) and error details, for a public dashboard, and the node lines of Telegram `/status`. Also hides Fibre failure reasons and identity errors; runtime metrics and Fibre's version stay. Not fully vetted against leaking node names. Needs a restart. |
-| `node_down_alert_minutes` | Minutes to wait before alerting that a node is down. 3 when empty, under 3 can give false alarms. |
+| `node_down_alert_minutes` | Minutes to wait before alerting that a node is down. A node more than 2 minutes behind a moving chain counts as down. 3 when empty, under 3 can give false alarms. |
 | `node_down_alert_severity` | Severity of node down alerts: info, warning, error or critical. Critical when empty. |
 | `alert_node_address` | Print node addresses in alerts. With `no`, use `server`, else `own node N` for own nodes or `node N` for others. Default yes. |
 | `group_node_alerts` | One Telegram, Discord, Slack and Gotify message for nodes of one server that go down together. Default no. PagerDuty still gets one incident per node. Name servers with `servers`. |
@@ -151,6 +151,8 @@ Set any alert switch to `no` to turn it off. Missed block proposals, bridge and 
 | `stalled_enabled` | Alert when the chain stops producing blocks. Default on. |
 | `stalled_minutes` | Minutes without a block before that alert. Default 10. |
 | `alert_if_no_servers` | Alert when none of the RPC nodes respond for `node_down_alert_minutes`. Default on. |
+
+With one node and no public fallback, the stalled alert says it can't tell a stuck node from a halted chain. At a gov upgrade height it names own nodes still on the old binary, or says they upgraded and wait for the network.
 
 **Missed proposals**
 

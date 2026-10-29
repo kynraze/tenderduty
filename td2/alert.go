@@ -1096,7 +1096,6 @@ var (
 
 // watch handles monitoring for missed blocks, stalled chain, node downtime
 // and also updates a few prometheus stats
-// FIXME: not watching for nodes that are lagging the head block!
 func (cc *ChainConfig) watch() {
 	started := time.Now()
 	// valcons isn't known until we connect, and the stalled alarm already uses it as the pagerduty dedup key
@@ -1139,7 +1138,7 @@ func (cc *ChainConfig) watch() {
 		break
 	}
 	proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(valInfo.Moniker))
-	cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled))
+	cc.restoreStalledAlarm()
 	noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
 	for _, node := range cc.Nodes {
 		message := nodeDownMessage(node.Url, cc.ChainId)
@@ -1168,9 +1167,8 @@ func (cc *ChainConfig) watch() {
 			version, reconcile = revision, true
 			info, _ := cc.validatorState()
 			cc.clearOrphanedAlarms(info, noRpcId)
-			alerts := cc.alertSettings()
 			proposalAlarm = alarmIsActive(cc.name, cc.proposalMessage(info.Moniker))
-			cc.lastBlockAlarm = alarmIsActive(cc.name, fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, alerts.Stalled))
+			cc.restoreStalledAlarm()
 			noNodes = alarmIsActive(cc.name, fmt.Sprintf("no RPC endpoints are working for %s", cc.ChainId))
 			for _, node := range cc.Nodes {
 				nodeAlarms[node.Url] = alarmIsActive(cc.name, nodeDownMessage(node.Url, cc.ChainId))
@@ -1225,25 +1223,10 @@ func (cc *ChainConfig) watch() {
 		if cc.alertSettings().StalledAlerts && (!cc.lastBlockAlarm || reconcile) && !lastBlockTime.IsZero() &&
 			stallSince.Before(time.Now().Add(time.Duration(-cc.alertSettings().Stalled)*time.Minute)) {
 
-			// chain is stalled send an alert!
-			cc.lastBlockAlarm = true
-			td.alert(
-				cc.name,
-				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled),
-				"critical",
-				false,
-				&valInfo.Valcons,
-			)
+			cc.stalledAlarm(valInfo, false)
 		} else if cc.alertSettings().StalledAlerts && cc.lastBlockAlarm && !lastBlockTime.IsZero() &&
 			lastBlockTime.After(time.Now().Add(time.Duration(-cc.alertSettings().Stalled)*time.Minute)) {
-			cc.lastBlockAlarm = false
-			td.alert(
-				cc.name,
-				fmt.Sprintf("stalled: have not seen a new block on %s in %d minutes", cc.ChainId, cc.alertSettings().Stalled),
-				"info",
-				true,
-				&valInfo.Valcons,
-			)
+			cc.stalledAlarm(valInfo, true)
 		}
 
 		cc.jailAlarms(valInfo, consecutiveMiss, reconcile)
@@ -1498,7 +1481,10 @@ func (cc *ChainConfig) clearOrphanedAlarms(valInfo *ValInfo, noRpcId string) {
 			id = valInfo.Valcons + "jailsoon"
 		case strings.Contains(message, " has missed ") && strings.Contains(message, " blocks on "):
 			id = valInfo.Valcons + "consecutive"
-		case strings.HasPrefix(message, "stalled: have not seen a new block"):
+		case cc.isStalledMessage(message):
+			if cc.alertSettings().StalledAlerts {
+				continue
+			}
 			id = valInfo.Valcons
 		case strings.HasPrefix(message, "no RPC endpoints are working"):
 			id = noRpcId

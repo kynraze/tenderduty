@@ -216,7 +216,7 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) error {
 		metricMissesBeforeJail:         missesBeforeJail,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
-		metricNodeLagSeconds:           nodeLagSec,  // todo
+		metricNodeLagSeconds:           nodeLagSec,
 		metricNodeDownSeconds:          nodeDownSec, // todo
 	}
 

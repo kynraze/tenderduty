@@ -17,6 +17,7 @@ type nodeStatus struct {
 	lastMsg                string
 	downSince              time.Time
 	downHeight             int64
+	stuckDetail            string
 	binaryVersion          string
 	binaryReadable         bool
 }
@@ -261,7 +262,7 @@ func (node *NodeConfig) snapshot() nodeStatus {
 	defer node.stateMux.RUnlock()
 	return nodeStatus{
 		down: node.down, wasDown: node.wasDown, syncing: node.syncing, checked: node.checked,
-		lastMsg: node.lastMsg, downSince: node.downSince, downHeight: node.downHeight,
+		lastMsg: node.lastMsg, downSince: node.downSince, downHeight: node.downHeight, stuckDetail: node.stuckDetail,
 		binaryVersion: node.binaryVersion, binaryReadable: node.binaryReadable,
 	}
 }
@@ -270,7 +271,7 @@ func (node *NodeConfig) markDown(message string, syncing bool) nodeStatus {
 	return node.markDownAt(message, syncing, 0)
 }
 
-func (node *NodeConfig) markDownAt(message string, syncing bool, height int64) nodeStatus {
+func (node *NodeConfig) markDownAt(message string, syncing bool, height int64, stuck ...string) nodeStatus {
 	node.stateMux.Lock()
 	if !node.down {
 		node.downSince = time.Now()
@@ -281,9 +282,13 @@ func (node *NodeConfig) markDownAt(message string, syncing bool, height int64) n
 	node.syncing = syncing
 	node.checked = true
 	node.lastMsg = message
+	node.stuckDetail = ""
+	if len(stuck) > 0 {
+		node.stuckDetail = stuck[0]
+	}
 	status := nodeStatus{
 		down: node.down, wasDown: node.wasDown, syncing: node.syncing, checked: node.checked,
-		lastMsg: node.lastMsg, downSince: node.downSince, downHeight: node.downHeight,
+		lastMsg: node.lastMsg, downSince: node.downSince, downHeight: node.downHeight, stuckDetail: node.stuckDetail,
 		binaryVersion: node.binaryVersion, binaryReadable: node.binaryReadable,
 	}
 	node.stateMux.Unlock()
@@ -300,6 +305,7 @@ func (node *NodeConfig) markHealthy() {
 	node.syncing = false
 	node.checked = true
 	node.lastMsg = ""
+	node.stuckDetail = ""
 	node.downSince = time.Time{}
 	node.downHeight = 0
 }

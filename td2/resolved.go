@@ -42,6 +42,7 @@ func withoutSeverity(message string) string {
 var (
 	consecutiveMissed = regexp.MustCompile(`^(.+) has missed \d+ blocks on (\S+)$`)
 	percentageMissed  = regexp.MustCompile(`^(.+) has missed > (\d+)% of the slashing window's blocks on (\S+)$`)
+	upgradeStalled    = regexp.MustCompile(`^(\S+) stopped at upgrade (.+) height ([\d,]+): (.+)$`)
 	chainStalled      = regexp.MustCompile(`^stalled: have not seen a new block on (\S+) in \d+ minutes$`)
 	noRpcNodes        = regexp.MustCompile(`^no RPC endpoints are working for (\S+)$`)
 	rpcNodeDown       = regexp.MustCompile(`^RPC node (\S+) has been down for > .+ on (\S+)$`)
@@ -73,6 +74,9 @@ func resolvedText(chain, message string) string {
 	}
 	if m := percentageMissed.FindStringSubmatch(first); m != nil {
 		return fmt.Sprintf("%s is back under %s%% of the slashing window missed on %s", m[1], m[2], m[3])
+	}
+	if m := upgradeStalled.FindStringSubmatch(first); m != nil {
+		return m[1] + " is producing blocks again"
 	}
 	if m := chainStalled.FindStringSubmatch(first); m != nil {
 		return m[1] + " is producing blocks again"
